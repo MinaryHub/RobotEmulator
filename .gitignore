@@ -1,0 +1,4 @@
+node_modules/
+# OPC UA 자체 서명 인증서/PKI (자동 생성)
+.opcua-pki/
+projects/_autosave.json

@@ -1,0 +1,19 @@
+{
+  "name": "robot-emulator",
+  "version": "1.0.0",
+  "description": "다제조사 산업용 로봇 에뮬레이터 (Yaskawa/Kawasaki/Hyundai/ABB/KUKA)",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node test/run-all.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "node-opcua": "^2.187.0",
+    "three": "^0.169.0",
+    "ws": "^8.18.0"
+  }
+}

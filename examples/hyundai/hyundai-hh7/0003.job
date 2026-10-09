@@ -1,0 +1,8 @@
+Hyundai Robot Job File; { version: 1.6, mech_type: "HH7 (HDF7-9)", total_axis: 6, aux_axis: 0 }
+     ' 그리퍼 열기
+     DO1=0
+     DO2=1
+     WAIT DI2=1,T=3
+     DELAY 0.2
+     DO2=0
+     END
