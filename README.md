@@ -13,7 +13,32 @@ npm start          # http://localhost:3000
 npm test           # 기구학 · 5개 언어 · 5개 통신 프로토콜 · 필드버스(Modbus/OPC UA) 테스트
 ```
 
-필요 환경: Node.js 20 이상. 외부 의존성은 `three`(3D)와 `ws`(WebSocket)뿐입니다.
+- 필요 환경: Node.js 20 이상. **Windows · macOS · Linux 모두 같은 방법으로 설치·실행**합니다 (네이티브 빌드나 OS별 스크립트 없음).
+- 외부 의존성: `three`(3D 뷰), `ws`(WebSocket), `node-opcua`(OPC UA 서버). 모두 순수 JavaScript 패키지라 컴파일러가 필요 없습니다.
+- 포트·바인딩 주소 지정:
+
+| 방법 | 예 |
+|---|---|
+| macOS / Linux | `PORT=3100 HOST=127.0.0.1 npm start` |
+| Windows PowerShell | `$env:PORT=3100; $env:HOST="127.0.0.1"; npm start` |
+| Windows cmd | `set PORT=3100 && set HOST=127.0.0.1 && npm start` |
+| 공통 | 루트의 `config.json` (아래 참고). 우선순위: 기본값 < `config.json` < 환경변수 |
+
+- 테스트는 파일 단위로 병렬 실행합니다(기본: CPU 수, 최대 8). `TEST_JOBS=1` 이면 순차 실행, `node test/run-all.js krl` 처럼 이름으로 골라 실행할 수 있습니다.
+- GitHub Actions 에서 Windows · macOS · Linux × Node 20 · 22 조합으로 테스트합니다 (`.github/workflows/test.yml`).
+
+### OS 별 참고
+
+- **1024 미만 포트 (Linux · macOS):** 일반 사용자 권한으로는 Kawasaki AS 23번, Modbus 502번에 바인딩할 수 없습니다. 이때는 자동으로 10023, 1502로 대체되고, 콘솔과 로그에 실제 포트가 표시됩니다. 원래 포트가 꼭 필요하면 관리자 권한으로 실행하거나, Linux에서는 `sudo setcap 'cap_net_bind_service=+ep' "$(command -v node)"` 를 사용하십시오.
+- **Windows 방화벽:** 처음 실행할 때 Node.js 네트워크 접근 허용 창이 뜹니다. 다른 PC·PLC에서 접속하려면 허용하십시오. 이 PC에서만 쓸 때는 `HOST=127.0.0.1` 로 실행하면 방화벽 예외가 필요 없습니다.
+- **종료:** Ctrl+C (Windows 는 Ctrl+Break 도 가능), 서비스·컨테이너에서는 SIGTERM. 종료할 때 자동 저장과 통신 포트를 정리합니다.
+
+### 보안
+
+웹 UI, `/api/cmd`, `/ws`, 각 통신 인터페이스에는 **인증이 없습니다** (실제 로봇 컨트롤러의 공장 내 통신을 흉내 내기 위함). 접속할 수 있는 사람은 누구나 로봇 이동, 프로그램·프로젝트 파일 변경을 할 수 있습니다.
+
+- 기본값은 모든 네트워크 인터페이스에 바인딩합니다 (다른 PC·PLC에서 접속하기 위함). 신뢰할 수 있는 내부망에서만 사용하십시오.
+- 혼자 쓸 때는 `"host": "127.0.0.1"` (또는 `HOST=127.0.0.1`)로 이 PC 에서만 접속되게 하십시오. 이 값은 웹 서버와 모든 통신 인터페이스에 함께 적용되며, 통신 인터페이스별로 `protocols.<키>.host` 로 따로 지정할 수도 있습니다.
 
 ## 주요 기능
 
@@ -60,10 +85,10 @@ npm test           # 기구학 · 5개 언어 · 5개 통신 프로토콜 · 필
 | 공통 (필드버스) | OPC UA 서버 (node-opcua) | 4840 | `opc.tcp://<host>:4840/UA/RobotEmulator`, 상태·관절·TCP·IO·레지스터 변수, 구독, 제어 메서드 |
 
 - 샘플 클라이언트가 [tools/clients/](tools/clients/)에 있습니다. 예: `node tools/clients/kuka-varproxy-client.js 127.0.0.1`
-- 포트는 루트에 `config.json`을 만들어 바꿀 수 있습니다:
+- 포트는 루트에 `config.json`을 만들어 바꿀 수 있습니다 (지정하지 않은 항목은 기본값 유지):
 
 ```json
-{ "httpPort": 3000, "robot": "kuka-kr6-r900", "gripper": "robotiq-2f85",
+{ "httpPort": 3000, "host": "127.0.0.1", "robot": "kuka-kr6-r900", "gripper": "robotiq-2f85",
   "protocols": { "abbRws": { "port": 80 }, "kawasakiAs": { "enabled": false }, "opcua": { "enabled": false } } }
 ```
 
@@ -168,6 +193,6 @@ server/lang/ 언어 컴파일러: inform, as, hrscript, rapid, krl (+ 공용 수
 server/protocols/  통신 서버 5종 + 필드버스(Modbus TCP, OPC UA)
 public/      웹 UI (Three.js 3D 뷰, 에디터, 패널)
 tools/       샘플 통신 클라이언트, 예제 내보내기
-test/        자동 테스트
+test/        자동 테스트 (run-all.js 가 *.test.js 를 병렬 실행)
 docs/DEV_CONTRACT.md  언어·통신 모듈 개발 규약 (새 제조사·언어 추가 시 참고)
 ```

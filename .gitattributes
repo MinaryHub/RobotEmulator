@@ -1,0 +1,5 @@
+# 줄바꿈을 저장소에서는 LF 로 통일 (Windows 체크아웃에서도 동일하게 유지)
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.stl binary

@@ -22,9 +22,13 @@ const projects = new ProjectStore(ctrl, path.join(ROOT, 'projects'));
 if (config.restoreSession !== false && !config.robot) projects.restoreAutosave();
 projects.startAutosave();
 
+// 설정 우선순위: 기본값 < config.json < 환경변수(PORT, HOST)
+//  host: 바인딩 주소. 생략 시 모든 인터페이스(외부 PLC·PC 접속용). '127.0.0.1' 로 두면 이 PC 에서만 접속 가능.
+//        protocols.<키>.host 를 따로 주지 않은 통신 모듈에도 같은 값이 적용된다.
 function loadConfig() {
   const def = {
     httpPort: 3000,
+    host: null,
     robot: null, gripper: null,
     protocols: {
       yaskawaHse: { port: 10040, filePort: 10041 },
@@ -36,15 +40,29 @@ function loadConfig() {
       opcua: { port: 4840 },
     },
   };
+  let cfg = def;
   const f = path.join(ROOT, 'config.json');
   if (fs.existsSync(f)) {
     try {
       const u = JSON.parse(fs.readFileSync(f, 'utf8'));
-      return { ...def, ...u, protocols: { ...def.protocols, ...(u.protocols || {}) } };
+      const protocols = { ...def.protocols };
+      for (const [k, v] of Object.entries(u.protocols || {})) protocols[k] = { ...(def.protocols[k] || {}), ...v };
+      cfg = { ...def, ...u, protocols };
     } catch (e) { console.error('config.json 오류:', e.message); }
   }
-  if (process.env.PORT) def.httpPort = Number(process.env.PORT);
-  return def;
+  if (process.env.PORT) {
+    const n = Number(process.env.PORT);
+    if (Number.isInteger(n) && n >= 0 && n < 65536) cfg.httpPort = n;
+    else console.error(`PORT 환경변수 값이 올바르지 않습니다: ${process.env.PORT}`);
+  }
+  if (process.env.HOST) cfg.host = process.env.HOST;
+  if (cfg.host) {
+    for (const k of Object.keys(cfg.protocols)) {
+      const p = cfg.protocols[k];
+      if (p && typeof p === 'object' && p.host == null) cfg.protocols[k] = { ...p, host: cfg.host };
+    }
+  }
+  return cfg;
 }
 
 // ---------------------------------------------------------------- 정적 파일
@@ -200,8 +218,15 @@ setInterval(() => {
   if (sig !== lastFilesSig) { lastFilesSig = sig; broadcast({ type: 'files', ...filesMsg() }); }
 }, 500);
 
-server.listen(config.httpPort, async () => {
-  console.log(`\n  산업용 로봇 에뮬레이터  →  http://localhost:${config.httpPort}\n`);
+server.on('error', (e) => {
+  console.error(`HTTP 서버 시작 실패 (${config.host ?? '*'}:${config.httpPort}): ${e.code === 'EADDRINUSE' ? '포트가 이미 사용 중입니다. config.json 의 httpPort 또는 PORT 환경변수로 바꾸세요.' : e.message}`);
+  process.exit(1);
+});
+
+server.listen(config.httpPort, config.host || undefined, async () => {
+  const shown = !config.host || config.host === '0.0.0.0' || config.host === '::' ? 'localhost' : config.host;
+  console.log(`\n  산업용 로봇 에뮬레이터  →  http://${shown}:${config.httpPort}`);
+  console.log(config.host && /^(127\.|::1$|localhost$)/i.test(config.host) ? '  (이 PC 에서만 접속 가능)\n' : `  (바인딩: ${config.host || '모든 인터페이스'} — 인증 없음, 신뢰할 수 있는 네트워크에서만 사용)\n`);
   try {
     const { startAll } = await import('./protocols/index.js');
     comms = await startAll(ctrl, config.protocols);
@@ -212,4 +237,18 @@ server.listen(config.httpPort, async () => {
   }
 });
 
-process.on('SIGINT', () => { for (const c of comms) c.close?.(); process.exit(0); });
+// 종료 처리: Ctrl+C(SIGINT, 모든 OS), SIGTERM(Linux/macOS 서비스·컨테이너), SIGBREAK(Windows Ctrl+Break)
+let shuttingDown = false;
+async function shutdown(sig) {
+  if (shuttingDown) return process.exit(1);   // 두 번째 신호는 즉시 종료
+  shuttingDown = true;
+  console.log(`\n  종료 중 (${sig})...`);
+  try { projects.saveAutosave?.(); } catch {}
+  const force = setTimeout(() => process.exit(0), 3000);
+  force.unref();
+  await Promise.allSettled(comms.map(async (c) => c.close?.()));
+  process.exit(0);
+}
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) {
+  try { process.on(sig, () => shutdown(sig)); } catch {}
+}

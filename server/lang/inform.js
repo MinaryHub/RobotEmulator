@@ -120,7 +120,7 @@ function jobNameOf(fname, text) {
 const isJbi = (n) => /\.jbi$/i.test(n);
 
 function parseJob(text, file, robot) {
-  const lines = String(text).replace(/\r\n/g, '\n').split('\n');
+  const lines = String(text).replace(/\r\n?/g, '\n').split('\n');
   const job = { name: null, file, pos: new Map(), inst: [] };
   let section = /^\s*\/JOB\s*$/m.test(text) ? 'head' : 'inst';
   let postype = 'PULSE';

@@ -101,16 +101,17 @@ export class ProjectStore {
   remove(name) { fs.unlinkSync(this.fileOf(name)); this.ctrl.log('system', `프로젝트 삭제: ${name}`); }
 
   // ---------------------------------------------------------------- 자동 저장
+  // 변경이 있을 때만 _autosave.json 기록 (종료 처리에서도 호출)
+  saveAutosave() {
+    try {
+      const p = this.serialize();
+      const sig = JSON.stringify({ ...p, savedAt: 0 });
+      if (sig !== this._lastSig) { this._lastSig = sig; fs.writeFileSync(path.join(this.dir, '_autosave.json'), JSON.stringify(p)); }
+    } catch (e) { /* 자동 저장 실패는 무시 (다음 주기에 재시도) */ }
+  }
+
   startAutosave() {
-    const f = path.join(this.dir, '_autosave.json');
-    const tick = () => {
-      try {
-        const p = this.serialize();
-        const sig = JSON.stringify({ ...p, savedAt: 0 });
-        if (sig !== this._lastSig) { this._lastSig = sig; fs.writeFileSync(f, JSON.stringify(p)); }
-      } catch (e) { /* 자동 저장 실패는 무시 (다음 주기에 재시도) */ }
-    };
-    this._timer = setInterval(tick, 2000);
+    this._timer = setInterval(() => this.saveAutosave(), 2000);
     return () => clearInterval(this._timer);
   }
 
