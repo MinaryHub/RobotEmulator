@@ -2,7 +2,9 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { jointFrames } from '/shared/kinematics.js';
-import { buildGripper, cylZ, box, tube } from './gripperMesh.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { buildGripper, cylZ, box } from './gripperMesh.js';
+import { buildRobotLinks } from './robotMesh.js';
 import { CellMeshes } from './cellMesh.js';
 import { CameraRig, HELPER_LAYER } from './cameraView.js';
 
@@ -20,17 +22,25 @@ export class RobotView {
     this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.1;
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     el.appendChild(this.renderer.domElement);
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x1b1f24);
+    // 도장면/가공면 반사용 실내 환경맵 (한 번만 생성)
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    this.scene.environmentIntensity = 0.55;
+    pmrem.dispose();
     this.camera = new THREE.PerspectiveCamera(45, 1, 0.01, 100);
     this.camera.up.set(0, 0, 1);
     this.camera.layers.enable(HELPER_LAYER); // 보조 표시 (비전 카메라 영상에는 제외)
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
 
-    this.scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x30302a, 1.2));
+    this.scene.add(new THREE.HemisphereLight(0xdfe8ff, 0x30302a, 0.8));
     const sun = new THREE.DirectionalLight(0xffffff, 2.2);
     sun.position.set(2, -3, 5);
     sun.castShadow = true;
@@ -138,49 +148,14 @@ export class RobotView {
   // ------------------------------------------------------------------ 로봇
   setRobot(model, vendor, sceneInfo) {
     this.model = model;
-    for (const l of this.links) this.robotGroup.remove(l);
+    for (const l of this.links) {
+      this.robotGroup.remove(l);
+      l.traverse((m) => { if (m.isMesh) { m.geometry.dispose(); m.material.dispose(); } });
+    }
     this.links = [];
-    const k = model.opw;
-    const R = model.reach;
-    const r = Math.max(36, Math.min(250, R * 0.072));
-    const body = new THREE.MeshStandardMaterial({ color: vendor.color, metalness: 0.25, roughness: 0.45 });
-    const acc = new THREE.MeshStandardMaterial({ color: vendor.accent, metalness: 0.35, roughness: 0.5 });
-    const dark = new THREE.MeshStandardMaterial({ color: 0x2a2d31, metalness: 0.3, roughness: 0.6 });
-    const baseMat = model.vendor === 'kuka' ? dark : model.vendor === 'yaskawa' ? new THREE.MeshStandardMaterial({ color: 0x1f5fae, metalness: 0.25, roughness: 0.45 }) : acc;
-    const yAxisCyl = (x, z, rad, half, m) => tube(V(x, -half, z), V(x, half, z), rad, m);
-
-    const L = [];
-    for (let i = 0; i < 7; i++) { const g = new THREE.Group(); g.matrixAutoUpdate = false; L.push(g); }
-    const hb = Math.min(k.c1 * 0.38, r * 2.2);
-    // 0: 베이스
-    L[0].add(cylZ(r * 1.55, hb * 0.35, baseMat, 0, 40));
-    L[0].add(cylZ(r * 1.3, hb * 0.65, baseMat, hb * 0.35, 40));
-    // 1: 선회부
-    L[1].add(cylZ(r * 1.2, k.c1 - hb - r * 0.2, body, hb, 40));
-    L[1].add(tube(V(0, 0, k.c1 - r * 0.5), V(k.a1, 0, k.c1), r * 1.0, body));
-    L[1].add(yAxisCyl(k.a1, k.c1, r * 0.95, r * 1.05, body));
-    L[1].add(yAxisCyl(k.a1, k.c1, r * 0.55, r * 1.35, acc)); // J2 모터 커버
-    L[1].add(box(r * 0.9, r * 0.9, r * 0.9, acc, -r * 0.9, r * 0.6, hb + r * 0.1)); // J1 모터
-    // 2: 하완(Lower arm)
-    L[2].add(tube(V(0, r * 0.15, 0), V(0, r * 0.15, k.c2), r * 0.62, body));
-    L[2].add(box(r * 1.0, r * 0.75, k.c2 * 0.7, body, 0, r * 0.15, k.c2 * 0.15));
-    L[2].add(yAxisCyl(0, k.c2, r * 0.75, r * 0.85, body));
-    // 3: 엘보 + 상완 후방 (J4 모터 하우징)
-    const ex = k.a2;
-    L[3].add(yAxisCyl(0, 0, r * 0.55, r * 1.05, acc)); // J3 모터
-    if (Math.abs(ex) > 1) L[3].add(tube(V(0, 0, 0), V(ex, 0, 0), r * 0.62, body));
-    L[3].add(tube(V(ex, 0, -r * 1.3), V(ex, 0, r * 0.4), r * 0.6, body));
-    L[3].add(cylZ(r * 0.45, r * 0.4, acc, -r * 1.7).translateX(ex));
-    // 4: 전완 (J4 회전)
-    const c3 = k.c3;
-    L[4].add(tube(V(0, 0, r * 0.4), V(0, 0, c3 - r * 0.55), r * 0.46, body));
-    for (const s of [-1, 1]) L[4].add(box(r * 0.6, r * 0.14, r * 0.85, body, 0, s * r * 0.36, c3 - r * 0.75));
-    // 5: 손목 (J5)
-    L[5].add(yAxisCyl(0, 0, r * 0.33, r * 0.3, acc));
-    L[5].add(cylZ(r * 0.3, Math.max(2, k.c4 - 10), body, 0, 32));
-    // 6: 플랜지
-    L[6].add(cylZ(r * 0.3, 10, new THREE.MeshStandardMaterial({ color: 0x9aa1a8, metalness: 0.8, roughness: 0.3 }), -10, 32));
-    L[6].add(box(6, 6, 4, new THREE.MeshStandardMaterial({ color: 0xff3b30 }), r * 0.22, 0, -4)); // 플랜지 +X 마크
+    // 링크 형상: public/js/robotMesh.js (OPW 파라미터로 치수 산출, 제조사별 색/비례)
+    const { links: L, update } = buildRobotLinks(model, vendor);
+    this._linkUpdate = update;
 
     // 재질은 링크 간 공유되므로 메시별로 복제 (충돌 하이라이트 시 다른 링크까지 물들지 않도록)
     for (const g of L) g.traverse((m) => { if (m.isMesh) { m.castShadow = true; m.receiveShadow = true; m.material = m.material.clone(); } });
@@ -289,6 +264,7 @@ export class RobotView {
     if (!this.model) return;
     const F = jointFrames(this.model, st.joints);
     for (let i = 0; i < 7; i++) this.links[i].matrix.copy(mat4(F[i]));
+    this._linkUpdate?.();
     this.toolGroup.matrix.copy(mat4(F[6]));
     this.cameras.update(F, mat4);
     this.tool?.setPos(st.grip.pos);

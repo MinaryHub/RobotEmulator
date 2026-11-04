@@ -484,9 +484,13 @@ document.addEventListener('keydown', (e) => {
   if (!['-', '=', '+'].includes(e.key) || e.ctrlKey || e.altKey || e.metaKey || !app.st) return;
   if (e.target.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"])') || document.querySelector('dialog[open]')) return;
   e.preventDefault();
-  const cur = app.st.timeScale ?? 1;
+  // 서버 상태 반영 전에 연달아 눌러도 누적되도록 선택 상자 값을 기준으로 계산
+  const sel = $('#selSpeed');
+  const cur = Number(sel.value) || 1;
   const v = e.key === '-' ? [...SPEEDS].reverse().find((x) => x < cur - 1e-9) : SPEEDS.find((x) => x > cur + 1e-9);
   if (v === undefined) return;
+  sel.value = String(v);
+  sel.classList.toggle('fast', v !== 1);
   cmd('timeScale', { value: v });
 });
 
