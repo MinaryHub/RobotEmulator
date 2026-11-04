@@ -4,6 +4,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { jointFrames } from '/shared/kinematics.js';
 import { buildGripper, cylZ, box, tube } from './gripperMesh.js';
 import { CellMeshes } from './cellMesh.js';
+import { CameraRig, HELPER_LAYER } from './cameraView.js';
 
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
 const mat4 = (f) => new THREE.Matrix4().set(
@@ -25,6 +26,7 @@ export class RobotView {
     this.scene.background = new THREE.Color(0x1b1f24);
     this.camera = new THREE.PerspectiveCamera(45, 1, 0.01, 100);
     this.camera.up.set(0, 0, 1);
+    this.camera.layers.enable(HELPER_LAYER); // 보조 표시 (비전 카메라 영상에는 제외)
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
 
@@ -55,6 +57,7 @@ export class RobotView {
     this.robotGroup.add(this.toolGroup);
     this.tcpAxes = new THREE.AxesHelper(80);
     this.tcpAxes.matrixAutoUpdate = false;
+    this.tcpAxes.layers.set(HELPER_LAYER);
     this.world.add(this.tcpAxes);
     this.objMeshes = new Map();
 
@@ -66,11 +69,19 @@ export class RobotView {
     tg.setAttribute('position', new THREE.BufferAttribute(this.trailPts, 3));
     this.trail = new THREE.Line(tg, new THREE.LineBasicMaterial({ color: 0x00e0ff }));
     this.trail.frustumCulled = false;
+    this.trail.layers.set(HELPER_LAYER);
     this.world.add(this.trail);
+
+    this.cameras = new CameraRig(this, el.parentElement);
 
     new ResizeObserver(() => this.resize()).observe(el);
     this.resize();
-    const loop = () => { this.controls.update(); this.renderer.render(this.scene, this.camera); requestAnimationFrame(loop); };
+    const loop = () => {
+      this.controls.update();
+      this.renderer.render(this.scene, this.camera);
+      this.cameras.render();
+      requestAnimationFrame(loop);
+    };
     loop();
   }
 
@@ -120,6 +131,7 @@ export class RobotView {
     // 베이스 좌표축
     const ax = new THREE.AxesHelper(Math.max(150, this.model.reach * 0.2));
     ax.position.z = 1;
+    ax.layers.set(HELPER_LAYER);
     this.cell.add(ax);
   }
 
@@ -249,6 +261,7 @@ export class RobotView {
     this._lastCaps = capsules;
     while (this._capPool.length < capsules.length) {
       const set = { cyl: new THREE.Mesh(this._capCyl, this._capMat), s1: new THREE.Mesh(this._capSph, this._capMat), s2: new THREE.Mesh(this._capSph, this._capMat) };
+      for (const m of [set.cyl, set.s1, set.s2]) m.layers.set(HELPER_LAYER);
       this.capGroup.add(set.cyl, set.s1, set.s2);
       this._capPool.push(set);
     }
@@ -277,6 +290,7 @@ export class RobotView {
     const F = jointFrames(this.model, st.joints);
     for (let i = 0; i < 7; i++) this.links[i].matrix.copy(mat4(F[i]));
     this.toolGroup.matrix.copy(mat4(F[6]));
+    this.cameras.update(F, mat4);
     this.tool?.setPos(st.grip.pos);
     // TCP
     const { p, q } = st.tcpWorld;
@@ -335,6 +349,7 @@ export class RobotView {
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     g.setAttribute('color', new THREE.BufferAttribute(col, 3));
     this.envelope = new THREE.Points(g, new THREE.PointsMaterial({ size: Math.max(4, m.reach * 0.006), vertexColors: true, transparent: true, opacity: 0.35, depthWrite: false }));
+    this.envelope.layers.set(HELPER_LAYER);
     this.world.add(this.envelope);
   }
 

@@ -5,6 +5,8 @@ import { CodeEditor } from './editor.js';
 import { robotCapsules } from '/shared/collision.js';
 import { initDebugPanels } from './debugPanels.js';
 import { initCellPanel, renderCellPanel } from './cellPanel.js';
+import { initCameraPanel, renderCameraPanel } from './cameraPanel.js';
+import { initChatPanel, onChatEvent, onChatReconnect } from './chatPanel.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -36,6 +38,7 @@ function connect() {
     else if (m.type === 'files') onFiles(m);
     else if (m.type === 'comms') { app.comms = m.comms; renderComms(); }
     else if (m.type === 'tl') dbg.onTimeline(m);
+    else if (m.type === 'chat') onChatEvent(m);
     else if (m.type === 'reply') { const p = pending.get(m.id); if (p) { pending.delete(m.id); m.ok ? p.res(m) : p.rej(new Error(m.error)); } }
   };
 }
@@ -56,6 +59,7 @@ function onInit(m) {
   onFiles(m.files);
   onState(m.state);
   renderComms();
+  onChatReconnect();
 }
 
 // ---------------------------------------------------------------- 상태 반영
@@ -107,6 +111,7 @@ function onState(st) {
   if (document.activeElement !== $('#chkAutoScene')) $('#chkAutoScene').checked = st.autoResetScene !== false;
   renderCollision(st, model);
   renderCellPanel(st);
+  renderCameraPanel(st);
 }
 
 // ---------------------------------------------------------------- 간섭
@@ -549,4 +554,6 @@ $('#projFile').onchange = async (e) => {
 
 const dbg = initDebugPanels({ cmd });
 initCellPanel({ cmd, view, getState: () => app.st });
+initChatPanel({ send: (msg) => ws?.readyState === 1 && ws.send(JSON.stringify(msg)) });
+initCameraPanel({ cmd, view, getState: () => app.st, getModel: () => app.robots.find((r) => r.id === app.robotId) });
 connect();

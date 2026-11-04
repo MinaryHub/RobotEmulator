@@ -1,5 +1,5 @@
 // 프로젝트 저장/불러오기 + 자동 저장
-//  - 프로젝트 = 로봇/그리퍼/설정 + 제조사별 프로그램 파일·변수 + 셀 레이아웃 (JSON 1개)
+//  - 프로젝트 = 로봇/그리퍼/카메라/설정 + 제조사별 프로그램 파일·변수 + 셀 레이아웃 (JSON 1개)
 //  - 저장 위치: <프로젝트 루트>/projects/<이름>.json
 //  - 자동 저장: 변경 후 2초 뒤 projects/_autosave.json → 서버 재시작 시 복원
 import fs from 'node:fs';
@@ -32,6 +32,7 @@ export class ProjectStore {
       breakpoints: [...(c.breakpoints || [])],
       vendors,
       cell: c.cell?.getLayout ? c.cell.getLayout() : null,
+      cameras: c.cameras.map((x) => ({ ...x })),
     };
   }
 
@@ -69,6 +70,7 @@ export class ProjectStore {
     if (st.autoResetScene !== undefined) c.autoResetScene = !!st.autoResetScene;
     c.breakpoints = new Set(p.breakpoints || []);
     if (p.cell && c.cell?.setLayout) c.cell.setLayout(p.cell);
+    c.setCameras(p.cameras || []);
     this.current = p.name ?? null;
     c.log('system', `프로젝트 불러옴: ${p.name ?? '(이름 없음)'}`);
     c.emitState();

@@ -14,7 +14,7 @@ npm test           # 기구학 · 5개 언어 · 5개 통신 프로토콜 · 필
 ```
 
 - 필요 환경: Node.js 20 이상. **Windows · macOS · Linux 모두 같은 방법으로 설치·실행**합니다 (네이티브 빌드나 OS별 스크립트 없음).
-- 외부 의존성: `three`(3D 뷰), `ws`(WebSocket), `node-opcua`(OPC UA 서버). 모두 순수 JavaScript 패키지라 컴파일러가 필요 없습니다.
+- 외부 의존성: `three`(3D 뷰), `ws`(WebSocket), `node-opcua`(OPC UA 서버), `@anthropic-ai/sdk`(Claude 채팅). 모두 순수 JavaScript 패키지라 컴파일러가 필요 없습니다.
 - 포트·바인딩 주소 지정:
 
 | 방법 | 예 |
@@ -55,6 +55,8 @@ npm test           # 기구학 · 5개 언어 · 5개 통신 프로토콜 · 필
 | 조작 | 축 조그, 직교 조그(BASE/TOOL), 서보 ON/OFF, 모드 전환, I/O 강제 출력과 입력 시뮬레이션, 작업 영역(손목 중심 도달 범위) 3D 표시 |
 | 디버깅 | 에디터 라인 번호 클릭 → 브레이크포인트, 변수 감시(로컬·전역·레지스터, 변경 강조), 신호 타임라인(DO/DI·RUN·MOVING·HOLD·GRIP·ALARM 파형, 두 점 클릭으로 Δt 측정) |
 | 프로젝트 | 로봇·그리퍼·설정·제조사별 프로그램/변수·셀 레이아웃을 `projects/<이름>.json` 으로 저장/불러오기, JSON 내보내기·가져오기. 2초마다 자동 저장 → 서버 재시작 시 직전 세션 복원 (`config.json` 의 `"restoreSession": false` 로 끔). 제조사를 바꿨다 돌아와도 이전 프로그램 유지 |
+| 비전 카메라 | 카메라 탭에서 7종(2D 머신비전·스마트 카메라·RealSense D435·Zivid 2+ M70·ToF·셀 모니터링)을 플랜지·전완(J3)·고정 위치에 장착. 3D 뷰 우하단에 카메라 시점을 실시간 렌더링(컬러/흑백/깊이 컬러맵), 시야 프러스텀 표시, 카메라 해상도 PNG 저장. 프로젝트에 저장 (`shared/cameras.js`, `public/js/cameraView.js`) |
+| Claude 연동 | 오른쪽 ✦ Claude 채팅으로 현재 로봇·셀에 맞는 프로그램 생성·수정·컴파일·가상 실행 검증. 같은 기능을 MCP 서버(`/mcp`)로 제공 → Claude Code·Claude Desktop 에서 사용 (아래 참고) |
 | 셀 레이아웃 | 셀 탭에서 테이블·장애물·공작물과 주변기기(컨베이어, 피더, 센서, 공압 실린더, 배출구, 팔레트) 배치·편집, 프리셋(기본 / 컨베이어 픽 앤 플레이스), JSON 내보내기·가져오기. 장치는 로봇 DI/DO(기본 DO9 컨베이어 운전, DI9 도착 센서)로 연동되어 Modbus·OPC UA 에서도 보임. 장애물·컨베이어 프레임은 간섭 체크 대상 (`server/cell.js`, 예제 `examples/conveyor/`) |
 
 ## 지원 로봇 언어
@@ -71,6 +73,43 @@ npm test           # 기구학 · 5개 언어 · 5개 통신 프로토콜 · 필
 
 언어별 상세 지원 문법은 각 모듈 파일(`server/lang/*.js`) 상단 주석에 있습니다.
 
+## Claude 연동 (채팅 · MCP)
+
+같은 도구 6개를 웹 UI 채팅과 MCP 서버가 공유합니다 (`server/ai/tools.js`).
+
+| 도구 | 기능 |
+|---|---|
+| `get_context` | 로봇·언어·그리퍼 I/O·현재 자세·셀 배치(공작물·테이블·주변기기 좌표)·카메라·프로그램 상태 |
+| `get_language_guide` | 해당 제조사 언어의 지원 문법 요약 + 현재 셀에 맞춰 생성한 동작하는 예제 |
+| `read_program` / `write_program` | 가상 컨트롤러 파일 읽기 / 저장·컴파일 (에디터에 즉시 반영, 컴파일 오류 반환) |
+| `run_program` | start·step·stop·reset·reset_alarms·status — 실행 후 사이클 타임·알람·간섭·공작물 위치·로그 반환 (가상 로봇만 움직임) |
+| `get_logs` | 컨트롤러 로그 |
+
+**웹 UI 채팅** (헤더의 ✦ Claude): Claude API 를 사용하므로 서버를 실행하는 터미널에 인증 정보가 필요합니다.
+
+| 방법 | 예 |
+|---|---|
+| macOS / Linux | `ANTHROPIC_API_KEY=sk-ant-... npm start` |
+| Windows PowerShell | `$env:ANTHROPIC_API_KEY="sk-ant-..."; npm start` |
+| Anthropic CLI 프로필 | `ant auth login` 후 `npm start` (환경변수 불필요) |
+
+모델은 `config.json` 의 `"ai": { "model": "claude-opus-5-5", "effort": "high" }` 로 바꿀 수 있습니다. 거절 응답 시 서버 측 대체 모델로 자동 재시도(`fallbacks: "default"`)하며, `"fallbacks": false` 로 끌 수 있습니다. 대화는 브라우저 탭(WebSocket 연결)마다 따로 유지되고 서버 재시작·재연결 시 새로 시작합니다.
+
+**MCP 서버**: 에뮬레이터를 실행해 두고 MCP 클라이언트에 등록합니다. 인증 정보는 필요 없습니다 (Claude 는 클라이언트 쪽에서 실행).
+
+```bash
+# Claude Code (Streamable HTTP)
+claude mcp add --transport http robot-emulator http://localhost:3000/mcp
+```
+
+stdio 만 지원하는 클라이언트(예: Claude Desktop)는 브리지를 사용합니다 — `claude_desktop_config.json`:
+
+```json
+{ "mcpServers": { "robot-emulator": { "command": "node", "args": ["C:/경로/RobotEmulator/tools/mcp-stdio.js", "http://localhost:3000/mcp"] } } }
+```
+
+`/mcp` 도 인증이 없으므로 위 [보안](#보안) 항목과 같이 신뢰할 수 있는 네트워크에서만 사용하십시오 (브라우저발 요청은 Origin 검사로 차단).
+
 ## 외부 통신 인터페이스
 
 | 제조사 | 프로토콜 | 기본 포트 | 지원 기능 |
@@ -81,6 +120,7 @@ npm test           # 기구학 · 5개 언어 · 5개 통신 프로토콜 · 필
 | ABB | Robot Web Services 1.0/2.0 | 8080 | jointtarget·robtarget, RAPID 실행·loadmod·심볼, IO 신호, 파일 서비스, 구독(WebSocket) |
 | KUKA | KukaVarProxy / OpenShowVar | 7000 | $AXIS_ACT, $POS_ACT, $OV_PRO, $OUT/$IN, .dat 전역 변수 읽기·쓰기 |
 | 공통 | REST / WebSocket | 3000 | `GET /api/state`, `POST /api/cmd`, `ws://…/ws` |
+| 공통 (AI) | MCP (Streamable HTTP) | 3000 | `http://<host>:3000/mcp` — 로봇 프로그램 생성·검증 도구 (위 Claude 연동) |
 | 공통 (필드버스) | Modbus TCP 서버 | 502 (실패 시 1502) | 코일=DI, 이산 입력=DO, 상태·관절·TCP·사이클 타임 입력 레지스터, 명령/오버라이드/사용자 홀딩 레지스터 |
 | 공통 (필드버스) | OPC UA 서버 (node-opcua) | 4840 | `opc.tcp://<host>:4840/UA/RobotEmulator`, 상태·관절·TCP·IO·레지스터 변수, 구독, 제어 메서드 |
 

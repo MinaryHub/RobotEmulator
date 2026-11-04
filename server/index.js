@@ -2,14 +2,17 @@
 //  - HTTP: 웹 UI 정적 파일 + 공용 REST API (/api/state, /api/cmd)
 //  - WebSocket(/ws): UI 실시간 상태/명령
 //  - 제조사별 외부 통신 인터페이스 (server/protocols)
+//  - MCP 서버(/mcp)와 Claude 채팅(WebSocket chat 명령) — server/ai
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { Controller, ROBOTS, GRIPPERS, VENDORS } from './controller.js';
+import { CAMERAS } from '../shared/cameras.js';
 import { ProjectStore } from './project.js';
 import { listVars, Timeline } from './inspect.js';
+import { handleMcp } from './ai/mcp.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const config = loadConfig();
@@ -30,6 +33,7 @@ function loadConfig() {
     httpPort: 3000,
     host: null,
     robot: null, gripper: null,
+    ai: { model: 'claude-opus-5-5', effort: 'high', fallbacks: true }, // Claude 채팅 (인증: ANTHROPIC_API_KEY 또는 ant auth login)
     protocols: {
       yaskawaHse: { port: 10040, filePort: 10041 },
       kawasakiAs: { port: 23, fallbackPort: 10023 },
@@ -47,7 +51,7 @@ function loadConfig() {
       const u = JSON.parse(fs.readFileSync(f, 'utf8'));
       const protocols = { ...def.protocols };
       for (const [k, v] of Object.entries(u.protocols || {})) protocols[k] = { ...(def.protocols[k] || {}), ...v };
-      cfg = { ...def, ...u, protocols };
+      cfg = { ...def, ...u, protocols, ai: { ...def.ai, ...(u.ai || {}) } };
     } catch (e) { console.error('config.json 오류:', e.message); }
   }
   if (process.env.PORT) {
@@ -98,6 +102,7 @@ async function handleCmd(m) {
     case 'setRobot': ctrl.setRobot(m.id); return { files: filesMsg() };
     case 'setGripper': ctrl.setGripper(m.id); return;
     case 'customGripper': ctrl.setCustomGripper(m.def); return;
+    case 'cameras': ctrl.setCameras(m.list); return;
     case 'servo': ctrl.setServo(m.on); return;
     case 'mode': ctrl.setMode(m.mode); return;
     case 'override': ctrl.setOverride(m.value); return;
@@ -157,7 +162,7 @@ const server = http.createServer(async (req, res) => {
     try {
       let out;
       if (url.pathname === '/api/state') out = ctrl.snapshot();
-      else if (url.pathname === '/api/robots') out = { robots: ROBOTS, grippers: GRIPPERS, vendors: VENDORS };
+      else if (url.pathname === '/api/robots') out = { robots: ROBOTS, grippers: GRIPPERS, vendors: VENDORS, cameras: CAMERAS };
       else if (url.pathname === '/api/comms') out = comms.map(({ name, proto, port }) => ({ name, proto, port }));
       else if (url.pathname === '/api/cmd' && req.method === 'POST') {
         const body = await new Promise((r) => { let s = ''; req.on('data', (c) => (s += c)); req.on('end', () => r(s)); });
@@ -171,6 +176,10 @@ const server = http.createServer(async (req, res) => {
     }
     return;
   }
+  if (url.pathname === '/mcp') {
+    try { await handleMcp(ctrl, req, res); } catch (e) { if (!res.headersSent) { res.writeHead(500); res.end(); } ctrl.log('comm', `[MCP] 오류: ${e.message}`); }
+    return;
+  }
   serveStatic(req, res);
 });
 
@@ -179,15 +188,33 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 const send = (ws, msg) => ws.readyState === 1 && ws.send(JSON.stringify(msg));
 const broadcast = (msg) => { const s = JSON.stringify(msg); for (const c of wss.clients) if (c.readyState === 1) c.send(s); };
 
+// Claude 채팅: 연결(브라우저 탭)마다 대화 세션 1개. SDK 는 처음 사용할 때 불러옴
+let ChatSession = null;
+async function chatSession(ws) {
+  if (!ws.chat) {
+    ChatSession ??= (await import('./ai/chat.js')).ChatSession;
+    ws.chat = new ChatSession({ ctrl, config: config.ai, send: (ev) => send(ws, { type: 'chat', ...ev }) });
+  }
+  return ws.chat;
+}
+
 wss.on('connection', (ws) => {
+  ws.on('close', () => ws.chat?.stop());
   send(ws, {
-    type: 'init', robots: ROBOTS, grippers: GRIPPERS, vendors: VENDORS,
+    type: 'init', robots: ROBOTS, grippers: GRIPPERS, vendors: VENDORS, cameras: CAMERAS,
     state: ctrl.snapshot(), logs: ctrl.logs.slice(-200), files: filesMsg(),
     comms: comms.map(({ name, proto, port }) => ({ name, proto, port })),
   });
   ws.on('message', async (raw) => {
     let m;
     try { m = JSON.parse(raw); } catch { return; }
+    if (m.cmd === 'chat' || m.cmd === 'chatStop' || m.cmd === 'chatReset') {
+      try {
+        const c = await chatSession(ws);
+        if (m.cmd === 'chat') c.ask(String(m.text ?? '').slice(0, 20000)); else if (m.cmd === 'chatStop') c.stop(); else c.reset();
+      } catch (e) { send(ws, { type: 'chat', ev: 'error', msg: `채팅을 시작할 수 없습니다: ${e.message}` }); }
+      return;
+    }
     try {
       const r = await handleCmd(m);
       if (r?.files) broadcast({ type: 'files', ...r.files });

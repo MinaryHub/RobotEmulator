@@ -3,6 +3,7 @@
 import { EventEmitter } from 'node:events';
 import { ROBOTS, VENDORS, getRobot } from '../shared/robots.js';
 import { GRIPPERS, getGripper } from '../shared/grippers.js';
+import { normalizeCameras } from '../shared/cameras.js';
 import { fkFlange, fkTcp, ikNearest, tcpToFlange, withinLimits } from '../shared/kinematics.js';
 import { toVendorPose, fromVendorPose, frameFromXYZRPY } from '../shared/poseformat.js';
 import { poseMul, poseInv, mulv, mul3, Rx, Ry, Rz, DEG, add, sub, norm, quatFromR, T3 } from '../shared/math.js';
@@ -34,6 +35,7 @@ export class Controller extends EventEmitter {
     this.autoResetScene = true; // 프로그램을 처음부터 시작할 때 공작물 초기 배치로 복원
     this.collisionMode = 'stop'; // off | warn(표시만) | stop(알람 정지)
     this.collision = { hit: false, pairs: [] };
+    this.cameras = [];         // 장착 비전 카메라 (shared/cameras.js normalizeCameras 형식) — 렌더링은 브라우저
     this.jog = null;
     this.files = new Map();    // 가상 컨트롤러 저장소: 파일명 → 내용
     this.main = null;          // 메인 프로그램(잡) 이름
@@ -113,6 +115,14 @@ export class Controller extends EventEmitter {
     this.emitState();
   }
 
+  // 비전 카메라 목록 교체 (추가/삭제/편집 모두 전체 목록으로 전달)
+  setCameras(list) {
+    const before = this.cameras.length;
+    this.cameras = normalizeCameras(list);
+    if (this.cameras.length !== before) this.log('system', `카메라 ${this.cameras.length}대 장착`);
+    this.emitState();
+  }
+
   get tool() { return this.toolOverride ?? this.gripperTcp; }
   // 파지 판정/보유 공작물 추종은 프로그램 툴 설정과 무관하게 그리퍼 실제 TCP 사용
   get gripperTcp() { return frameFromXYZRPY(this.gripper.tcp); }
@@ -167,6 +177,7 @@ export class Controller extends EventEmitter {
       objects: this.objects.map((o) => ({ id: o.id, size: o.size, color: o.color, p: o.pose.p, q: quatFromR(o.pose.R) })),
       scene: this.scene,
       cell: this.cell.snapshot(),
+      cameras: this.cameras,
     };
   }
 
@@ -218,7 +229,15 @@ export class Controller extends EventEmitter {
 
   // ------------------------------------------------------------ 그리퍼
   gripperCmd(close) {
-    if (this.gripper.kind === 'none' || this.gripper.kind === 'torch' || this.gripper.kind === 'spindle') return;
+    // 파지 기능이 없는 툴(없음/용접 토치/스핀들): 닫기 DO 를 툴 ON/OFF 로 보고 닫힘·열림 피드백 DI 만 응답.
+    // (피드백이 없으면 그리퍼용 프로그램이 WAIT DI 에서 최대 대기 시간 초과로 멈춤) 공작물은 집지 않음
+    if (this.gripper.kind === 'none' || this.gripper.kind === 'torch' || this.gripper.kind === 'spindle') {
+      if (this.grip.closed === close) return;
+      this.grip.closed = close;
+      if (close) this.log('gripper', `${this.gripper.name}: 공작물을 집을 수 없는 툴 — 닫기 신호는 툴 ON 으로 처리 (피드백 DI 만 응답)`);
+      this.emitState();
+      return;
+    }
     this.grip.closed = close;
     if (close) {
       const obj = this.findGraspable();

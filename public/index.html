@@ -19,6 +19,7 @@
       <label>그리퍼 <select id="selGripper"></select></label>
     </div>
     <button id="btnProject" class="projbtn" title="프로젝트 저장/불러오기">📁 프로젝트</button>
+    <button id="btnChat" class="projbtn" title="Claude 채팅: 로봇 프로그램 생성·수정·검증">✦ Claude</button>
     <div class="hstat">
       <span id="stConn" class="pill off">연결 끊김</span>
       <span id="stServo" class="pill off">SERVO OFF</span>
@@ -38,6 +39,7 @@
         <button data-tab="tIO">I/O</button>
         <button data-tab="tComm">통신</button>
         <button data-tab="tCell">셀</button>
+        <button data-tab="tCamera">카메라</button>
       </nav>
 
       <section id="tRobot" class="tab active">
@@ -130,6 +132,7 @@
       </section>
 
       <section id="tCell" class="tab"><!-- public/js/cellPanel.js 가 채움 --></section>
+      <section id="tCamera" class="tab"><!-- public/js/cameraPanel.js 가 채움 --></section>
     </aside>
 
     <section id="view">
@@ -174,6 +177,8 @@
         <div id="cycDetail" class="cyc-detail hidden"></div>
       </div>
     </aside>
+
+    <aside id="chat"><!-- public/js/chatPanel.js 가 채움 --></aside>
   </main>
 
   <footer>
