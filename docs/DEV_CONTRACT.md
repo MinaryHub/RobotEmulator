@@ -1,6 +1,6 @@
 # 내부 개발 계약 (언어 모듈 / 통신 모듈)
 
-프로젝트: Node.js(ESM, 의존성 `ws`, `three`만) 기반 다제조사 산업용 로봇 에뮬레이터.
+프로젝트: Node.js 20+(ESM, 의존성 `ws`, `three`, `node-opcua`. 모두 순수 JS, OS 무관) 기반 다제조사 산업용 로봇 에뮬레이터.
 단위: 위치 mm, 각도 deg. 좌표계: 로봇 베이스 원점, Z 위쪽. 플랜지/툴 Z축 = 툴 진행 방향.
 
 ## 핵심 파일 (반드시 먼저 읽을 것)
@@ -53,3 +53,10 @@ export function start(ctrl, opts) → Promise<{ name, proto, port, close() }>
 ```
 - 로그는 `ctrl.log('comm', '[YASKAWA-HSE] ...')` 형식.
 - 포트 바인딩 실패 시 예외 대신 `ctrl.log` 로 알리고 `port: null` 반환.
+
+## 플랫폼 무관 규칙 (Windows · macOS · Linux)
+- 파일 경로는 `path.join` / `path.resolve` 로 만들고, 기준 경로는 `import.meta.url` 에서 구한다 (현재 작업 디렉터리에 의존하지 않음).
+- 셸 명령·OS 전용 도구(`rm`, `cp`, PowerShell 등)를 호출하지 않는다. 네이티브 빌드가 필요한 패키지는 추가하지 않는다.
+- 텍스트 입력은 CRLF / LF / CR 모두 허용한다 (`text.replace(/\r\n?/g, '\n')`).
+- 1024 미만 포트는 Linux/macOS 에서 권한이 필요하므로 `fallbackPort` 를 둔다. 바인딩 주소는 `opts.host` 를 따른다.
+- 테스트는 `test/<이름>.test.js`, 종료 코드 0/1. 병렬 실행되므로 다른 테스트와 겹치지 않는 고정 포트(또는 0)를 쓴다.

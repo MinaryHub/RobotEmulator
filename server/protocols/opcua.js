@@ -53,6 +53,7 @@ export async function start(ctrl, opts = {}) {
 
   const server = new OPCUAServer({
     port,
+    ...(opts.host && opts.host !== '0.0.0.0' && opts.host !== '::' ? { host: opts.host } : {}),
     resourcePath: RESOURCE_PATH,
     serverCertificateManager,
     nodeset_filename: [nodesets.standard],

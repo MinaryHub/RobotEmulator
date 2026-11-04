@@ -274,7 +274,7 @@ function compile(files, main, ctrl) {
 function compileJob(prog, proc, text, needJob, ctrl) {
   const file = proc.file;
   const code = proc.code;
-  const lines = String(text).replace(/\r\n/g, '\n').split('\n');
+  const lines = String(text).replace(/\r\n?/g, '\n').split('\n');
   const blocks = [];
   const fixups = [];
   const locals = new Set();
