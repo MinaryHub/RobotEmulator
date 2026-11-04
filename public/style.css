@@ -113,6 +113,9 @@ h3 small { text-transform: none; letter-spacing: 0; font-weight: 400; }
 .cmsg.err { color: #ff8a8d; }
 .prog-ctl { display: flex; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--line); flex-wrap: wrap; }
 .prog-ctl button { padding: 6px 10px; }
+.prog-ctl .speed { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted, #9aa4af); }
+.prog-ctl .speed select { padding: 5px 6px; font-weight: 600; }
+.prog-ctl .speed select.fast { border-color: #f0a020; color: #f0a020; }
 
 .editor { display: flex; height: 100%; font-family: var(--mono); font-size: 13px; line-height: 19px; background: #0f1215; }
 .editor .gutter { width: 46px; overflow: hidden; color: #4d5866; text-align: right; padding: 8px 8px 8px 0; user-select: none; background: #0c0e11; border-right: 1px solid #1f242b; }

@@ -138,6 +138,7 @@ function renderCycle(st) {
   const last = cy.last;
   $('#cycNow').textContent = cy.elapsed != null ? `${cy.elapsed.toFixed(2)} s ▶` : last ? `${last.total.toFixed(2)} s` : '-';
   if (document.activeElement !== $('#chkBlend')) $('#chkBlend').checked = st.blendEnabled !== false;
+  syncSpeed(st.timeScale ?? 1);
   const sig = last ? last.at : 0;
   if (app.cycSig === sig) return;
   app.cycSig = sig;
@@ -157,6 +158,20 @@ function renderCycle(st) {
   }));
 }
 $('#chkAutoScene').onchange = (e) => cmd('autoResetScene', { on: e.target.checked });
+// 배속 표시: 목록에 없는 값(외부 API 로 지정)은 임시 항목으로 표시
+function syncSpeed(v) {
+  const sel = $('#selSpeed');
+  if (document.activeElement === sel) return;
+  let opt = [...sel.options].find((o) => Math.abs(Number(o.value) - v) < 1e-9);
+  if (!opt) {
+    sel.querySelector('option[data-custom]')?.remove();
+    opt = new Option(`×${+v.toFixed(2)}`, String(v));
+    opt.dataset.custom = '1';
+    sel.add(opt);
+  }
+  sel.value = opt.value;
+  sel.classList.toggle('fast', v !== 1);
+}
 $('#chkBlend').onchange = (e) => cmd('blend', { on: e.target.checked });
 $('#btnCycDetail').onclick = (e) => { const d = $('#cycDetail'); d.classList.toggle('hidden'); e.target.textContent = d.classList.contains('hidden') ? '상세 ▾' : '상세 ▴'; };
 
@@ -182,7 +197,7 @@ function renderPose(st, model) {
 function renderProgram(st) {
   const p = st.program;
   const cur = p.current;
-  $('#ovProg').textContent = `프로그램 ${p.main ?? '-'}\n상태 ${p.status.toUpperCase()}${st.held ? ' (HOLD)' : ''}\n${cur ? `${cur.proc ?? ''} ${cur.file ?? ''}:${cur.line ?? ''}` : ''}\n사이클 ${p.cycle}  OV ${st.override}%`;
+  $('#ovProg').textContent = `프로그램 ${p.main ?? '-'}\n상태 ${p.status.toUpperCase()}${st.held ? ' (HOLD)' : ''}\n${cur ? `${cur.proc ?? ''} ${cur.file ?? ''}:${cur.line ?? ''}` : ''}\n사이클 ${p.cycle}  OV ${st.override}%${(st.timeScale ?? 1) !== 1 ? `  ×${st.timeScale}` : ''}`;
   const bpPrefix = `${app.openFile}:`;
   editor.setBreakpoints((st.breakpoints || []).filter((b) => b.startsWith(bpPrefix)).map((b) => Number(b.slice(bpPrefix.length))));
   const running = p.status === 'running' || p.status === 'paused';
@@ -461,6 +476,19 @@ document.addEventListener('keydown', (e) => {
   else $('#btnStart').onclick();
 });
 $('#btnReset').onclick = () => cmd('reset');
+
+// 배속 (시뮬레이션 시간 배율). 단축키 - / + (= 키 포함)
+const SPEEDS = [...document.querySelectorAll('#selSpeed option')].map((o) => Number(o.value));
+$('#selSpeed').onchange = (e) => { cmd('timeScale', { value: Number(e.target.value) }); e.target.blur(); };
+document.addEventListener('keydown', (e) => {
+  if (!['-', '=', '+'].includes(e.key) || e.ctrlKey || e.altKey || e.metaKey || !app.st) return;
+  if (e.target.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"])') || document.querySelector('dialog[open]')) return;
+  e.preventDefault();
+  const cur = app.st.timeScale ?? 1;
+  const v = e.key === '-' ? [...SPEEDS].reverse().find((x) => x < cur - 1e-9) : SPEEDS.find((x) => x > cur + 1e-9);
+  if (v === undefined) return;
+  cmd('timeScale', { value: v });
+});
 
 // ---------------------------------------------------------------- 티칭: 현재 위치를 제조사 문법으로 삽입
 $('#btnTeach').onclick = () => {

@@ -28,7 +28,7 @@ export class ProjectStore {
       robotId: c.robot.id,
       gripper: c.gripper.custom ? { custom: { ...c.gripper } } : { id: c.gripper.id },
       gripperIO: { ...c.gripperIO },
-      settings: { override: c.override, mode: c.mode, blendEnabled: c.blendEnabled, collisionMode: c.collisionMode, autoResetScene: c.autoResetScene },
+      settings: { override: c.override, timeScale: c.timeScale, mode: c.mode, blendEnabled: c.blendEnabled, collisionMode: c.collisionMode, autoResetScene: c.autoResetScene },
       breakpoints: [...(c.breakpoints || [])],
       vendors,
       cell: c.cell?.getLayout ? c.cell.getLayout() : null,
@@ -64,6 +64,7 @@ export class ProjectStore {
     Object.assign(c.gripperIO, p.gripperIO || {});
     const st = p.settings || {};
     if (st.override) c.setOverride(st.override);
+    if (st.timeScale) c.setTimeScale(st.timeScale);
     if (st.mode) c.setMode(st.mode);
     if (st.blendEnabled !== undefined) c.blendEnabled = !!st.blendEnabled;
     if (st.collisionMode) c.setCollisionMode?.(st.collisionMode);

@@ -14,7 +14,7 @@
 //   T:NAME          변환값 → 내부 표현 {p:[x,y,z], R:3x3}
 //   J:#NAME         관절값 → 내부 표현 {j:[6 deg]}
 //   SIG:n           내부 신호(2001~2999) 상태
-//   TIMER:n         타이머 기준 시각(performance.now ms)
+//   TIMER:n         타이머 기준 시각(ctrl.simMs, 시뮬레이션 시계 ms)
 //   __AS_LOADED__:파일명   데이터 섹션 적용 표시 (파일 내용이 바뀌었을 때만 다시 적용 → HERE 로 티칭한 값 유지)
 //   로컬 변수(.name, 프로그램 인자)는 frame.locals 에 '.' 을 뗀 대문자 이름으로 저장 (예: .$s → '$S').
 //   프로그램 인자는 참조 전달: 실인자가 변수이면 RETURN 시 값을 되돌려 쓴다.
@@ -183,7 +183,7 @@ function callFn(vm, frame, fn, args) {
     }
     case 'TIMER': {
       const t0 = ctrl.regs.get('TIMER:' + Math.round(n(0)));
-      return (performance.now() - (t0 ?? 0)) / 1000;
+      return (ctrl.simMs - (t0 ?? 0)) / 1000;
     }
     case 'LEN': return s(0).length;
     case 'VAL': return Number(s(0)) || 0;
@@ -582,7 +582,7 @@ function compileProc(p, calls) {
         emit((vm, f) => {
           const n = num(ev(vm, f, e)), dt = te ? num(ev(vm, f, te)) : 0.2;
           sigSet(vm.ctrl, n, true);
-          setTimeout(() => { try { sigSet(vm.ctrl, n, false); } catch { /* 무시 */ } }, dt * 1000);
+          vm.ctrl.after(dt, () => sigSet(vm.ctrl, n, false));
         });
         return;
       }
@@ -590,7 +590,7 @@ function compileProc(p, calls) {
         const [a, t] = args(); const e = E(a), te = E(t ?? '0');
         emit((vm, f) => {
           const n = num(ev(vm, f, e)), dt = num(ev(vm, f, te));
-          setTimeout(() => { try { sigSet(vm.ctrl, n, n > 0); } catch { /* 무시 */ } }, dt * 1000);
+          vm.ctrl.after(dt, () => sigSet(vm.ctrl, n, n > 0));
         });
         return;
       }
@@ -621,7 +621,7 @@ function compileProc(p, calls) {
         const m = /^(.+?)=(?!=)(.+)$/.exec(rest);
         if (!m) throw new SyntaxErr('TIMER 번호 = 값 형식이어야 합니다', 0);
         const ne = E(m[1]), ve = E(m[2]);
-        emit((vm, f) => { vm.ctrl.regs.set('TIMER:' + Math.round(num(ev(vm, f, ne))), performance.now() - num(ev(vm, f, ve)) * 1000); });
+        emit((vm, f) => { vm.ctrl.regs.set('TIMER:' + Math.round(num(ev(vm, f, ne))), vm.ctrl.simMs - num(ev(vm, f, ve)) * 1000); });
         return;
       }
       case 'RESET': {

@@ -15,6 +15,9 @@ import { Cell } from './cell.js';
 
 const NIO = 512;
 const TICK_MS = 8;
+const SUB_MAX_S = 0.010;   // 배속 시 한 서브스텝의 최대 시뮬레이션 시간 (간섭 체크·블렌딩 정확도 유지)
+const MAX_SUB = 100;
+export const TIME_SCALE_MIN = 0.1, TIME_SCALE_MAX = 10;
 
 export class Controller extends EventEmitter {
   constructor() {
@@ -54,6 +57,9 @@ export class Controller extends EventEmitter {
     this.setRobot('yaskawa-gp7');
     this._last = performance.now();
     this.simMs = 0;            // 시뮬레이션 시계 (HOLD 중 정지)
+    this.timeScale = 1;        // 배속: 시뮬레이션 시간 / 실제 시간 (모션·대기·타이머·주변기기 모두 적용, 조그는 실시간)
+    this._waiters = [];        // 시뮬레이션 시계 기준 대기/조건/타이머 (서브스텝마다 평가)
+    this._ticking = false;
     this._timer = setInterval(() => this.tick(), TICK_MS);
   }
 
@@ -163,7 +169,7 @@ export class Controller extends EventEmitter {
       servo: this.servo, mode: this.mode, override: this.override, held: this.held,
       moving: this.segs.length > 0 || !!this.jog, blendEnabled: this.blendEnabled,
       collision: this.collision, collisionMode: this.collisionMode, autoResetScene: this.autoResetScene,
-      breakpoints: [...this.breakpoints], simMs: Math.round(this.simMs),
+      breakpoints: [...this.breakpoints], simMs: Math.round(this.simMs), timeScale: this.timeScale,
       alarms: this.alarms,
       program: {
         main: this.main, files: [...this.files.keys()],
@@ -389,10 +395,83 @@ export class Controller extends EventEmitter {
     return true;
   }
 
+  // ------------------------------------------------------------ 시뮬레이션 시계
+  // 배속 1 이면 실시간. 실제 경과 시간 × timeScale 만큼 시뮬레이션을 진행하되,
+  // 한 번에 SUB_MAX_S 를 넘지 않도록 서브스텝으로 나누고 서브스텝 사이에 이벤트 루프를 양보한다
+  // (VM 이 다음 명령을 바로 넣을 수 있어 배속을 올려도 블렌딩·사이클 타임이 1배속과 같다).
+  setTimeScale(v) {
+    const x = Number(v);
+    if (!Number.isFinite(x) || x <= 0) return;
+    this.timeScale = Math.max(TIME_SCALE_MIN, Math.min(TIME_SCALE_MAX, x));
+    this.log('system', `배속 ×${+this.timeScale.toFixed(2)}`);
+    this.emitState();
+  }
+
+  // 시뮬레이션 시간 sec 동안 대기 (HOLD 중에는 시계가 멈춤). owner: abort 시 깨울 대상 식별용
+  sleep(sec, owner = null) {
+    return new Promise((res) => this._waiters.push({ until: this.simMs + Math.max(0, sec) * 1000, res, owner }));
+  }
+  // 조건이 참이 될 때까지 대기 → true, 시뮬레이션 시간 timeoutSec 초과 → false
+  waitFor(pred, timeoutSec = Infinity, owner = null) {
+    if (pred()) return Promise.resolve(true);
+    return new Promise((res) => this._waiters.push({ pred, until: this.simMs + timeoutSec * 1000, res, owner }));
+  }
+  // 시뮬레이션 시간 sec 후 fn 실행 (펄스 출력 등)
+  after(sec, fn) { this._waiters.push({ until: this.simMs + Math.max(0, sec) * 1000, fn }); }
+  // owner 의 대기를 모두 즉시 깨움 (프로그램 중단 시)
+  wakeWaiters(owner) {
+    const keep = [];
+    for (const w of this._waiters) {
+      if (owner && w.owner === owner) w.res(w.pred ? false : undefined);
+      else keep.push(w);
+    }
+    this._waiters = keep;
+  }
+  _processWaiters() {
+    if (!this._waiters.length) return;
+    const due = [];
+    this._waiters = this._waiters.filter((w) => {
+      let hit = false, val;
+      if (w.pred) { try { if (w.pred()) { hit = true; val = true; } } catch { hit = true; val = false; } }
+      if (!hit && this.simMs >= w.until) { hit = true; val = w.pred ? false : undefined; }
+      if (hit) due.push([w, val]);
+      return !hit;
+    });
+    for (const [w, val] of due) {
+      if (w.fn) { try { w.fn(); } catch { /* 무시 */ } }
+      else w.res(val);
+    }
+  }
+
   tick() {
+    if (this._ticking) return;            // 이전 틱의 서브스텝이 아직 진행 중
     const now = performance.now();
     const dt = Math.min(0.1, (now - this._last) / 1000);
     this._last = now;
+    let moved = false;
+    // 조그는 사람이 조작하므로 배속과 무관하게 실시간
+    if (this.jog && this.servo && !this.segs.length) {
+      if (now > this.jog.until) this.jog = null;
+      else { this.applyJog(dt); moved = true; this.updateHeld(); this.checkCollisionNow(); }
+    }
+    const simDt = dt * this.timeScale;
+    const n = Math.max(1, Math.min(MAX_SUB, Math.ceil(simDt / SUB_MAX_S - 1e-9)));
+    const finish = () => {
+      if (moved || this._dirty) { this._dirty = false; this.emit('state'); }
+    };
+    if (n === 1) { if (this._step(simDt)) moved = true; return finish(); }
+    this._ticking = true;
+    let i = 0;
+    const run = () => {
+      if (this._step(simDt / n)) moved = true;
+      if (++i < n) setImmediate(run);
+      else { this._ticking = false; finish(); }
+    };
+    run();
+  }
+
+  // 시뮬레이션 dt(초) 만큼 진행. 상태가 바뀌었으면 true
+  _step(dt) {
     if (!this.held) this.simMs += dt * 1000;
     let moved = false;
     if (this.segs.length && this.servo && !this.held) {
@@ -411,9 +490,6 @@ export class Controller extends EventEmitter {
       this.joints = q;
       while (this.segs.length && this.segs[0].t >= this.segs[0].duration) this.segs.shift();
       moved = true;
-    } else if (this.jog && this.servo) {
-      if (now > this.jog.until) this.jog = null;
-      else { this.applyJog(dt); moved = true; }
     }
     // 그리퍼 개폐 애니메이션 (전체 행정 0.4s)
     const g = this.grip;
@@ -431,10 +507,8 @@ export class Controller extends EventEmitter {
     }
     if (this.cell.tick(dt)) moved = true;   // 주변기기 (컨베이어/피더/센서/실린더/배출구)
     if (moved) { this.updateHeld(); this.checkCollisionNow(); }
-    if (moved || this._dirty) {
-      this._dirty = false;
-      this.emit('state');
-    }
+    this._processWaiters();
+    return moved;
   }
 
   applyJog(dt) {

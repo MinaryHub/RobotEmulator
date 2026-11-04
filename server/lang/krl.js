@@ -331,7 +331,7 @@ function sysSet(cx, u, v) {
 }
 const filterKeys = (v) => { const o = {}; for (const [k, x] of Object.entries(v || {})) if (k !== '$type') o[k] = x; return o; };
 
-function timerVal(t) { return t.stop ? t.v : t.v + (performance.now() - t.since); }
+function timerVal(t, now) { return t.stop ? t.v : t.v + (now - t.since); }
 
 function makeEnv(cx) {
   const { prog, ctrl } = cx;
@@ -360,7 +360,7 @@ function makeEnv(cx) {
           case 'do': return ctrl.getDO(n);
           case 'di': return ctrl.getDI(n);
           case 'an': return 0;
-          case 'timer': return Math.round(timerVal(cx.st.timers[n]));
+          case 'timer': return Math.round(timerVal(cx.st.timers[n], cx.ctrl.simMs));
           case 'timerstop': return cx.st.timers[n].stop;
           case 'timerflag': return false;
         }
@@ -443,12 +443,12 @@ function assignK(cx, node, value) {
         case 'do': cx.ctrl.setDO(n, truthy(value)); return;
         case 'di': cx.ctrl.setDI(n, truthy(value)); return;
         case 'an': return;
-        case 'timer': { const t = cx.st.timers[n]; t.v = Number(value); t.since = performance.now(); return; }
+        case 'timer': { const t = cx.st.timers[n]; t.v = Number(value); t.since = cx.ctrl.simMs; return; }
         case 'timerstop': {
           const t = cx.st.timers[n];
           const stop = truthy(value);
-          if (stop && !t.stop) { t.v = timerVal(t); t.stop = true; }
-          else if (!stop && t.stop) { t.since = performance.now(); t.stop = false; }
+          if (stop && !t.stop) { t.v = timerVal(t, cx.ctrl.simMs); t.stop = true; }
+          else if (!stop && t.stop) { t.since = cx.ctrl.simMs; t.stop = false; }
           return;
         }
         default: return;
@@ -1151,7 +1151,7 @@ const INSTR = {
     const before = c.ev(sigAst);
     assignK(c, sigAst, state);
     const ctrl = vm.ctrl;
-    setTimeout(() => { try { assignK(new Ctx(c.prog, ctrl, vm, f), sigAst, typeof before === 'boolean' ? before : !state); } catch { /* 무시 */ } }, dur * 1000);
+    ctrl.after(dur, () => assignK(new Ctx(c.prog, ctrl, vm, f), sigAst, typeof before === 'boolean' ? before : !state));
   },
   MSGNOTIFY: MSG('[MSG] '), MSGQUIT: MSG('[QUIT] '), MSGSTATE: MSG('[STATE] '), MSGDIALOG: MSG('[DIALOG] '),
   MSGLOOP: MSG('[MSG] '), MSG_NOTIFY: MSG('[MSG] '),

@@ -106,6 +106,7 @@ async function handleCmd(m) {
     case 'servo': ctrl.setServo(m.on); return;
     case 'mode': ctrl.setMode(m.mode); return;
     case 'override': ctrl.setOverride(m.value); return;
+    case 'timeScale': ctrl.setTimeScale(m.value); return;
     case 'jog': ctrl.startJog(m.jog); return;
     case 'jogStop': ctrl.stopJog(); return;
     case 'setJoints': return { ok: ctrl.setJointsDirect(m.joints) };
