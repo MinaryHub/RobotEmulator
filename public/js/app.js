@@ -447,6 +447,19 @@ $('#btnStart').onclick = async () => {
 $('#btnStep').onclick = async () => { await saveAll(); if (!app.st.servo) await cmd('servo', { on: true }); cmd('step'); };
 $('#btnHold').onclick = () => cmd(app.st.held ? 'resume' : 'hold');
 $('#btnStop').onclick = () => cmd('stop');
+
+// Space: 재생/일시정지 — 정지·완료 상태면 시작, 실행 중이면 홀드, 홀드 중이면 재개
+// (에디터·채팅·입력칸에서는 공백 입력, 대화상자가 열려 있으면 무시)
+document.addEventListener('keydown', (e) => {
+  if (e.code !== 'Space' || e.repeat || e.ctrlKey || e.altKey || e.metaKey || e.shiftKey || !app.st) return;
+  const t = e.target;
+  if (t.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"])') || document.querySelector('dialog[open]')) return;
+  e.preventDefault();
+  if (t.tagName === 'BUTTON') t.blur(); // 마지막으로 누른 버튼이 Space 로 다시 눌리지 않도록
+  const st = app.st;
+  if (st.program.status === 'running' && !st.held) cmd('hold');
+  else $('#btnStart').onclick();
+});
 $('#btnReset').onclick = () => cmd('reset');
 
 // ---------------------------------------------------------------- 티칭: 현재 위치를 제조사 문법으로 삽입

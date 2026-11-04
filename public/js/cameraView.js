@@ -9,6 +9,7 @@ import { box, cylZ } from './gripperMesh.js';
 
 export const HELPER_LAYER = 1;
 const DEG = Math.PI / 180;
+const CLIP_NEAR = 0.01, CLIP_FAR = 30; // 카메라 영상 렌더링 클리핑 (m)
 const FLIP = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI); // 카메라 +Z 광축 → three.js -Z 시선
 
 const POST_VS = 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }';
@@ -16,7 +17,7 @@ const POST_FS = `
 precision highp float;
 varying vec2 vUv;
 uniform sampler2D tColor; uniform sampler2D tDepth;
-uniform float near; uniform float far; uniform int mode; uniform float cross;
+uniform float near; uniform float far; uniform float rmin; uniform float rmax; uniform int mode; uniform float cross;
 vec3 toSRGB(vec3 c){ c = clamp(c, 0.0, 1.0); return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }
 // Turbo 컬러맵 근사 (Google, Apache-2.0 다항식)
 vec3 turbo(float x){
@@ -35,7 +36,8 @@ void main(){
   if (mode == 2) {
     float d = texture2D(tDepth, vUv).x;
     float dist = (near * far) / (far - d * (far - near));  // 광축 방향 거리 (m)
-    c = d >= 1.0 ? vec3(0.0) : turbo(1.0 - (dist - near) / (far - near)); // 가까울수록 빨강
+    // 측정 범위(rmin~rmax) 밖은 실제 깊이 카메라처럼 무효(검정). 가까울수록 빨강
+    c = (d >= 1.0 || dist < rmin || dist > rmax) ? vec3(0.0) : turbo(1.0 - (dist - rmin) / (rmax - rmin));
   } else {
     c = toSRGB(texture2D(tColor, vUv).rgb);
     if (mode == 1) c = vec3(dot(c, vec3(0.299, 0.587, 0.114)));
@@ -67,7 +69,7 @@ export class CameraRig {
 
     this.post = new THREE.ShaderMaterial({
       vertexShader: POST_VS, fragmentShader: POST_FS, depthTest: false, depthWrite: false,
-      uniforms: { tColor: { value: null }, tDepth: { value: null }, near: { value: 0.1 }, far: { value: 1 }, mode: { value: 0 }, cross: { value: 1 } },
+      uniforms: { tColor: { value: null }, tDepth: { value: null }, near: { value: 0.1 }, far: { value: 1 }, rmin: { value: 0.1 }, rmax: { value: 1 }, mode: { value: 0 }, cross: { value: 1 } },
     });
     this.postScene = new THREE.Scene();
     const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.post);
@@ -136,22 +138,63 @@ export class CameraRig {
     group.add(frustum);
     this.mounts.add(group);
 
-    const cam = new THREE.PerspectiveCamera(this._vfov(def), def.res[0] / def.res[1], def.range[0] / 1000, def.range[1] / 1000);
+    // 렌더링 클리핑은 측정 범위와 분리: near 를 측정 최소 거리로 두면 그보다 가까운 물체가 잘려 메시 너머가 비쳐 보임.
+    // 실제 카메라처럼 가까운 물체도 가리도록 near = 10mm, far = 측정 최대 거리와 30m 중 큰 값 (24bit 깊이에서 30m 오차 ≈ 5mm)
+    const cam = new THREE.PerspectiveCamera(this._vfov(def), def.res[0] / def.res[1], CLIP_NEAR, Math.max(CLIP_FAR, def.range[1] / 1000));
     cam.layers.set(0);
     const rt = new THREE.WebGLRenderTarget(4, 4, { depthTexture: new THREE.DepthTexture(4, 4), samples: 0 });
 
     const frame = document.createElement('div');
     frame.className = 'camframe';
-    frame.innerHTML = `<div class="hd"><span class="nm"></span><span class="inf"></span>
-      <button data-a="snap" title="카메라 해상도로 PNG 저장">⭳</button><button data-a="big" title="크게 보기">⤢</button></div>
+    frame.innerHTML = `<div class="rz" title="드래그: 크기 조절 · 더블클릭: 기본 크기"></div>
+      <div class="hd"><span class="nm"></span><span class="inf"></span>
+      <button data-a="snap" title="카메라 해상도로 PNG 저장">⭳</button><button data-a="big" title="크게 보기 / 기본 크기">⤢</button><button data-a="close" title="미리보기 닫기 (카메라 탭의 '영상' 체크로 다시 열기)">✕</button></div>
       <div class="img" style="aspect-ratio:${def.res[0]} / ${def.res[1]}"><div class="legend" hidden></div></div>`;
-    frame.querySelector('[data-a="big"]').onclick = () => frame.classList.toggle('big');
-    frame.querySelector('[data-a="snap"]').onclick = () => this.snapshot(cfg.id);
+    const id = cfg.id;
+    frame.querySelector('[data-a="big"]').onclick = () => {
+      if (frame.style.width) this._setWidth(frame, id, null); else frame.classList.toggle('big');
+    };
+    frame.querySelector('[data-a="snap"]').onclick = () => this.snapshot(id);
+    frame.querySelector('[data-a="close"]').onclick = () => this.onClose?.(id);
+    this._bindResize(frame, id, def);
+    try { const w = Number(localStorage.getItem(`camW:${id}`)); if (w > 0) this._setWidth(frame, id, w); } catch { /* 저장소 사용 불가 */ }
     // 3D 뷰 이름표 (HTML — 확대/축소와 무관하게 같은 크기, 카메라 영상에는 나오지 않음)
     const label = document.createElement('div');
     label.className = 'camlabel';
     this.host.appendChild(label);
     return { cfg, def, group, frustum, cam, rt, frame, label };
+  }
+
+  // 미리보기 폭 지정 (null → 기본 크기). 높이는 카메라 화면비로 따라감. 폭은 브라우저에 기억
+  _setWidth(frame, id, w) {
+    frame.classList.remove('big');
+    frame.style.width = w ? `${Math.round(w)}px` : '';
+    frame.style.maxWidth = w ? '100%' : '';
+    try { w ? localStorage.setItem(`camW:${id}`, String(Math.round(w))) : localStorage.removeItem(`camW:${id}`); } catch { /* 무시 */ }
+  }
+
+  // 왼쪽 위 모서리 드래그로 크기 조절 (프레임은 오른쪽 아래 기준이라 왼쪽·위로 끌면 커짐)
+  _bindResize(frame, id, def) {
+    const h = frame.querySelector('.rz');
+    const aspect = def.res[0] / def.res[1];
+    h.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      h.setPointerCapture(e.pointerId);
+      const x0 = e.clientX, y0 = e.clientY, w0 = frame.getBoundingClientRect().width;
+      const maxW = Math.min(this.host.clientWidth - 16, (this.host.clientHeight - 16 - 26) * aspect); // 26 = 제목줄
+      frame.classList.add('resizing');
+      const move = (ev) => {
+        const byX = w0 - (ev.clientX - x0), byY = w0 - (ev.clientY - y0) * aspect;
+        const w = Math.abs(byX - w0) >= Math.abs(byY - w0) ? byX : byY;
+        this._setWidth(frame, id, Math.max(160, Math.min(maxW, w)));
+      };
+      const up = () => { h.removeEventListener('pointermove', move); h.removeEventListener('pointerup', up); h.removeEventListener('pointercancel', up); frame.classList.remove('resizing'); };
+      h.addEventListener('pointermove', move);
+      h.addEventListener('pointerup', up);
+      h.addEventListener('pointercancel', up);
+    });
+    h.addEventListener('dblclick', () => this._setWidth(frame, id, null));
   }
 
   _vfov(def) { return 2 * Math.atan(Math.tan(def.hfov * DEG / 2) * def.res[1] / def.res[0]) / DEG; }
@@ -219,6 +262,7 @@ export class CameraRig {
     const u = this.post.uniforms;
     u.tColor.value = c.rt.texture; u.tDepth.value = c.rt.depthTexture;
     u.near.value = c.cam.near; u.far.value = c.cam.far;
+    u.rmin.value = c.def.range[0] / 1000; u.rmax.value = c.def.range[1] / 1000;
     u.mode.value = { color: 0, mono: 1, depth: 2 }[c.cfg.mode] ?? 0;
   }
 

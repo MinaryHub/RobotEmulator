@@ -5,7 +5,7 @@
 // 라이브러리 항목
 //   res    : [폭, 높이] 픽셀 — 화면 비율과 스냅샷 해상도에 사용
 //   hfov   : 수평 화각 (deg)
-//   range  : [near, far] mm — 이 범위 밖은 보이지 않음(클리핑). 깊이 모드의 색 범위
+//   range  : [near, far] mm — 측정 범위. 깊이 모드에서 이 범위 밖은 무효(검정). 컬러/흑백 영상은 범위와 무관하게 가까운 물체도 보임
 //   modes  : 지원 렌더 모드 color | mono | depth (첫 항목이 기본)
 //   body   : 외형 상자 { w, h, d } (mm, 카메라 좌표 x·y·z), lens: { d, l } 렌즈 원통 (없으면 생략)
 //   mount  : 기본 장착 위치 flange | forearm | world

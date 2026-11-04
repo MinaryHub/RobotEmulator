@@ -40,6 +40,8 @@ export function initCameraPanel(opts) {
   $$('#camMount button').forEach((b) => (b.onclick = () => $$('#camMount button').forEach((x) => x.classList.toggle('active', x === b))));
   $$('#camLib .card').forEach((card) => (card.onclick = () => add(card.dataset.id)));
   $('#camCross').onchange = (e) => (ctx.view.cameras.cross = e.target.checked);
+  // 미리보기 ✕ → 해당 카메라 '영상' 표시 끔 (서버 저장 → 프로젝트에 유지)
+  ctx.view.cameras.onClose = (id) => send(list.map((c) => (c.id === id ? { ...c, view: false } : c)));
   $('#camLabels').onchange = (e) => (ctx.view.cameras.labels = e.target.checked);
   $('#camFrAll').onchange = (e) => send(list.map((c) => ({ ...c, frustum: e.target.checked })));
 }
