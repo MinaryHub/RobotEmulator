@@ -55,7 +55,7 @@ export const TOOLS = [
       const st = ctrl.snapshot();
       const r = ctrl.robot, v = VENDORS[r.vendor];
       return {
-        robot: { id: r.id, vendor: r.vendor, vendorName: v.name, model: r.name, controller: v.controller, payload_kg: r.payload, reach_mm: r.reach, jointLimits_deg: r.limits, maxSpeed_degps: r.maxSpeed, jointNames: v.jointNames, poseNames: v.poseNames },
+        robot: { id: r.id, vendor: r.vendor, vendorName: v.name, model: r.name, controller: v.controller, payload_kg: r.payload, ratedPayload_kg: r.ratedPayload ?? null, reach_mm: r.reach, jointLimits_deg: r.limits, maxSpeed_degps: r.maxSpeed, jointNames: v.jointNames, poseNames: v.poseNames },
         language: { name: v.language, ext: v.ext },
         gripper: { id: ctrl.gripper.id, name: ctrl.gripper.name, kind: ctrl.gripper.kind, tcp_xyzrpy: ctrl.gripper.tcp, stroke_mm: ctrl.gripper.stroke ?? null, io: st.gripperIO, ioNote: 'close/open = 그리퍼 닫기/열기 DO 번호, fbClosed/fbOpen/fbPart = 닫힘/열림/공작물 감지 DI 번호' },
         pose: { joints_deg: st.joints.map(r2), tcp_vendor: st.tcp.map(r2), tcpNote: '제조사 표기 (yaskawa/hyundai: X,Y,Z,Rx,Ry,Rz / kuka: X,Y,Z,A,B,C / kawasaki: X,Y,Z,O,A,T / abb: x,y,z,q1..q4)' },
