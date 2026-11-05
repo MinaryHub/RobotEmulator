@@ -5,6 +5,8 @@
 - 각 제조사 로봇 언어로 작성한 프로그램을 그대로 실행하고, 3D로 동작을 확인할 수 있습니다.
 - 각 제조사의 외부 통신 인터페이스를 지원하므로 PLC·PC 상위 프로그램을 실제 로봇 없이 개발하고 시험할 수 있습니다.
 
+**문서**: [사용자 매뉴얼](docs/MANUAL.md) · [SI 현장 대상 개선 로드맵](docs/ROADMAP-SI.md) · [개발 규약](docs/DEV_CONTRACT.md)
+
 ## 실행
 
 ```bash
@@ -235,5 +237,7 @@ server/protocols/  통신 서버 5종 + 필드버스(Modbus TCP, OPC UA)
 public/      웹 UI (Three.js 3D 뷰, 에디터, 패널)
 tools/       샘플 통신 클라이언트, 예제 내보내기
 test/        자동 테스트 (run-all.js 가 *.test.js 를 병렬 실행)
+docs/MANUAL.md        사용자 매뉴얼
+docs/ROADMAP-SI.md    SI 현장(PLC·상위 PC 개발자) 대상 개선 로드맵
 docs/DEV_CONTRACT.md  언어·통신 모듈 개발 규약 (새 제조사·언어 추가 시 참고)
 ```
