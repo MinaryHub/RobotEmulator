@@ -12,7 +12,7 @@
 </head>
 <body>
   <header>
-    <div class="brand"><span class="logo">◆</span> 산업용 로봇 에뮬레이터</div>
+    <div class="brand" title="산업용 로봇 에뮬레이터"><span class="logo">◆</span><span class="bt"> 산업용 로봇 에뮬레이터</span></div>
     <div class="hsel">
       <label>제조사 <select id="selVendor"></select></label>
       <label>모델 <select id="selRobot"></select></label>
@@ -20,8 +20,10 @@
     </div>
     <button id="btnProject" class="projbtn" title="프로젝트 저장/불러오기">📁 프로젝트</button>
     <button id="btnChat" class="projbtn" title="Claude 채팅: 로봇 프로그램 생성·수정·검증">✦ Claude</button>
+    <button id="btnEstop" class="estop" title="비상정지 (정지 범주 0: 즉시 정지 + 서보 OFF). 누르면 잠김 — 다시 눌러 해제 후 알람 리셋">비상정지</button>
     <div class="hstat">
       <span id="stConn" class="pill off">연결 끊김</span>
+      <span id="stEstop" class="pill alarm hidden" title="외부 비상정지 입력 (시스템 I/O)">E-STOP</span>
       <span id="stServo" class="pill off">SERVO OFF</span>
       <span id="stMode" class="pill">TEACH</span>
       <span id="stProg" class="pill">IDLE</span>
@@ -37,6 +39,7 @@
         <button data-tab="tGripper">그리퍼</button>
         <button data-tab="tJog">조그</button>
         <button data-tab="tIO">I/O</button>
+        <button data-tab="tSys">시스템 I/O</button>
         <button data-tab="tComm">통신</button>
         <button data-tab="tCell">셀</button>
         <button data-tab="tCamera">카메라</button>
@@ -52,7 +55,25 @@
         <div class="row">
           <label>모드</label>
           <div class="seg" id="segMode"><button data-v="TEACH">TEACH</button><button data-v="PLAY">PLAY</button><button data-v="REMOTE">REMOTE</button></div>
+          <div class="note" id="modeNote"></div>
         </div>
+        <h3>안전 · 인터록</h3>
+        <div class="row">
+          <label class="chk"><input type="checkbox" id="chkInterlock"> 모드 인터록</label>
+          <div class="note">외부 명령은 REMOTE 에서만, REMOTE 에서는 펜던트 시작 불가</div>
+        </div>
+        <div class="row safety-row">
+          <button id="btnFence" title="안전 펜스(도어) 열기/닫기 — 자동 운전 중 열리면 정지">안전 펜스: 닫힘</button>
+          <select id="selFenceStop" title="자동 운전 중 펜스가 열렸을 때 정지 방법">
+            <option value="stop1">펜스 열림 시: 정지 범주 1 (서보 OFF)</option>
+            <option value="stop2">펜스 열림 시: 정지 범주 2 (홀드)</option>
+          </select>
+        </div>
+        <div class="row safety-row">
+          <label class="chk"><input type="checkbox" id="chkReqEnable"> 조그 시 인에이블 스위치 필요</label>
+          <button id="btnEnable" title="인에이블 스위치 (3포지션 스위치 가운데 위치). 켜 두면 조그 가능">인에이블 OFF</button>
+        </div>
+        <div class="note" id="safetyNote"></div>
         <div class="row">
           <label>간섭 체크</label>
           <div class="seg" id="segColl"><button data-v="off">OFF</button><button data-v="warn">경고</button><button data-v="stop">정지</button></div>
@@ -116,12 +137,27 @@
       </section>
 
       <section id="tIO" class="tab">
-        <h3>디지털 출력 (DO) <small>클릭: 강제 출력</small></h3>
+        <div class="row io-page"><label>표시 범위</label><select id="ioPage"></select></div>
+        <h3>디지털 출력 (DO) <small>클릭: 강제 출력 · 우클릭/✎: 이름표</small></h3>
         <div id="ioDO" class="io"></div>
-        <h3>디지털 입력 (DI) <small>클릭: 입력 시뮬레이션</small></h3>
+        <h3>디지털 입력 (DI) <small>클릭: 입력 시뮬레이션 · 우클릭/✎: 이름표</small></h3>
         <div id="ioDI" class="io"></div>
-        <div class="row"><label>표시 범위</label><select id="ioPage"><option value="1">1-32</option><option value="33">33-64</option><option value="65">65-96</option><option value="97">97-128</option></select></div>
+        <div id="ioEdit" class="ioedit hidden">
+          <div class="hd"><b id="ioEditT"></b><span id="ioEditSys" class="dim"></span></div>
+          <input type="text" id="ioEditName" placeholder="이름 (예: CLAMP)" maxlength="40">
+          <input type="text" id="ioEditDesc" placeholder="설명 (예: 지그 클램프 닫기)" maxlength="120">
+          <div class="btns"><button id="ioEditSave" class="primary">저장</button><button id="ioEditDel">삭제</button><button id="ioEditCancel">취소</button></div>
+        </div>
+        <h3>I/O 이름표</h3>
+        <div class="row btns">
+          <button id="btnLblExport" title="사용자 이름표를 CSV (type,n,name,desc) 로 저장 — Excel 에서 편집 가능">이름표 CSV 내보내기</button>
+          <button id="btnLblImport" title="CSV 이름표로 전체 교체">CSV 가져오기</button>
+          <input type="file" id="lblFile" accept=".csv,text/csv" hidden>
+        </div>
+        <div class="note">이름표는 신호 타임라인에도 표시되고 프로젝트에 저장됩니다. 시스템 I/O 에 할당된 번호는 시스템 신호 이름이 우선 표시됩니다.</div>
       </section>
+
+      <section id="tSys" class="tab"><!-- public/js/sysioPanel.js 가 채움 --></section>
 
       <section id="tComm" class="tab">
         <h3>외부 통신 인터페이스</h3>
@@ -233,6 +269,7 @@
     </form>
   </dialog>
 
+  <div id="toast" role="status" aria-live="polite"></div>
   <script type="module" src="/js/app.js"></script>
 </body>
 </html>

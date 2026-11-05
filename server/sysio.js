@@ -234,15 +234,15 @@ export class SystemIO {
   // 신호 목록(번호 포함) 재구성
   _build() {
     const d = this.def;
-    let i = 0, o = 0;
-    this.inputs = d.inputs.map((s) => {
+    // 기본 번호 = 시작 번호 + 프리셋 내 순서 (개별 재지정해도 다른 신호의 기본 번호는 바뀌지 않음)
+    this.inputs = d.inputs.map((s, i) => {
       const key = sigKey(s);
       const activeLow = this.logic.in[key] ?? !!s.activeLow;
-      return { ...s, key, dir: 'in', activeLow, n: this.assign.in[key] ?? this.diBase + i++ };
+      return { ...s, key, dir: 'in', activeLow, n: this.assign.in[key] ?? this.diBase + i };
     });
-    this.outputs = d.outputs.map((s) => {
+    this.outputs = d.outputs.map((s, i) => {
       const key = sigKey(s);
-      return { ...s, key, dir: 'out', n: this.assign.out[key] ?? this.doBase + o++ };
+      return { ...s, key, dir: 'out', n: this.assign.out[key] ?? this.doBase + i };
     });
     this._byDI = new Map();
     for (const s of this.inputs) { if (!this._byDI.has(s.n)) this._byDI.set(s.n, []); this._byDI.get(s.n).push(s); }

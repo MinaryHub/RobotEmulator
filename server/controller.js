@@ -252,6 +252,12 @@ export class Controller extends EventEmitter {
     this.emitState();
     return false;
   }
+  // 로그 없이 거부 기록만 (호출부에서 이미 사유를 로그한 경우) + 상태 전파
+  _noteReject(op, source, r) {
+    this.lastReject = { op, source, code: r.code, reason: r.reason, t: Date.now() };
+    this.emit('reject', this.lastReject);
+    this.emitState();
+  }
   // 판정 후 거부면 기록하고 false, 허용이면 true
   allow(op, source) {
     const r = this.checkCommand(op, source);
@@ -344,7 +350,7 @@ export class Controller extends EventEmitter {
   // ------------------------------------------------------------ 서보/모드/오버라이드
   setServo(on, source = 'internal') {
     if (on && !this.allow('servoOn', source)) return false;
-    if (on && this.alarms.length) { this.log('system', '알람 상태에서는 서보 ON 할 수 없습니다. 알람 리셋 필요'); this.lastReject = { op: 'servoOn', source, ...REJECT.ALARM, t: Date.now() }; return false; }
+    if (on && this.alarms.length) { this.log('system', '알람 상태에서는 서보 ON 할 수 없습니다. 알람 리셋 필요'); this._noteReject('servoOn', source, REJECT.ALARM); return false; }
     this.servo = !!on;
     if (!on) this.cancelMotion();
     this.log('system', `서보 ${on ? 'ON' : 'OFF'}`);
@@ -788,8 +794,8 @@ export class Controller extends EventEmitter {
 
   async start({ step = false, source = 'internal' } = {}) {
     if (!this.allow('start', source)) return false;
-    if (this.alarms.length) { this.log('system', '알람 리셋 후 시작하십시오'); this.lastReject = { op: 'start', source, ...REJECT.ALARM, t: Date.now() }; return false; }
-    if (!this.servo) { this.log('system', '서보 OFF — 시작 불가'); this.lastReject = { op: 'start', source, ...REJECT.SERVO_OFF, t: Date.now() }; return false; }
+    if (this.alarms.length) { this.log('system', '알람 리셋 후 시작하십시오'); this._noteReject('start', source, REJECT.ALARM); return false; }
+    if (!this.servo) { this.log('system', '서보 OFF — 시작 불가'); this._noteReject('start', source, REJECT.SERVO_OFF); return false; }
     if (this.vm && this.vm.status === 'running' && this.held) { this.resume(); return true; }
     if (this.vm && this.vm.status === 'paused') { this.vm.stepResume(step); return true; }
     if (this.vm?.status === 'running') return true;
@@ -814,7 +820,7 @@ export class Controller extends EventEmitter {
   resume(source = 'internal') {
     if (!this.held) return true;
     if (!this.allow('resume', source)) return false;
-    if (!this.servo && (this.segment || this.vm?.status === 'running')) { this.log('system', '재개 불가: 서보 OFF'); this.lastReject = { op: 'resume', source, ...REJECT.SERVO_OFF, t: Date.now() }; return false; }
+    if (!this.servo && (this.segment || this.vm?.status === 'running')) { this.log('system', '재개 불가: 서보 OFF'); this._noteReject('resume', source, REJECT.SERVO_OFF); return false; }
     if (this.held) { this.heldMs += performance.now() - this._heldSince; this.held = false; this.emit('resume'); this.log('system', '재개'); this.emitState(); }
     return true;
   }
