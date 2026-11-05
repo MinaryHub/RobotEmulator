@@ -37,7 +37,17 @@ ok((await callTool(ctrl, 'read_program', { name: 'NONE.JBI' })).isError, '없는
 const srv = http.createServer((req, res) => handleMcp(ctrl, req, res));
 await new Promise((res) => srv.listen(0, '127.0.0.1', res));
 const url = `http://127.0.0.1:${srv.address().port}/mcp`;
-const rpc = (body, headers = {}) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...headers }, body: JSON.stringify(body) });
+// fetch 대신 keep-alive 없는 http.request — fetch 의 유휴 소켓이 남은 채 process.exit 하면 Windows 에서 간헐적으로 libuv assert 로 종료됨
+const post = (raw, headers = {}) => new Promise((resolve, reject) => {
+  const req = http.request(url, { method: 'POST', agent: false, headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Connection: 'close', ...headers } }, (r) => {
+    let data = '';
+    r.on('data', (c) => (data += c));
+    r.on('end', () => resolve({ status: r.statusCode, json: async () => JSON.parse(data) }));
+  });
+  req.on('error', reject);
+  req.end(raw);
+});
+const rpc = (body, headers) => post(JSON.stringify(body), headers);
 let res = await rpc({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } } });
 let body = await res.json();
 ok(res.status === 200 && body.result.protocolVersion === '2025-06-18' && body.result.capabilities.tools, 'MCP initialize');
@@ -53,11 +63,9 @@ body = await (await rpc({ jsonrpc: '2.0', id: 5, method: 'nope' })).json();
 ok(body.error?.code === -32601, 'MCP 모르는 메서드 → -32601');
 res = await rpc({ jsonrpc: '2.0', id: 6, method: 'ping' }, { Origin: 'http://evil.example' });
 ok(res.status === 403, 'MCP 외부 Origin 거부');
-res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{bad' });
+res = await post('{bad');
 ok(res.status === 400 && (await res.json()).error.code === -32700, 'MCP 잘못된 JSON → -32700');
-srv.closeAllConnections();
 srv.close();
-await new Promise((r) => setTimeout(r, 100)); // keep-alive 소켓 정리 (Windows 종료 시 libuv assert 방지)
 
 // 3) 채팅 루프 (가짜 Claude 클라이언트: 1턴 도구 호출 → 2턴 답변)
 function fakeStream(content, stop_reason) {
