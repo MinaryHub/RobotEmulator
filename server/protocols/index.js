@@ -30,7 +30,30 @@ export const PROTOCOLS = [
   { key: 'opcua', mod: opcua, vendor: null, optional: true, defaults: { port: 4840 } },
 ];
 
-export async function startAll(ctrl, config = {}) {
+// 통신 모듈에 넘기는 컨트롤러 뷰: 운전 관련 명령에 출처 'ext'(외부)를 붙여 모드 인터록·안전 판정을 받게 한다.
+//  ctrl.allow(op) / ctrl.checkCommand(op) 도 기본 출처가 'ext' → 각 프로토콜이 자체 오류 형식으로 거부 사유를 응답할 수 있음.
+export function externalView(ctrl) {
+  const wrap = {
+    start: (o = {}) => ctrl.start({ ...o, source: 'ext' }),
+    setServo: (on) => ctrl.setServo(on, on ? 'ext' : 'internal'),
+    resume: () => ctrl.resume('ext'),
+    setMode: (m) => ctrl.setMode(m, 'ext'),
+    move: (cmd) => ctrl.move({ ...cmd, source: 'ext' }),
+    allow: (op, src = 'ext') => ctrl.allow(op, src),
+    checkCommand: (op, src = 'ext') => ctrl.checkCommand(op, src),
+  };
+  return new Proxy(ctrl, {
+    get(t, k) {
+      if (Object.prototype.hasOwnProperty.call(wrap, k)) return wrap[k];
+      const v = Reflect.get(t, k, t);
+      return typeof v === 'function' ? v.bind(t) : v;
+    },
+    set(t, k, v) { return Reflect.set(t, k, v, t); },
+  });
+}
+
+export async function startAll(ctrl0, config = {}) {
+  const ctrl = externalView(ctrl0);
   const out = [];
   for (const p of PROTOCOLS) {
     if (p.optional && !config[p.key]) continue;

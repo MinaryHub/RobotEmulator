@@ -9,6 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { Controller, ROBOTS, GRIPPERS, VENDORS } from './controller.js';
+import { SystemIO } from './sysio.js';
 import { CAMERAS } from '../shared/cameras.js';
 import { ProjectStore } from './project.js';
 import { listVars, Timeline } from './inspect.js';
@@ -103,18 +104,18 @@ async function handleCmd(m) {
     case 'setGripper': ctrl.setGripper(m.id); return;
     case 'customGripper': ctrl.setCustomGripper(m.def); return;
     case 'cameras': ctrl.setCameras(m.list); return;
-    case 'servo': ctrl.setServo(m.on); return;
-    case 'mode': ctrl.setMode(m.mode); return;
+    case 'servo': return { ok: ctrl.setServo(m.on, 'ui') !== false, reject: ctrl.lastReject };
+    case 'mode': return { ok: ctrl.setMode(m.mode, 'ui') !== false };
     case 'override': ctrl.setOverride(m.value); return;
     case 'timeScale': ctrl.setTimeScale(m.value); return;
-    case 'jog': ctrl.startJog(m.jog); return;
+    case 'jog': ctrl.startJog(m.jog, 'ui'); return;
     case 'jogStop': ctrl.stopJog(); return;
     case 'setJoints': return { ok: ctrl.setJointsDirect(m.joints) };
     case 'moveJoints':
-      ctrl.move({ kind: 'J', target: { joints: m.joints }, speed: { frac: m.speed ?? 0.3 } }).catch((e) => !e.aborted && ctrl.alarm(e.code || 'MOTION', e.message));
+      ctrl.move({ kind: 'J', target: { joints: m.joints }, speed: { frac: m.speed ?? 0.3 }, source: 'ui' }).catch((e) => !e.aborted && !String(e.code).startsWith('REJECT') && ctrl.alarm(e.code || 'MOTION', e.message));
       return;
     case 'moveHome':
-      ctrl.move({ kind: 'J', target: { joints: [...ctrl.robot.home] }, speed: { frac: 0.3 } }).catch((e) => !e.aborted && ctrl.alarm(e.code || 'MOTION', e.message));
+      ctrl.move({ kind: 'J', target: { joints: [...ctrl.robot.home] }, speed: { frac: 0.3 }, source: 'ui' }).catch((e) => !e.aborted && !String(e.code).startsWith('REJECT') && ctrl.alarm(e.code || 'MOTION', e.message));
       return;
     case 'setDO': ctrl.setDO(m.n, m.v); return;
     case 'setDI': ctrl.setDI(m.n, m.v); return;
@@ -122,10 +123,10 @@ async function handleCmd(m) {
     case 'saveFile': ctrl.loadFiles({ [m.name]: m.text }); return { files: filesMsg() };
     case 'deleteFile': ctrl.deleteFile(m.name); return { files: filesMsg() };
     case 'setMain': ctrl.setMain(m.name); return;
-    case 'start': return { ok: await ctrl.start({ step: false }) };
-    case 'step': return { ok: await ctrl.start({ step: true }) };
+    case 'start': return { ok: await ctrl.start({ step: false, source: 'ui' }), reject: ctrl.lastReject };
+    case 'step': return { ok: await ctrl.start({ step: true, source: 'ui' }), reject: ctrl.lastReject };
     case 'hold': ctrl.hold(); return;
-    case 'resume': ctrl.resume(); return;
+    case 'resume': return { ok: ctrl.resume('ui') !== false };
     case 'stop': ctrl.stopProgram(); return;
     case 'reset': ctrl.resetProgram(); return;
     case 'resetAlarms': ctrl.resetAlarms(); return;
@@ -146,6 +147,18 @@ async function handleCmd(m) {
     case 'projectDelete': projects.remove(m.name); return { projects: projects.list() };
     case 'projectExport': return { project: projects.serialize(m.name) };
     case 'projectImport': projects.apply(m.project); return { files: filesMsg(), current: projects.current };
+    case 'safety':   // { estop?, fence?, enable?, requireEnable?, fenceStop?, interlock? }
+      if (m.estop !== undefined) ctrl.setEstop(m.estop, 'ui');
+      if (m.fence !== undefined) ctrl.setFence(m.fence);
+      if (m.enable !== undefined) ctrl.setEnableSwitch(m.enable);
+      ctrl.setSafetyOptions(m);
+      return;
+    case 'sysio':    // { op:'presets' } | { op:'set', config:{enabled, preset, diBase, doBase, assign, logic, programs} }
+      if (m.op === 'presets') return { presets: SystemIO.presetList() };
+      ctrl.sysio.configure(m.config || {});
+      return { sysio: ctrl.sysio.snapshot() };
+    case 'ioLabel': ctrl.setIoLabel(m.type, m.n, { name: m.name, desc: m.desc }); return;
+    case 'ioLabels': if (m.labels) ctrl.setIoLabels(m.labels); return { labels: ctrl.ioLabels };
     case 'state': return { state: ctrl.snapshot() };
     default: throw new Error(`알 수 없는 명령: ${m.cmd}`);
   }

@@ -17,12 +17,17 @@
 //  ■ Input Registers (30001~, 읽기 전용, 16bit. 32bit 값은 2워드 상위 워드 먼저, 부호 있음 int32)
 //     0      상태 비트: b0 서보 ON, b1 프로그램 실행 중(일시정지 포함), b2 HOLD, b3 알람 발생,
 //            b4 이동 중, b5 TEACH, b6 PLAY, b7 REMOTE, b8 프로그램 정상 종료(done),
-//            b9 프로그램 오류(error), b10 충돌 감지(ctrl.collision?.hit)
+//            b9 프로그램 오류(error), b10 충돌 감지(ctrl.collision?.hit),
+//            b11 비상정지 중, b12 안전 펜스 열림, b13 모드 인터록 ON, b14 시스템 I/O 사용 중
 //     1      오버라이드 %
 //     2      알람 개수
 //     3      마지막 알람 코드 (숫자 코드면 그 값 & 0xFFFF, 문자열이면 16bit FNV 해시, 없으면 0)
 //     4-5    프로그램 사이클 횟수 (u32)
 //     6      제조사 코드 (1 Yaskawa, 2 Kawasaki, 3 Hyundai, 4 ABB, 5 KUKA) — 30..43 자세 형식 판별용
+//     7      마지막 명령 거부 사유 코드 (server/controller.js REJECT: 1 REMOTE 아님, 2 REMOTE 에서 펜던트 조작,
+//            3 비상정지, 4 펜스 열림, 5 인에이블 OFF, 6 알람, 7 서보 OFF, 8 모드 변경 불가, 9 프로그램 번호 미할당,
+//            10 패리티 오류, 11 조그 모드, 12 실행 중 선택, 13 홀드 입력, 14 서보 OFF 입력), 거부 없으면 0
+//     8      마지막으로 확정된 프로그램 번호 (시스템 I/O 스트로브, 없으면 0)
 //     10..21 관절 J1..J6, int32 = deg × 1000 (J1 = 10-11, J2 = 12-13, ...)
 //     30..43 TCP 자세 (ctrl.vendorPose(), 제조사 표현, 사용자 좌표계 적용) 7개 int32:
 //            30-31 X, 32-33 Y, 34-35 Z  (mm × 1000)
@@ -91,12 +96,18 @@ export function inputRegisters(ctrl) {
   if (st === 'done') bits |= 1 << 8;
   if (st === 'error') bits |= 1 << 9;
   if (ctrl.collision?.hit) bits |= 1 << 10;
+  if (ctrl.estopActive) bits |= 1 << 11;
+  if (ctrl.safety?.fenceOpen) bits |= 1 << 12;
+  if (ctrl.interlock) bits |= 1 << 13;
+  if (ctrl.sysio?.enabled) bits |= 1 << 14;
   r[0] = bits;
   r[1] = Math.round(ctrl.override) & 0xFFFF;
   r[2] = (ctrl.alarms?.length ?? 0) & 0xFFFF;
   r[3] = ctrl.alarms?.length ? alarmCodeNum(ctrl.alarms[ctrl.alarms.length - 1].code) : 0;
   putU32(r, 4, ctrl.vm?.cycle ?? 0);
   r[6] = VENDOR_CODE[ctrl.vendor] ?? 0;
+  r[7] = ctrl.lastReject?.code ?? 0;
+  r[8] = (ctrl.sysio?.lastPgno ?? 0) & 0xFFFF;
   for (let i = 0; i < 6; i++) putI32(r, 10 + i * 2, (ctrl.joints[i] ?? 0) * 1000);
   let vp = [];
   try { vp = ctrl.vendorPose(); } catch {}
@@ -135,7 +146,7 @@ export async function start(ctrl, opts = {}) {
         if (active) ctrl.hold(); else ok = false;
         break;
       }
-      case 5: ok = !!ctrl.held; ctrl.resume(); break;
+      case 5: ok = !!ctrl.held && ctrl.resume() !== false; break;
       case 6: ctrl.stopProgram(); break;
       case 7: ctrl.resetAlarms(); break;
       case 8: ctrl.resetProgram(); break;

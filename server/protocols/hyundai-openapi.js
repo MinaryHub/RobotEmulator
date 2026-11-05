@@ -75,6 +75,7 @@ export async function start(ctrl, opts = {}) {
   const program = async (action, body = {}) => {
     switch (action) {
       case 'start': {
+        if (!ctrl.allow('start')) throw new ApiError(409, ctrl.lastReject.reason);
         if (ctrl.alarms.length) throw new ApiError(409, '알람 상태 — 알람 리셋 필요');
         if (!ctrl.servo) throw new ApiError(409, '서보 OFF 상태');
         const ok = await ctrl.start({ step: !!body.step });
@@ -83,7 +84,7 @@ export async function start(ctrl, opts = {}) {
       }
       case 'stop': ctrl.stopProgram(); return { ok: true };
       case 'hold': ctrl.hold(); return { ok: true };
-      case 'resume': ctrl.resume(); return { ok: true };
+      case 'resume': if (ctrl.resume() === false) throw new ApiError(409, ctrl.lastReject?.reason ?? '재개 불가'); return { ok: true };
       case 'reset': ctrl.resetProgram(); return { ok: true };
       case 'select': {
         const name = body.name ?? body.job ?? body.prog;
@@ -140,6 +141,7 @@ export async function start(ctrl, opts = {}) {
     ['POST', /^\/api\/alarms\/reset$/, () => { ctrl.resetAlarms(); return { ok: true }; }],
     ['POST', /^\/api\/servo$/, (m, b) => {
       const on = boolOf(b && 'on' in b ? b.on : b);
+      if (on && !ctrl.allow('servoOn')) throw new ApiError(409, ctrl.lastReject.reason);
       if (!ctrl.setServo(on)) throw new ApiError(409, '알람 상태에서는 서보 ON 불가');
       return { ok: true, servo: ctrl.servo };
     }],
@@ -194,6 +196,7 @@ export async function start(ctrl, opts = {}) {
     ['GET', /^\/project\/context\/tasks\[0\]$/, () => task()],
     ['POST', /^\/project\/context\/tasks\[0\]\/(start|stop|hold|resume|reset|select)$/, (m, b) => program(m[1], b || {})],
     ['POST', /^\/project\/robot\/motor_(on|off)$/, (m) => {
+      if (m[1] === 'on' && !ctrl.allow('servoOn')) throw new ApiError(409, ctrl.lastReject.reason);
       if (!ctrl.setServo(m[1] === 'on')) throw new ApiError(409, '알람 상태에서는 모터 ON 불가');
       return { ok: true, is_motor_on: ctrl.servo };
     }],

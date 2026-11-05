@@ -201,6 +201,7 @@ export async function start(ctrl, opts = {}) {
       case 'ZPOW': case 'ZPOWER': {
         const v = onOff(arg);
         if (v === null) return `Motor power ${ctrl.servo ? 'ON' : 'OFF'}`;
+        if (v && !ctrl.allow('servoOn')) return `(P1013)Cannot turn on motor power. ${ctrl.lastReject.reason}`;
         if (!ctrl.setServo(v)) return '(P1013)Cannot turn on motor power. Reset error first.';
         return `Motor power ${v ? 'ON' : 'OFF'}`;
       }
@@ -209,6 +210,7 @@ export async function start(ctrl, opts = {}) {
         const name = nm || primed || ctrl.asEntry || (ctrl.main ? stripExt(ctrl.main) : '');
         if (!name) return '(P1009)Program name is missing.';
         if (progRunning(ctrl) && !ctrl.held) return '(P1013)Program is already running.';
+        if (!cmd.startsWith('PR') && !ctrl.allow('start')) return `(P1013)Cannot execute program. ${ctrl.lastReject.reason}`;
         if (progRunning(ctrl)) ctrl.stopProgram();
         if (!(await selectProgram(name))) return `(P1001)Program does not exist. ${name}`;
         primed = name;
@@ -224,6 +226,7 @@ export async function start(ctrl, opts = {}) {
       case 'HOLD': case 'HO': ctrl.hold(); return '';
       case 'CONTINUE': case 'CONT': case 'CO': {
         if (!progRunning(ctrl)) return '(P1013)Program is not running.';
+        if (!ctrl.allow('resume')) return `(P1013)Cannot continue. ${ctrl.lastReject.reason}`;
         const ok = await ctrl.start();
         return ok ? '' : '(P1013)Cannot continue.';
       }
