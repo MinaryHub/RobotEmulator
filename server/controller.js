@@ -7,7 +7,7 @@ import { GRIPPERS, getGripper } from '../shared/grippers.js';
 import { normalizeCameras } from '../shared/cameras.js';
 import { fkFlange, fkTcp, ikNearest, tcpToFlange, withinLimits } from '../shared/kinematics.js';
 import { toVendorPose, fromVendorPose, frameFromXYZRPY } from '../shared/poseformat.js';
-import { poseMul, poseInv, mulv, mul3, Rx, Ry, Rz, DEG, add, sub, norm, quatFromR, T3 } from '../shared/math.js';
+import { poseMul, poseInv, mulv, mul3, Rx, Ry, Rz, DEG, add, sub, norm, quatFromR, RfromQuat, T3 } from '../shared/math.js';
 import { planJoint, planLinear, planCircular, MotionError } from './motion.js';
 import { VM } from './vm.js';
 import { checkCollision } from '../shared/collision.js';
@@ -576,6 +576,57 @@ export class Controller extends EventEmitter {
     this.checkCollisionNow();
     this.emitState();
     return true;
+  }
+
+  // ------------------------------------------------------------ 직접교시 (핸드 가이딩)
+  // 3D 화면에서 TCP 핸들이나 링크를 끌어 로봇을 즉시 움직인다. 조그와 같은 조건(서보 ON, 정지 상태, TEACH 모드·인에이블 — 인터록 설정 시)을 따른다.
+  // 결과: { ok, joints?, reason? }  — 도달 불가·자세 급변·간섭(정지 모드)은 로그 없이 사유만 돌려줌 (드래그 중 초당 수십 번 호출되므로)
+  _teachGate(source) {
+    if (!this.servo) return { ok: false, reason: '서보 OFF — 서보를 켜야 직접교시가 됩니다' };
+    if (this.segment || this.vm?.status === 'running') return { ok: false, reason: '프로그램·모션 실행 중' };
+    const r = this.checkCommand('jog', source);
+    if (r) {
+      if (this.lastReject?.op !== 'jog' || Date.now() - this.lastReject.t > 2000) this.reject('jog', source, r);
+      return { ok: false, reason: r.reason, code: r.code };
+    }
+    return null;
+  }
+  _teachApply(j) {
+    if (!withinLimits(this.robot, j)) {
+      const ax = j.findIndex((v, i) => v < this.robot.limits[i][0] || v > this.robot.limits[i][1]);
+      return { ok: false, reason: `소프트 리밋: ${ax + 1}축 (${j[ax].toFixed(1)}°)` };
+    }
+    if (this.collisionMode === 'stop') {
+      const held = this.grip?.holding?.id;
+      const c = checkCollision(this.robot, j, this.gripper, this.scene, this.objects, { ignoreObjects: held ? [held] : [], obstacles: this.cell.obstacles() });
+      if (c.hit) return { ok: false, reason: `간섭: ${c.pairs.map((p) => `${p.a}↔${p.b}`).join(', ')}`, collision: true };
+    }
+    this.joints = [...j];
+    this.jog = null;
+    this.updateHeld();
+    this.checkCollisionNow();
+    this.emitState();
+    return { ok: true, joints: this.joints };
+  }
+  // TCP 목표 자세 (로봇 베이스 좌표, mm / 쿼터니언 [w,x,y,z]) — 현재 그리퍼 TCP 기준
+  teachPose({ p, q, R }, source = 'ui') {
+    const g = this._teachGate(source);
+    if (g) return g;
+    const target = { p: p.map(Number), R: R ?? RfromQuat(q) };
+    if (!target.p.every(Number.isFinite)) return { ok: false, reason: '잘못된 위치' };
+    const j = ikNearest(this.robot, tcpToFlange(target, this.gripperTcp, null), this.joints);
+    if (!j) return { ok: false, reason: '도달 불가 (작업 영역·관절 한계 밖)' };
+    const jump = Math.max(...j.map((v, i) => Math.abs(v - this.joints[i])));
+    if (jump > 30) return { ok: false, reason: `자세 급변 ${jump.toFixed(0)}° — 특이점 부근 (관절을 직접 끌어 자세를 바꾸십시오)` };
+    return this._teachApply(j);
+  }
+  // 관절각 직접 지정 (관절 드래그·되돌리기)
+  teachJoints(joints, source = 'ui') {
+    const g = this._teachGate(source);
+    if (g) return g;
+    const j = joints.map(Number);
+    if (j.length !== 6 || !j.every(Number.isFinite)) return { ok: false, reason: '관절값 6개가 필요합니다' };
+    return this._teachApply(j);
   }
 
   // ------------------------------------------------------------ 시뮬레이션 시계

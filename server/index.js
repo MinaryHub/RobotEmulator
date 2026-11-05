@@ -110,7 +110,9 @@ async function handleCmd(m) {
     case 'timeScale': ctrl.setTimeScale(m.value); return;
     case 'jog': ctrl.startJog(m.jog, 'ui'); return;
     case 'jogStop': ctrl.stopJog(); return;
-    case 'setJoints': return { ok: ctrl.setJointsDirect(m.joints) };
+    case 'setJoints': return ctrl.teachJoints(m.joints, 'ui');   // 펜던트 관절 직접 지정 = 조그와 같은 조건
+    case 'teachPose': return ctrl.teachPose({ p: m.p, q: m.q }, 'ui');   // 직접교시: TCP 핸들 드래그
+    case 'teachJoints': return ctrl.teachJoints(m.joints, 'ui');      // 직접교시: 관절 드래그 · 되돌리기
     case 'moveJoints':
       ctrl.move({ kind: 'J', target: { joints: m.joints }, speed: { frac: m.speed ?? 0.3 }, source: 'ui' }).catch((e) => !e.aborted && !String(e.code).startsWith('REJECT') && ctrl.alarm(e.code || 'MOTION', e.message));
       return;

@@ -1,6 +1,7 @@
 // 웹 UI 메인: 서버(WebSocket)와 상태 동기화, 3D 뷰/에디터/패널 구동
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { RobotView } from './robotView.js';
+import { DirectTeach, SNAPS } from './directTeach.js';
 import { CodeEditor } from './editor.js';
 import { robotCapsules } from '/shared/collision.js';
 import { initDebugPanels } from './debugPanels.js';
@@ -94,6 +95,8 @@ function onState(st) {
   }
   if (!prev || prev.scene?.floorZ !== st.scene.floorZ) view.buildCell(st.scene);
   view.update(st);
+  dt.update(st);
+  syncDirectTeachBar(st);
 
   setPill($('#stServo'), st.servo ? 'SERVO ON' : 'SERVO OFF', st.servo ? 'on' : 'off');
   $('#btnServo').textContent = st.servo ? '서보 OFF' : '서보 ON';
@@ -616,6 +619,79 @@ document.addEventListener('keydown', (e) => {
   sel.value = String(v);
   sel.classList.toggle('fast', v !== 1);
   cmd('timeScale', { value: v });
+});
+
+// ---------------------------------------------------------------- 직접교시 (핸드 가이딩) — public/js/directTeach.js
+let dtStatusTimer = null;
+function dtStatus({ text, level = 'info', hover } = {}) {
+  const el = $('#dtStatus');
+  el.textContent = text || '';
+  el.className = `dt-status ${level}`;
+  clearTimeout(dtStatusTimer);
+  if (text && (level !== 'info' || !hover)) dtStatusTimer = setTimeout(() => { el.textContent = ''; }, level === 'info' ? 2500 : 3500);
+}
+const dt = new DirectTeach(view, {
+  send: (name, args) => cmd(name, args),
+  onStatus: dtStatus,
+  onUndoChange: (n) => { $('#dtUndo').disabled = n === 0; $('#dtUndo').title = `되돌리기 (Ctrl+Z) — ${n}단계`; },
+});
+$('#dtSnap').innerHTML = SNAPS.map((x, i) => `<option value="${i}">${x.label}</option>`).join('');
+const dtSeg = (id, v) => $$(`#${id} button`).forEach((b) => b.classList.toggle('active', b.dataset.v === v));
+
+async function setDirectTeach(on) {
+  const st = app.st;
+  if (on && st) {
+    // 직접교시는 TEACH 모드 + 서보 ON 에서 동작 (실제 협동로봇의 핸드 가이딩과 같은 조건)
+    if (st.program?.status === 'running') { dtStatus({ text: '프로그램 실행 중에는 직접교시를 켤 수 없습니다', level: 'err' }); return; }
+    if (st.safety?.estop) { dtStatus({ text: '비상정지 중', level: 'err' }); return; }
+    if (st.mode !== 'TEACH') { const r = await cmd('mode', { mode: 'TEACH' }); if (r?.ok === false) return; }
+    if (!st.servo) await cmd('servo', { on: true });
+  }
+  dt.setEnabled(on);
+  $('#dtBar').classList.toggle('on', on);
+  $('#dtToggle').textContent = on ? '✋ 직접교시 ON' : '✋ 직접교시';
+  if (on) dtStatus({ text: 'TCP 핸들을 끌어 이동·회전, 로봇 링크를 끌어 관절 회전', level: 'info' });
+}
+$('#dtToggle').onclick = () => setDirectTeach(!dt.enabled);
+$$('#dtMode button').forEach((b) => { b.onclick = () => { dt.setMode(b.dataset.v); dtSeg('dtMode', b.dataset.v); }; });
+$$('#dtSpace button').forEach((b) => { b.onclick = () => { dt.setSpace(b.dataset.v); dtSeg('dtSpace', b.dataset.v); }; });
+$('#dtSnap').onchange = (e) => { dt.setSnap(Number(e.target.value)); e.target.blur(); };
+$('#dtUndo').onclick = () => dt.undoLast();
+$('#dtGrip').onclick = () => {
+  const g = app.st.gripperIO, closed = app.st.grip.closed;
+  cmd('setDO', { n: g.close, v: !closed });
+  if (closed && g.open && g.open !== g.close) { cmd('setDO', { n: g.open, v: true }); setTimeout(() => cmd('setDO', { n: g.open, v: false }), 300); }
+};
+$('#dtRecord').onclick = () => { $('#btnTeach').onclick(); dtStatus({ text: '현재 위치를 프로그램에 기록했습니다', level: 'info' }); };
+
+// 상태에 맞춰 툴바 갱신 (모드·실행·비상정지로 조건이 깨지면 자동으로 끔)
+function syncDirectTeachBar(st) {
+  $('#dtGrip').textContent = st.grip.closed ? '그리퍼 열기' : '그리퍼 닫기';
+  if (dt.enabled && (st.mode !== 'TEACH' || st.program?.status === 'running' || st.safety?.estop)) {
+    setDirectTeach(false);
+    dtStatus({ text: '직접교시 해제 (모드 변경·실행·비상정지)', level: 'warn' });
+  }
+}
+
+// 단축키 (입력칸 밖): T 켜기/끄기 — 켜진 동안 W 이동, E 회전, Q BASE/TOOL, X 스냅, G 그리퍼, Enter 위치 기록, Ctrl+Z 되돌리기, Esc 끄기
+document.addEventListener('keydown', (e) => {
+  if (e.altKey || e.metaKey || !app.st) return;
+  if (e.target.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"])') || document.querySelector('dialog[open]')) return;
+  const k = e.key.toLowerCase();
+  if (k === 't' && !e.ctrlKey) { e.preventDefault(); setDirectTeach(!dt.enabled); return; }
+  if (!dt.enabled) return;
+  if (e.ctrlKey && k === 'z') { e.preventDefault(); dt.undoLast(); return; }
+  if (e.ctrlKey) return;
+  const act = {
+    w: () => $('#dtMode button[data-v="translate"]').click(),
+    e: () => $('#dtMode button[data-v="rotate"]').click(),
+    q: () => $(`#dtSpace button[data-v="${dt.space === 'world' ? 'tool' : 'world'}"]`).click(),
+    x: () => { const i = (dt.snap + 1) % SNAPS.length; $('#dtSnap').value = String(i); dt.setSnap(i); dtStatus({ text: SNAPS[i].label, level: 'info' }); },
+    g: () => $('#dtGrip').click(),
+    enter: () => $('#dtRecord').click(),
+    escape: () => setDirectTeach(false),
+  }[k];
+  if (act) { e.preventDefault(); act(); }
 });
 
 // ---------------------------------------------------------------- 티칭: 현재 위치를 제조사 문법으로 삽입

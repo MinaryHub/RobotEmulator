@@ -175,6 +175,19 @@
       <div id="viewport"></div>
       <div class="overlay tl" id="ovPose"></div>
       <div class="overlay tr" id="ovProg"></div>
+      <!-- 직접교시 툴바 (public/js/directTeach.js) -->
+      <div class="dtbar" id="dtBar">
+        <button id="dtToggle" class="dt-main" title="직접교시: TCP 핸들이나 로봇 링크를 마우스로 끌어 로봇을 움직입니다 (T)">✋ 직접교시</button>
+        <div class="dt-tools">
+          <div class="seg small" id="dtMode"><button data-v="translate" class="active" title="이동 (W)">이동</button><button data-v="rotate" title="회전 (E)">회전</button></div>
+          <div class="seg small" id="dtSpace"><button data-v="world" class="active" title="로봇 베이스 좌표 (Q 로 전환)">BASE</button><button data-v="tool" title="툴 좌표 (Q 로 전환)">TOOL</button></div>
+          <select id="dtSnap" title="스냅 (X 로 전환)"></select>
+          <button id="dtUndo" title="되돌리기 (Ctrl+Z)" disabled>↶</button>
+          <button id="dtGrip" title="그리퍼 열기/닫기 (G)">그리퍼 닫기</button>
+          <button id="dtRecord" class="primary" title="현재 위치를 에디터 커서 위치에 이동 명령으로 삽입 (Enter)">⌖ 위치 기록</button>
+        </div>
+        <div class="dt-status" id="dtStatus"></div>
+      </div>
       <div class="overlay bl" id="ovAlarm"></div>
     </section>
 

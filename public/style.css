@@ -338,3 +338,18 @@ main.chat-open #chat { display: flex; }
 .camframe .rz:hover, .camframe.resizing .rz { opacity: 1; }
 .camframe .hd { padding-left: 16px; }
 .camframe.resizing { outline: 1px dashed var(--acc); }
+
+/* 직접교시 툴바 */
+.dtbar { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 6px; z-index: 5; max-width: calc(100% - 24px); }
+.dtbar > .dt-row, .dtbar { pointer-events: none; }
+.dtbar button, .dtbar select, .dtbar .seg { pointer-events: auto; }
+.dtbar .dt-main { pointer-events: auto; padding: 7px 14px; font-weight: 600; border-radius: 18px; background: rgba(12, 14, 17, .85); border: 1px solid var(--line); }
+.dtbar.on .dt-main { background: #1d6b3a; border-color: #3ccf75; color: #fff; box-shadow: 0 0 0 3px rgba(60, 207, 117, .18); }
+.dtbar .dt-tools { display: none; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: center; background: rgba(12, 14, 17, .85); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; pointer-events: auto; }
+.dtbar.on .dt-tools { display: flex; }
+.dtbar .dt-tools button, .dtbar .dt-tools select { padding: 4px 9px; font-size: 12px; }
+.dtbar .dt-status { min-height: 18px; font-family: var(--mono); font-size: 12px; padding: 2px 10px; border-radius: 10px; background: rgba(12, 14, 17, .7); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.dtbar .dt-status:empty { display: none; }
+.dtbar .dt-status.warn { color: #f0a020; }
+.dtbar .dt-status.err { color: #ff6b5e; }
+.dtbar:not(.on) .dt-tools, .dtbar:not(.on) .dt-status { display: none; }
