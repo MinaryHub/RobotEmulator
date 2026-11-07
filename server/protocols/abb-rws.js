@@ -202,6 +202,7 @@ export async function start(ctrl, opts = {}) {
   async function execAction(action, form) {
     switch (action) {
       case 'start': {
+        if (!ctrl.allow('start')) throw new RwsError(400, `Operation not allowed: ${ctrl.lastReject.reason}`, ERR.BUSY);
         if (!ctrl.servo) throw new RwsError(400, 'Motors off. Operation not allowed.', ERR.MOTOR_OFF);
         if (ctrl.alarms.length) throw new RwsError(400, 'Controller in error state', ERR.PROGRAM);
         const step = /step/i.test(form.get('execmode') || '');
@@ -405,13 +406,18 @@ export async function start(ctrl, opts = {}) {
       if (M === 'POST') {
         const v = (form.get('ctrl-state') || '').toLowerCase();
         if (!['motoron', 'motoroff'].includes(v)) throw new RwsError(400, 'ctrl-state must be motoron|motoroff');
+        if (v === 'motoron' && !ctrl.allow('servoOn')) throw new RwsError(400, `Operation not allowed: ${ctrl.lastReject.reason}`, ERR.BUSY);
         if (!ctrl.setServo(v === 'motoron')) throw new RwsError(400, 'Cannot turn motors on (controller in error state)', ERR.MOTOR_OFF);
         return { status: 204 };
       }
     }
     if (/^\/rw\/panel\/opmode$/i.test(path)) {
       if (M === 'GET') return state('pnl-opmode', 'opmode', { opmode: opMode() });
-      if (M === 'POST') { const v = (form.get('opmode') || '').toLowerCase(); ctrl.setMode(v === 'auto' ? 'PLAY' : 'TEACH'); return { status: 204 }; }
+      if (M === 'POST') {
+        const v = (form.get('opmode') || '').toLowerCase();
+        if (ctrl.setMode(v === 'auto' ? 'PLAY' : 'TEACH') === false) throw new RwsError(403, `Operation not allowed: ${ctrl.lastReject.reason}`, ERR.BUSY);
+        return { status: 204 };
+      }
     }
     if (/^\/rw\/panel\/speedratio$/i.test(path)) {
       if (M === 'GET') return state('pnl-speedratio', 'speedratio', { speedratio: String(Math.round(ctrl.override)) });

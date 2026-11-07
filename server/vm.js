@@ -125,7 +125,7 @@ export class VM {
     if (this.status === 'done') {
       // 프로그램 종료 후 남은 모션(블렌딩 꼬리)까지 포함
       const t0 = this.ctrl.simMs;
-      while (!this.ctrl.motionIdle && !this.aborted) await new Promise((r) => setTimeout(r, 5));
+      if (!this.aborted) await this.ctrl.waitFor(() => this.ctrl.motionIdle || this.aborted, Infinity, this);
       st.motion += Math.max(0, this.ctrl.simMs - t0);
       this.cycle++;
       this.ctrl.finishCycle(st);
@@ -152,6 +152,7 @@ export class VM {
     this.aborted = true;
     if (this.status === 'running' || this.status === 'paused') this.status = 'aborted';
     this.ctrl.cancelMotion();
+    this.ctrl.wakeWaiters?.(this);
     this.stepResume(false);
     this._wakeHold?.();
   }
@@ -183,27 +184,22 @@ export class VM {
     if (this.aborted) throw new AbortErr();
   }
 
-  // 일시정지(HOLD) 동안에는 시간이 흐르지 않는 대기
+  // 일시정지(HOLD) 동안에는 시간이 흐르지 않는 대기 (시뮬레이션 시계 기준 → 배속 적용)
   async wait(sec) {
     this._cat = 'wait';
-    // 시뮬레이션 시계 기준 대기 (HOLD 중에는 시계가 멈춤)
-    const end = this.ctrl.simMs + sec * 1000;
-    while (this.ctrl.simMs < end) {
-      if (this.aborted) throw new AbortErr();
-      await new Promise((r) => setTimeout(r, Math.min(20, Math.max(1, end - this.ctrl.simMs))));
-    }
+    if (this.aborted) throw new AbortErr();
+    await this.ctrl.sleep(sec, this);
+    if (this.aborted) throw new AbortErr();
   }
 
-  // 조건 대기. timeout(s) 초과 시 false 반환
+  // 조건 대기. timeout(s, 시뮬레이션 시간) 초과 시 false 반환
   async waitUntil(fn, timeout = Infinity) {
-    if (!fn()) this._cat = 'wait';
-    const t0 = performance.now();
-    while (!fn()) {
-      if (this.aborted) throw new AbortErr();
-      if ((performance.now() - t0) / 1000 > timeout) return false;
-      await new Promise((r) => setTimeout(r, 10));
-    }
-    return true;
+    if (fn()) return true;
+    this._cat = 'wait';
+    if (this.aborted) throw new AbortErr();
+    const ok = await this.ctrl.waitFor(() => this.aborted || fn(), timeout, this);
+    if (this.aborted) throw new AbortErr();
+    return ok;
   }
 
   print(msg) { this.ctrl.log('program', String(msg)); }

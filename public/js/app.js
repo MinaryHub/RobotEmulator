@@ -1,12 +1,15 @@
 // 웹 UI 메인: 서버(WebSocket)와 상태 동기화, 3D 뷰/에디터/패널 구동
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { RobotView } from './robotView.js';
+import { DirectTeach, SNAPS } from './directTeach.js';
 import { CodeEditor } from './editor.js';
 import { robotCapsules } from '/shared/collision.js';
 import { initDebugPanels } from './debugPanels.js';
 import { initCellPanel, renderCellPanel } from './cellPanel.js';
 import { initCameraPanel, renderCameraPanel } from './cameraPanel.js';
 import { initChatPanel, onChatEvent, onChatReconnect } from './chatPanel.js';
+import { initSysioPanel, renderSysioPanel, loadSysioPresets } from './sysioPanel.js';
+import { ioLabelMap, escHtml, labelsToCsv, csvToLabels } from './ioLabels.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -39,7 +42,8 @@ function connect() {
     else if (m.type === 'comms') { app.comms = m.comms; renderComms(); }
     else if (m.type === 'tl') dbg.onTimeline(m);
     else if (m.type === 'chat') onChatEvent(m);
-    else if (m.type === 'reply') { const p = pending.get(m.id); if (p) { pending.delete(m.id); m.ok ? p.res(m) : p.rej(new Error(m.error)); } }
+    // 명령 오류는 error 필드로 구분 (start/servo 등은 거부 시 ok:false + reject 를 정상 응답으로 돌려줌)
+    else if (m.type === 'reply') { const p = pending.get(m.id); if (p) { pending.delete(m.id); m.ok || m.error === undefined ? p.res(m) : p.rej(new Error(m.error)); } }
   };
 }
 function cmd(name, args = {}) {
@@ -60,6 +64,7 @@ function onInit(m) {
   onState(m.state);
   renderComms();
   onChatReconnect();
+  loadSysioPresets();
 }
 
 // ---------------------------------------------------------------- 상태 반영
@@ -90,6 +95,8 @@ function onState(st) {
   }
   if (!prev || prev.scene?.floorZ !== st.scene.floorZ) view.buildCell(st.scene);
   view.update(st);
+  dt.update(st);
+  syncDirectTeachBar(st);
 
   setPill($('#stServo'), st.servo ? 'SERVO ON' : 'SERVO OFF', st.servo ? 'on' : 'off');
   $('#btnServo').textContent = st.servo ? '서보 OFF' : '서보 ON';
@@ -112,7 +119,71 @@ function onState(st) {
   renderCollision(st, model);
   renderCellPanel(st);
   renderCameraPanel(st);
+  renderSafety(st);
+  renderSysioPanel(st);
 }
+
+// ---------------------------------------------------------------- 안전 · 인터록 · 거부 알림
+const OP_NAME = { start: '시작', resume: '재개', servoOn: '서보 ON', move: '이동', jog: '조그', mode: '모드 변경', select: '프로그램 선택' };
+const SRC_NAME = { internal: '내부', ui: '펜던트', ext: '외부' };
+const MODE_NOTE = {
+  TEACH: 'TEACH: 펜던트에서 조그·티칭·시험 실행. 외부 시작 불가',
+  PLAY: 'PLAY: 펜던트(화면)에서 자동 운전 시작. 외부 시작 불가',
+  REMOTE: 'REMOTE: 외부(PLC·통신·시스템 I/O)에서만 시작. 펜던트 시작·이동 불가',
+};
+let toastTimer = null;
+function showToast(html, kind = 'bad') {
+  const el = $('#toast');
+  el.innerHTML = html;
+  el.className = `show ${kind}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (el.className = ''), 4000);
+}
+// 새 거부(t 가 바뀐 경우)만 알림. 첫 상태(페이지 로드)의 오래된 거부는 무시
+function noteReject(r) {
+  if (!r || r.t === app.rejT) return;
+  app.rejT = r.t;
+  showToast(`<b>거부: ${escHtml(OP_NAME[r.op] ?? r.op)} (${escHtml(SRC_NAME[r.source] ?? r.source)})</b> — ${escHtml(r.reason)}`);
+}
+function renderSafety(st) {
+  const sf = st.safety || {};
+  if (app.rejT === undefined) app.rejT = st.lastReject?.t ?? null;
+  else noteReject(st.lastReject);
+  const eb = $('#btnEstop');
+  eb.classList.toggle('on', !!sf.estopUI);
+  eb.textContent = sf.estopUI ? '비상정지 해제' : '비상정지';
+  $('#stEstop').classList.toggle('hidden', !sf.estopExt);
+  $('#modeNote').textContent = MODE_NOTE[st.mode] ?? '';
+  if (document.activeElement !== $('#chkInterlock')) $('#chkInterlock').checked = !!st.interlock;
+  if (document.activeElement !== $('#chkReqEnable')) $('#chkReqEnable').checked = !!sf.requireEnable;
+  if (document.activeElement !== $('#selFenceStop')) $('#selFenceStop').value = sf.fenceStop || 'stop1';
+  const fb = $('#btnFence');
+  fb.textContent = `안전 펜스: ${sf.fenceOpen ? '열림' : '닫힘'}`;
+  fb.classList.toggle('warn', !!sf.fenceOpen);
+  const en = $('#btnEnable');
+  en.disabled = !sf.requireEnable;
+  en.textContent = `인에이블 ${sf.enable ? 'ON' : 'OFF'}`;
+  en.classList.toggle('go', !!sf.enable);
+  const notes = [];
+  if (sf.estop) notes.push(`<span class="bad">● 비상정지 중 (${[sf.estopUI && '화면 버튼', sf.estopExt && '외부 입력'].filter(Boolean).join(' + ')}) — 해제 후 알람 리셋</span>`);
+  if (sf.fenceOpen) notes.push(`<span class="warn">● 펜스 열림 — ${st.mode === 'TEACH' ? 'TEACH 에서는 조그 가능' : '자동 운전 불가'}</span>`);
+  if (sf.requireEnable && !sf.enable) notes.push('조그하려면 인에이블 ON');
+  if (st.sysio?.enabled && st.sysio.inputs.some((x) => x.kind === 'fence')) notes.push('시스템 I/O 사용 중: 펜스 상태는 펜스 입력이 바뀔 때 그 값으로 덮어씁니다');
+  const html = notes.join('<br>');
+  if ($('#safetyNote').dataset.sig !== html) { $('#safetyNote').innerHTML = html; $('#safetyNote').dataset.sig = html; }
+}
+// 명령 응답의 거부 정보도 확인 (상태 푸시보다 먼저 알림)
+async function cmdChecked(name, args) {
+  const r = await cmd(name, args);
+  if (r && r.ok === false) noteReject(r.reject);
+  return r || {};
+}
+$('#btnEstop').onclick = () => cmd('safety', { estop: !app.st?.safety?.estopUI });
+$('#chkInterlock').onchange = (e) => cmd('safety', { interlock: e.target.checked });
+$('#chkReqEnable').onchange = (e) => cmd('safety', { requireEnable: e.target.checked });
+$('#selFenceStop').onchange = (e) => cmd('safety', { fenceStop: e.target.value });
+$('#btnFence').onclick = () => cmd('safety', { fence: !app.st?.safety?.fenceOpen });
+$('#btnEnable').onclick = () => cmd('safety', { enable: !app.st?.safety?.enable });
 
 // ---------------------------------------------------------------- 간섭
 function renderCollision(st, model) {
@@ -138,6 +209,7 @@ function renderCycle(st) {
   const last = cy.last;
   $('#cycNow').textContent = cy.elapsed != null ? `${cy.elapsed.toFixed(2)} s ▶` : last ? `${last.total.toFixed(2)} s` : '-';
   if (document.activeElement !== $('#chkBlend')) $('#chkBlend').checked = st.blendEnabled !== false;
+  syncSpeed(st.timeScale ?? 1);
   const sig = last ? last.at : 0;
   if (app.cycSig === sig) return;
   app.cycSig = sig;
@@ -157,6 +229,20 @@ function renderCycle(st) {
   }));
 }
 $('#chkAutoScene').onchange = (e) => cmd('autoResetScene', { on: e.target.checked });
+// 배속 표시: 목록에 없는 값(외부 API 로 지정)은 임시 항목으로 표시
+function syncSpeed(v) {
+  const sel = $('#selSpeed');
+  if (document.activeElement === sel) return;
+  let opt = [...sel.options].find((o) => Math.abs(Number(o.value) - v) < 1e-9);
+  if (!opt) {
+    sel.querySelector('option[data-custom]')?.remove();
+    opt = new Option(`×${+v.toFixed(2)}`, String(v));
+    opt.dataset.custom = '1';
+    sel.add(opt);
+  }
+  sel.value = opt.value;
+  sel.classList.toggle('fast', v !== 1);
+}
 $('#chkBlend').onchange = (e) => cmd('blend', { on: e.target.checked });
 $('#btnCycDetail').onclick = (e) => { const d = $('#cycDetail'); d.classList.toggle('hidden'); e.target.textContent = d.classList.contains('hidden') ? '상세 ▾' : '상세 ▴'; };
 
@@ -182,7 +268,7 @@ function renderPose(st, model) {
 function renderProgram(st) {
   const p = st.program;
   const cur = p.current;
-  $('#ovProg').textContent = `프로그램 ${p.main ?? '-'}\n상태 ${p.status.toUpperCase()}${st.held ? ' (HOLD)' : ''}\n${cur ? `${cur.proc ?? ''} ${cur.file ?? ''}:${cur.line ?? ''}` : ''}\n사이클 ${p.cycle}  OV ${st.override}%`;
+  $('#ovProg').textContent = `프로그램 ${p.main ?? '-'}\n상태 ${p.status.toUpperCase()}${st.held ? ' (HOLD)' : ''}\n${cur ? `${cur.proc ?? ''} ${cur.file ?? ''}:${cur.line ?? ''}` : ''}\n사이클 ${p.cycle}  OV ${st.override}%${(st.timeScale ?? 1) !== 1 ? `  ×${st.timeScale}` : ''}`;
   const bpPrefix = `${app.openFile}:`;
   editor.setBreakpoints((st.breakpoints || []).filter((b) => b.startsWith(bpPrefix)).map((b) => Number(b.slice(bpPrefix.length))));
   const running = p.status === 'running' || p.status === 'paused';
@@ -300,10 +386,10 @@ $('#jogSp').oninput = (e) => ($('#jogSpVal').textContent = `${e.target.value}%`)
 $$('#segFrame button').forEach((b) => (b.onclick = () => { app.jogFrame = b.dataset.v; $$('#segFrame button').forEach((x) => x.classList.toggle('active', x === b)); }));
 
 // ---------------------------------------------------------------- 컨트롤러 버튼
-$('#btnServo').onclick = () => cmd('servo', { on: !app.st.servo });
+$('#btnServo').onclick = () => cmdChecked('servo', { on: !app.st.servo });
 $('#btnAlarmReset').onclick = () => cmd('resetAlarms');
 $('#btnHome').onclick = () => cmd('moveHome');
-$$('#segMode button').forEach((b) => (b.onclick = () => cmd('mode', { mode: b.dataset.v })));
+$$('#segMode button').forEach((b) => (b.onclick = () => cmdChecked('mode', { mode: b.dataset.v })));
 $('#ovRange').oninput = (e) => { $('#ovVal').textContent = `${e.target.value}%`; cmd('override', { value: Number(e.target.value) }); };
 $('#btnResetScene').onclick = () => cmd('resetScene');
 $('#btnTrail').onclick = (e) => { view.trailOn = !view.trailOn; e.target.textContent = `궤적 표시 ${view.trailOn ? 'ON' : 'OFF'}`; };
@@ -314,27 +400,83 @@ $('#chkEnv').onchange = (e) => view.showEnvelope(e.target.checked);
 // ---------------------------------------------------------------- I/O
 function renderIO(st) {
   const base = app.ioBase;
-  const draw = (el, on, names, type) => {
+  const draw = (el, on, type) => {
     const set = new Set(on);
+    const labels = ioLabelMap(st, type);
+    const T = type.toUpperCase();
     let html = '';
     for (let n = base; n < base + 32; n++) {
-      const nm = names?.[n];
-      html += `<div data-n="${n}" data-t="${type}" class="${set.has(n) ? 'on' : ''}"${nm ? ` title="${nm}"` : ''}>${n}</div>`;
+      const l = labels[n];
+      const tip = l ? [`${T}${n} ${l.name}`, l.src === 'sys' ? '(시스템 I/O)' : '', l.src === 'sys' && l.other ? `이름표: ${l.other}` : '', l.desc].filter(Boolean).join('\n') : `${T}${n}`;
+      html += `<div data-n="${n}" data-t="${type}" class="${set.has(n) ? 'on' : ''}${l ? ` lb ${l.src}` : ''}" title="${escHtml(tip)}"><b>${n}</b><span class="ln">${l ? escHtml(l.name) : ''}</span><i class="ed" title="이름표 편집">✎</i></div>`;
     }
     if (el.dataset.sig !== html) { el.innerHTML = html; el.dataset.sig = html; }
   };
-  draw($('#ioDO'), st.io.do, st.io.names?.do, 'do');
-  draw($('#ioDI'), st.io.di, st.io.names?.di, 'di');
+  draw($('#ioDO'), st.io.do, 'do');
+  draw($('#ioDI'), st.io.di, 'di');
 }
 for (const id of ['#ioDO', '#ioDI']) {
   $(id).onclick = (e) => {
     const d = e.target.closest('div[data-n]');
     if (!d) return;
+    if (e.target.closest('.ed')) return openLabelEdit(d.dataset.t, Number(d.dataset.n), d);
     const n = Number(d.dataset.n), on = !d.classList.contains('on');
     cmd(d.dataset.t === 'do' ? 'setDO' : 'setDI', { n, v: on });
   };
+  $(id).oncontextmenu = (e) => {
+    const d = e.target.closest('div[data-n]');
+    if (!d) return;
+    e.preventDefault();
+    openLabelEdit(d.dataset.t, Number(d.dataset.n), d);
+  };
 }
+$('#ioPage').innerHTML = Array.from({ length: 16 }, (_, i) => `<option value="${i * 32 + 1}">${i * 32 + 1}-${i * 32 + 32}</option>`).join('');
 $('#ioPage').onchange = (e) => { app.ioBase = Number(e.target.value); app.st && renderIO(app.st); };
+
+// 이름표 편집 (우클릭 또는 ✎)
+let lblEdit = null;
+function openLabelEdit(type, n, cell) {
+  const st = app.st;
+  const user = st.ioLabels?.[type]?.[n] || {};
+  const l = ioLabelMap(st, type)[n];
+  lblEdit = { type, n };
+  $('#ioEditT').textContent = `${type.toUpperCase()}${n} 이름표`;
+  $('#ioEditSys').textContent = l?.src === 'sys' ? ` · 시스템 I/O: ${l.name}` : l?.src === 'lang' ? ` · 프로그램 신호: ${l.name}` : '';
+  $('#ioEditName').value = user.name ?? '';
+  $('#ioEditDesc').value = user.desc ?? '';
+  const ed = $('#ioEdit');
+  cell.closest('.io').after(ed);
+  ed.classList.remove('hidden');
+  $('#ioEditName').focus();
+}
+function closeLabelEdit() { $('#ioEdit').classList.add('hidden'); lblEdit = null; }
+async function saveLabelEdit(del = false) {
+  if (!lblEdit) return;
+  await cmd('ioLabel', { ...lblEdit, name: del ? '' : $('#ioEditName').value.trim(), desc: del ? '' : $('#ioEditDesc').value.trim() });
+  closeLabelEdit();
+}
+$('#ioEditSave').onclick = () => saveLabelEdit(false);
+$('#ioEditDel').onclick = () => saveLabelEdit(true);
+$('#ioEditCancel').onclick = closeLabelEdit;
+for (const id of ['#ioEditName', '#ioEditDesc']) $(id).onkeydown = (e) => { if (e.key === 'Enter') saveLabelEdit(false); else if (e.key === 'Escape') closeLabelEdit(); };
+
+// 이름표 CSV (type,n,name,desc — UTF-8 BOM, Excel 호환)
+$('#btnLblExport').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([labelsToCsv(app.st?.ioLabels)], { type: 'text/csv;charset=utf-8' }));
+  a.download = 'io-labels.csv';
+  a.click();
+};
+$('#btnLblImport').onclick = () => $('#lblFile').click();
+$('#lblFile').onchange = async (e) => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  const { labels, count, bad } = csvToLabels(await f.text());
+  await cmd('ioLabels', { labels });
+  addLog({ t: Date.now(), src: 'system', msg: `I/O 이름표 ${count}개 가져옴${bad ? ` (형식 오류 ${bad}행 건너뜀)` : ''}` });
+  showToast(`이름표 ${count}개 가져옴${bad ? ` · 형식 오류 ${bad}행` : ''}`, 'ok');
+};
 
 // ---------------------------------------------------------------- 통신
 const COMM_INFO = {
@@ -441,11 +583,11 @@ $('#btnExample').onclick = () => { if (confirm('현재 로봇·공작물 배치�
 // 프로그램 제어
 $('#btnStart').onclick = async () => {
   await saveAll();
-  if (!app.st.servo) await cmd('servo', { on: true });
-  cmd(app.st.held ? 'resume' : 'start');
+  if (!app.st.servo && !(await cmdChecked('servo', { on: true })).ok) return;
+  cmdChecked(app.st.held ? 'resume' : 'start');
 };
-$('#btnStep').onclick = async () => { await saveAll(); if (!app.st.servo) await cmd('servo', { on: true }); cmd('step'); };
-$('#btnHold').onclick = () => cmd(app.st.held ? 'resume' : 'hold');
+$('#btnStep').onclick = async () => { await saveAll(); if (!app.st.servo && !(await cmdChecked('servo', { on: true })).ok) return; cmdChecked('step'); };
+$('#btnHold').onclick = () => cmdChecked(app.st.held ? 'resume' : 'hold');
 $('#btnStop').onclick = () => cmd('stop');
 
 // Space: 재생/일시정지 — 정지·완료 상태면 시작, 실행 중이면 홀드, 홀드 중이면 재개
@@ -461,6 +603,96 @@ document.addEventListener('keydown', (e) => {
   else $('#btnStart').onclick();
 });
 $('#btnReset').onclick = () => cmd('reset');
+
+// 배속 (시뮬레이션 시간 배율). 단축키 - / + (= 키 포함)
+const SPEEDS = [...document.querySelectorAll('#selSpeed option')].map((o) => Number(o.value));
+$('#selSpeed').onchange = (e) => { cmd('timeScale', { value: Number(e.target.value) }); e.target.blur(); };
+document.addEventListener('keydown', (e) => {
+  if (!['-', '=', '+'].includes(e.key) || e.ctrlKey || e.altKey || e.metaKey || !app.st) return;
+  if (e.target.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"])') || document.querySelector('dialog[open]')) return;
+  e.preventDefault();
+  // 서버 상태 반영 전에 연달아 눌러도 누적되도록 선택 상자 값을 기준으로 계산
+  const sel = $('#selSpeed');
+  const cur = Number(sel.value) || 1;
+  const v = e.key === '-' ? [...SPEEDS].reverse().find((x) => x < cur - 1e-9) : SPEEDS.find((x) => x > cur + 1e-9);
+  if (v === undefined) return;
+  sel.value = String(v);
+  sel.classList.toggle('fast', v !== 1);
+  cmd('timeScale', { value: v });
+});
+
+// ---------------------------------------------------------------- 직접교시 (핸드 가이딩) — public/js/directTeach.js
+let dtStatusTimer = null;
+function dtStatus({ text, level = 'info', hover } = {}) {
+  const el = $('#dtStatus');
+  el.textContent = text || '';
+  el.className = `dt-status ${level}`;
+  clearTimeout(dtStatusTimer);
+  if (text && (level !== 'info' || !hover)) dtStatusTimer = setTimeout(() => { el.textContent = ''; }, level === 'info' ? 2500 : 3500);
+}
+const dt = new DirectTeach(view, {
+  send: (name, args) => cmd(name, args),
+  onStatus: dtStatus,
+  onUndoChange: (n) => { $('#dtUndo').disabled = n === 0; $('#dtUndo').title = `되돌리기 (Ctrl+Z) — ${n}단계`; },
+});
+$('#dtSnap').innerHTML = SNAPS.map((x, i) => `<option value="${i}">${x.label}</option>`).join('');
+const dtSeg = (id, v) => $$(`#${id} button`).forEach((b) => b.classList.toggle('active', b.dataset.v === v));
+
+async function setDirectTeach(on) {
+  const st = app.st;
+  if (on && st) {
+    // 직접교시는 TEACH 모드 + 서보 ON 에서 동작 (실제 협동로봇의 핸드 가이딩과 같은 조건)
+    if (st.program?.status === 'running') { dtStatus({ text: '프로그램 실행 중에는 직접교시를 켤 수 없습니다', level: 'err' }); return; }
+    if (st.safety?.estop) { dtStatus({ text: '비상정지 중', level: 'err' }); return; }
+    if (st.mode !== 'TEACH') { const r = await cmd('mode', { mode: 'TEACH' }); if (r?.ok === false) return; }
+    if (!st.servo) await cmd('servo', { on: true });
+  }
+  dt.setEnabled(on);
+  $('#dtBar').classList.toggle('on', on);
+  $('#dtToggle').textContent = on ? '✋ 직접교시 ON' : '✋ 직접교시';
+  if (on) dtStatus({ text: 'TCP 핸들을 끌어 이동·회전, 로봇 링크를 끌어 관절 회전', level: 'info' });
+}
+$('#dtToggle').onclick = () => setDirectTeach(!dt.enabled);
+$$('#dtMode button').forEach((b) => { b.onclick = () => { dt.setMode(b.dataset.v); dtSeg('dtMode', b.dataset.v); }; });
+$$('#dtSpace button').forEach((b) => { b.onclick = () => { dt.setSpace(b.dataset.v); dtSeg('dtSpace', b.dataset.v); }; });
+$('#dtSnap').onchange = (e) => { dt.setSnap(Number(e.target.value)); e.target.blur(); };
+$('#dtUndo').onclick = () => dt.undoLast();
+$('#dtGrip').onclick = () => {
+  const g = app.st.gripperIO, closed = app.st.grip.closed;
+  cmd('setDO', { n: g.close, v: !closed });
+  if (closed && g.open && g.open !== g.close) { cmd('setDO', { n: g.open, v: true }); setTimeout(() => cmd('setDO', { n: g.open, v: false }), 300); }
+};
+$('#dtRecord').onclick = () => { $('#btnTeach').onclick(); dtStatus({ text: '현재 위치를 프로그램에 기록했습니다', level: 'info' }); };
+
+// 상태에 맞춰 툴바 갱신 (모드·실행·비상정지로 조건이 깨지면 자동으로 끔)
+function syncDirectTeachBar(st) {
+  $('#dtGrip').textContent = st.grip.closed ? '그리퍼 열기' : '그리퍼 닫기';
+  if (dt.enabled && (st.mode !== 'TEACH' || st.program?.status === 'running' || st.safety?.estop)) {
+    setDirectTeach(false);
+    dtStatus({ text: '직접교시 해제 (모드 변경·실행·비상정지)', level: 'warn' });
+  }
+}
+
+// 단축키 (입력칸 밖): T 켜기/끄기 — 켜진 동안 W 이동, E 회전, Q BASE/TOOL, X 스냅, G 그리퍼, Enter 위치 기록, Ctrl+Z 되돌리기, Esc 끄기
+document.addEventListener('keydown', (e) => {
+  if (e.altKey || e.metaKey || !app.st) return;
+  if (e.target.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"])') || document.querySelector('dialog[open]')) return;
+  const k = e.key.toLowerCase();
+  if (k === 't' && !e.ctrlKey) { e.preventDefault(); setDirectTeach(!dt.enabled); return; }
+  if (!dt.enabled) return;
+  if (e.ctrlKey && k === 'z') { e.preventDefault(); dt.undoLast(); return; }
+  if (e.ctrlKey) return;
+  const act = {
+    w: () => $('#dtMode button[data-v="translate"]').click(),
+    e: () => $('#dtMode button[data-v="rotate"]').click(),
+    q: () => $(`#dtSpace button[data-v="${dt.space === 'world' ? 'tool' : 'world'}"]`).click(),
+    x: () => { const i = (dt.snap + 1) % SNAPS.length; $('#dtSnap').value = String(i); dt.setSnap(i); dtStatus({ text: SNAPS[i].label, level: 'info' }); },
+    g: () => $('#dtGrip').click(),
+    enter: () => $('#dtRecord').click(),
+    escape: () => setDirectTeach(false),
+  }[k];
+  if (act) { e.preventDefault(); act(); }
+});
 
 // ---------------------------------------------------------------- 티칭: 현재 위치를 제조사 문법으로 삽입
 $('#btnTeach').onclick = () => {
@@ -566,6 +798,7 @@ $('#projFile').onchange = async (e) => {
 };
 
 const dbg = initDebugPanels({ cmd });
+initSysioPanel({ cmd, getState: () => app.st });
 initCellPanel({ cmd, view, getState: () => app.st });
 initChatPanel({ send: (msg) => ws?.readyState === 1 && ws.send(JSON.stringify(msg)) });
 initCameraPanel({ cmd, view, getState: () => app.st, getModel: () => app.robots.find((r) => r.id === app.robotId) });

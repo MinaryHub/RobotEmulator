@@ -123,12 +123,13 @@ export async function start(ctrl, opts = {}) {
     addVar(robot, R + 'Controller', 'Controller', 'String', () => vendorInfo().controller ?? '');
     addVar(robot, R + 'Servo', 'Servo', 'Boolean', () => !!ctrl.servo, (v) => {
       if (!isBool(v)) return StatusCodes.BadTypeMismatch;
+      if (v && !ctrl.allow('servoOn')) return StatusCodes.BadUserAccessDenied;
       return ctrl.setServo(v) === false ? StatusCodes.BadInvalidState : G;
     });
     addVar(robot, R + 'Mode', 'Mode', 'String', () => ctrl.mode, (v) => {
       const m = String(v ?? '').trim().toUpperCase();
       if (!['TEACH', 'PLAY', 'REMOTE'].includes(m)) return StatusCodes.BadOutOfRange;
-      ctrl.setMode(m); return G;
+      return ctrl.setMode(m) === false ? StatusCodes.BadUserAccessDenied : G;
     });
     addVar(robot, R + 'Override', 'Override', 'Double', () => Number(ctrl.override), (v) => {
       const x = Number(v);
@@ -138,6 +139,13 @@ export async function start(ctrl, opts = {}) {
     addVar(robot, R + 'Moving', 'Moving', 'Boolean', () => !!(ctrl.segment || ctrl.jog));
     addVar(robot, R + 'Held', 'Held', 'Boolean', () => !!ctrl.held);
     addVar(robot, R + 'AlarmActive', 'AlarmActive', 'Boolean', () => !!ctrl.alarms?.length);
+    // 안전 · 인터록 (읽기 전용)
+    addVar(robot, R + 'EStop', 'EStop', 'Boolean', () => !!ctrl.estopActive);
+    addVar(robot, R + 'FenceOpen', 'FenceOpen', 'Boolean', () => !!ctrl.safety?.fenceOpen);
+    addVar(robot, R + 'Interlock', 'Interlock', 'Boolean', () => !!ctrl.interlock);
+    addVar(robot, R + 'LastRejectCode', 'LastRejectCode', 'Int32', () => ctrl.lastReject?.code ?? 0);
+    addVar(robot, R + 'LastRejectReason', 'LastRejectReason', 'String', () => ctrl.lastReject?.reason ?? '');
+    addVar(robot, R + 'ProgramNumber', 'ProgramNumber', 'Int32', () => ctrl.sysio?.lastPgno ?? 0);
     addVar(robot, R + 'Alarms', 'Alarms', 'String', () => (ctrl.alarms ?? []).map((a) => `[${a.code}] ${a.msg}`), null, { array: true });
     addVar(robot, R + 'ProgramName', 'ProgramName', 'String', () => ctrl.main ?? '');
     addVar(robot, R + 'ProgramStatus', 'ProgramStatus', 'String', () => ctrl.vm?.status ?? 'idle');
@@ -205,9 +213,10 @@ export async function start(ctrl, opts = {}) {
       if (ctrl.segment || progRunning(ctrl)) return '로봇 동작 중';
       return null;
     };
-    addMethod('ServoOn', [], () => (ctrl.setServo(true) === false ? '알람 상태에서는 서보 ON 불가' : true));
+    addMethod('ServoOn', [], () => (!ctrl.allow('servoOn') ? ctrl.lastReject.reason : ctrl.setServo(true) === false ? '알람 상태에서는 서보 ON 불가' : true));
     addMethod('ServoOff', [], () => { ctrl.setServo(false); return true; });
     addMethod('Start', [], async () => {
+      if (!ctrl.allow('start')) return ctrl.lastReject.reason;
       if (ctrl.alarms.length) return '알람 상태 — 알람 리셋 필요';
       if (!ctrl.servo) return '서보 OFF 상태';
       return (await ctrl.start({ step: false })) ? true : (ctrl.compileError ? `컴파일 오류: ${ctrl.compileError.msg}` : '프로그램 시작 실패');
@@ -217,7 +226,7 @@ export async function start(ctrl, opts = {}) {
       if (!(ctrl.segment || progRunning(ctrl))) return '실행 중인 동작 없음';
       ctrl.hold(); return true;
     });
-    addMethod('Resume', [], () => { if (!ctrl.held) return 'HOLD 상태 아님'; ctrl.resume(); return true; });
+    addMethod('Resume', [], () => { if (!ctrl.held) return 'HOLD 상태 아님'; return ctrl.resume() === false ? (ctrl.lastReject?.reason ?? '재개 불가') : true; });
     addMethod('ResetAlarms', [], () => { ctrl.resetAlarms(); return true; });
     addMethod('ResetProgram', [], () => { ctrl.resetProgram(); return true; });
     addMethod('MoveHome', [], async () => {

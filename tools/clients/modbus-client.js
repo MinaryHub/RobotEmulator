@@ -98,13 +98,15 @@ export class ModbusClient {
 
   // ---------------------------------------------------- 로봇 에뮬레이터 맵 헬퍼
   async readStatus() {
-    const r = await this.readInputRegisters(0, 7);
+    const r = await this.readInputRegisters(0, 9);
     const b = r[0];
     const bit = (n) => !!(b & (1 << n));
     return {
       raw: b, servo: bit(0), running: bit(1), held: bit(2), alarm: bit(3), moving: bit(4),
       teach: bit(5), play: bit(6), remote: bit(7), done: bit(8), error: bit(9), collision: bit(10),
+      estop: bit(11), fenceOpen: bit(12), interlock: bit(13), sysio: bit(14),
       override: r[1], alarmCount: r[2], alarmCode: r[3], cycle: r[4] * 65536 + r[5], vendorCode: r[6],
+      rejectCode: r[7], programNumber: r[8],
     };
   }
   async readJoints() { return decodeI32(await this.readInputRegisters(10, 12)).map((v) => v / 1000); }
@@ -130,6 +132,12 @@ export class ModbusClient {
 }
 
 export const CMD = { SERVO_ON: 1, SERVO_OFF: 2, START: 3, HOLD: 4, RESUME: 5, STOP: 6, RESET_ALARMS: 7, RESET_PROGRAM: 8, MOVE_HOME: 9 };
+// 입력 레지스터 7 (마지막 명령 거부 사유) — server/controller.js REJECT
+export const REJECT_TEXT = {
+  1: 'REMOTE 모드가 아님', 2: 'REMOTE 모드에서 펜던트 조작', 3: '비상정지 중', 4: '안전 펜스 열림', 5: '인에이블 OFF',
+  6: '알람 상태', 7: '서보 OFF', 8: '모드 변경 불가', 9: '프로그램 번호 미할당', 10: '패리티 오류',
+  11: '조그는 TEACH 에서만', 12: '실행 중 프로그램 선택', 13: '외부 홀드 입력', 14: '서보 OFF 입력',
+};
 export const toSigned16 = (v) => (v << 16) >> 16;
 export function decodeI32(regs) {
   const out = [];
@@ -155,10 +163,12 @@ export async function demo(host = '127.0.0.1', port = 502, out = console.log) {
     await c.setOverride(50);
     res.override = (await c.readHoldingRegisters(1, 1))[0];
     out('오버라이드 50% 쓰기 →', res.override);
+    const why = async () => { const code = (await c.readInputRegisters(7, 1))[0]; return `거부 (사유 코드 ${code}${REJECT_TEXT[code] ? ': ' + REJECT_TEXT[code] : ''})`; };
     res.servoResult = await c.command(CMD.SERVO_ON);
-    out('명령 서보 ON → 결과', res.servoResult === 0 ? '정상' : '거부');
+    out('명령 서보 ON → 결과', res.servoResult === 0 ? '정상' : await why());
     res.startResult = await c.command(CMD.START);
-    out('명령 시작 → 결과', res.startResult === 0 ? '정상' : '거부');
+    out('명령 시작 → 결과', res.startResult === 0 ? '정상' : await why());
+    if (res.servoResult || res.startResult) out('  ※ 외부 명령은 REMOTE 모드에서만 허용됩니다. 에뮬레이터 화면 로봇 탭에서 모드를 REMOTE 로 바꾸고 다시 실행하십시오.');
     res.statusAfter = await c.readStatus();
     out('상태:', JSON.stringify(res.statusAfter));
     return res;

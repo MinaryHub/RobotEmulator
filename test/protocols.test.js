@@ -35,6 +35,7 @@ async function section(title, fn) {
 }
 
 const ctrl = new Controller();
+ctrl.setMode('REMOTE');   // 모드 인터록: 외부 명령(서보 ON·시작·이동)은 REMOTE 모드에서만 허용
 const handles = await startAll(ctrl, PORTS);
 console.log('기동된 프로토콜:', handles.map((h) => `${h.key}:${h.port}`).join(', '));
 ok(handles.length === 5 && handles.every((h) => h.port), '5개 프로토콜 모두 포트 바인딩');
@@ -46,7 +47,7 @@ await section('Yaskawa HSE (UDP)', async () => {
   ctrl.setServo(false);
   const r = await yaskawaDemo('127.0.0.1', PORTS.yaskawaHse, quiet);
   ok(r.system.model === 'GP7', '시스템 정보 모델명');
-  ok(r.statusBefore.servoOn === false && r.statusBefore.teach === true, '상태 읽기 (서보 OFF, TEACH)');
+  ok(r.statusBefore.servoOn === false && r.statusBefore.teach === false && r.statusBefore.commandRemote === true, '상태 읽기 (서보 OFF, REMOTE)');
   ok(r.statusServo.servoOn === true && ctrl.servo, '서보 ON 명령');
   const ppd = ctrl.robot.pulsePerDeg;
   ok(near(r.pulse.axes[4], Math.round(-90 * ppd[4]), 1), '펄스 위치 (B축 = -90deg × pulsePerDeg)');

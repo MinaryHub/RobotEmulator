@@ -384,6 +384,7 @@ export async function start(ctrl, opts = {}) {
           if (on) ctrl.hold(); else if (!progRunning(ctrl)) ctrl.resume();
           log(`HOLD ${on ? 'ON' : 'OFF'}`, true);
         } else if (inst === 2) {
+          if (on && !ctrl.allow('servoOn')) throw new HseError(ctrl.lastReject.code === 1 ? AS.BAD_MODE : AS.SERVO_ON_FAIL);
           if (on && ctrl.alarms.length) throw new HseError(AS.ALARM);
           if (!ctrl.setServo(on)) throw new HseError(AS.SERVO_ON_FAIL);
           log(`서보 ${on ? 'ON' : 'OFF'}`, true);
@@ -404,6 +405,7 @@ export async function start(ctrl, opts = {}) {
         return Buffer.alloc(0);
       }
       case 0x86: { // 기동 (잡 시작)
+        if (!ctrl.allow('start')) throw new HseError(ctrl.lastReject.code === 1 ? AS.BAD_MODE : AS.ALARM);
         if (ctrl.alarms.length) throw new HseError(AS.ALARM);
         if (!ctrl.servo) throw new HseError(AS.SERVO_OFF);
         if (st.cmdHold) throw new HseError(AS.HOLD_CMD);

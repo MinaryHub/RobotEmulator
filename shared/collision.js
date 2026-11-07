@@ -186,8 +186,8 @@ export function robotCapsules(model, jointsDeg, gripper) {
   const zt0 = Math.max(hb * 0.5, rt * 0.6), zt1 = Math.max(zt0, k.c1 - r * 0.5);
   caps.push({ id: 'turret', a: loc(R1, O, 0, 0, zt0), b: loc(R1, O, 0, 0, zt1), r: rt });
   if (Math.hypot(k.a1, k.b) > r * 0.3) caps.push({ id: 'turret', a: loc(R1, O, 0, 0, zt1), b: p2, r: r * SHRINK });
-  // upperArm (하완): J2 → J3, robotView 처럼 y 로 0.15r 오프셋
-  caps.push({ id: 'upperArm', a: loc(R2, p2, 0, r * 0.15, 0), b: loc(R2, p2, 0, r * 0.15, k.c2), r: r * 0.65 * SHRINK });
+  // upperArm (하완): J2 → J3. public/js/robotMesh.js 의 편측 하완(y = 0.36r ~ 0.36r + armT·r)에 맞춰 y 로 0.8r 오프셋
+  caps.push({ id: 'upperArm', a: loc(R2, p2, 0, r * 0.8, 0), b: loc(R2, p2, 0, r * 0.8, k.c2), r: r * 0.65 * SHRINK });
   // elbow: J3 → J4 시작 (a2 오프셋) + J4 모터 하우징(전완 후방)
   const re = r * 0.62 * SHRINK;
   if (Math.abs(k.a2) > 1) caps.push({ id: 'elbow', a: p3, b: p4, r: re });

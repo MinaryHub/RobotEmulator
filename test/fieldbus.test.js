@@ -20,6 +20,7 @@ async function section(title, fn) {
 }
 
 const ctrl = new Controller();
+ctrl.setMode('REMOTE');   // 모드 인터록: 외부 명령(서보 ON·시작·이동)은 REMOTE 모드에서만 허용
 ctrl.on('log', (e) => { if (e.src === 'comm' && /바인딩|실패|대기/.test(e.msg)) console.log('  [log]', e.msg); });
 const handles = await startAll(ctrl, {
   yaskawaHse: { enabled: false }, kawasakiAs: { enabled: false }, hyundai: { enabled: false }, abbRws: { enabled: false }, kukaVarProxy: { enabled: false },
@@ -63,7 +64,7 @@ await section('Modbus TCP', async () => {
     ok(await c.command(CMD.SERVO_ON) === 0 && ctrl.servo === true, '명령 1 → 서보 ON (결과 0)');
     ok((await c.readHoldingRegisters(0, 1))[0] === 1, '명령 레지스터 읽기 = 마지막 명령');
     let st = await c.readStatus();
-    ok(st.servo && st.teach && !st.alarm, `상태 비트 (raw=0x${st.raw.toString(16)})`);
+    ok(st.servo && !st.teach && (st.raw & (1 << 7)) && (st.raw & (1 << 13)) && !st.alarm, `상태 비트: 서보 ON, REMOTE, 인터록 (raw=0x${st.raw.toString(16)})`);
     ctrl.alarm('E100', '테스트 알람');
     st = await c.readStatus();
     ok(st.alarm && st.alarmCount === 1 && st.alarmCode !== 0, '알람 상태 비트 / 개수 / 코드');
@@ -134,8 +135,12 @@ await section('OPC UA', async () => {
     ok((await opc.read(c, 'IO.DO_3')) === true && (await opc.read(c, 'IO.DO'))[2] === true, 'ctrl DO3 → IO/DO_3, IO/DO[2]');
     ok((await opc.write(c, 'IO.DO_3', 'Boolean', false)) !== 'Good' && ctrl.getDO(3), 'DO_3 는 읽기 전용');
     ok((await opc.write(c, 'Registers.MB_7', 'Int16', -321)) === 'Good' && ctrl.regs.get('MB:7') === -321, 'Registers/MB_7 쓰기 → ctrl.regs MB:7');
-    ok((await opc.write(c, 'Mode', 'String', 'PLAY')) === 'Good' && ctrl.mode === 'PLAY', 'Mode 쓰기 PLAY');
-    ctrl.setMode('TEACH');
+    ok((await opc.write(c, 'Mode', 'String', 'PLAY')) !== 'Good' && ctrl.mode === 'REMOTE', 'Mode 쓰기: 인터록 ON 이면 거부 (키 스위치 전용)');
+    ok((await opc.read(c, 'LastRejectCode')) === 8, 'LastRejectCode = 8 (모드 변경 불가)');
+    ctrl.setSafetyOptions({ interlock: false });
+    ok((await opc.write(c, 'Mode', 'String', 'PLAY')) === 'Good' && ctrl.mode === 'PLAY', 'Mode 쓰기 PLAY (인터록 OFF)');
+    ctrl.setSafetyOptions({ interlock: true });
+    ctrl.setMode('REMOTE');
     // 구독: 시작 후 관절 변경 → 통지 수신
     const target = [15, -10, 20, 0, -60, 30];
     const vals = await opc.subscribeJoints(c, 1500, { onStart: async () => { await sleep(200); ctrl.setJointsDirect(target); } });

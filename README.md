@@ -5,6 +5,8 @@
 - 각 제조사 로봇 언어로 작성한 프로그램을 그대로 실행하고, 3D로 동작을 확인할 수 있습니다.
 - 각 제조사의 외부 통신 인터페이스를 지원하므로 PLC·PC 상위 프로그램을 실제 로봇 없이 개발하고 시험할 수 있습니다.
 
+**문서**: [사용자 매뉴얼](docs/MANUAL.md) · [SI 현장 대상 개선 로드맵](docs/ROADMAP-SI.md) · [개발 규약](docs/DEV_CONTRACT.md)
+
 ## 실행
 
 ```bash
@@ -48,11 +50,15 @@ npm test           # 기구학 · 5개 언어 · 5개 통신 프로토콜 · 필
 | 기구학 | OPW 해석적 역기구학(최대 8해). 제조사별 관절 부호·영점, 자세 표현 관례(Rx·Ry·Rz / O·A·T / 쿼터니언 / A·B·C) 반영 |
 | 모션 | 관절보간, 직선보간, 원호보간. 사다리꼴 가감속, 관절 최고속도 제한(특이점 부근 자동 감속), 오버라이드, HOLD, 소프트리밋·도달불가·특이점 알람 |
 | 블렌딩 | 경유점 근사: INFORM `PL`, AS `ACCURACY`(+`BREAK`), HRScript `A=`, RAPID zonedata(`z10`…, `\Z`, `fine`), KRL `C_PTP/C_DIS`·인라인 `CONT`. UI에서 ON/OFF 비교 가능 |
+| 배속 | 실행 버튼 옆 ×0.1 ~ ×10 (단축키 `-` / `+`). 모션·대기·타이머·펄스·주변기기 모두 시뮬레이션 시계로 동작하므로 배속을 바꿔도 궤적·블렌딩·사이클 타임은 1배속과 같음. 조그는 항상 실시간. REST/WS 명령 `{"cmd":"timeScale","value":4}` |
 | 사이클 타임 | 시뮬레이션 시계 기준(HOLD 제외, PC 부하와 무관) 총 시간과 모션/대기/기타 구분, 라인별 상위 시간, 최근 이력. 시작할 때마다 공작물 자동 초기화(옵션) |
 | 간섭 체크 | 로봇 링크·그리퍼를 캡슐로 근사해 테이블·바닥·받침대·공작물과 자기 간섭을 매 틱 검사. 모드: OFF / 경고 / 정지(알람). 3D 하이라이트와 간섭 모델 표시 |
-| 프로그램 | 웹 에디터(구문 강조, 실행 라인 표시, 컴파일 오류 위치 표시). 시작·단계 실행·홀드·정지·리셋, 현재 위치 티칭 삽입, 파일 열기·다운로드 |
+| 프로그램 | 웹 에디터(구문 강조, 실행 라인 표시, 컴파일 오류 위치 표시). 시작·단계 실행·홀드·정지·리셋 (Space: 시작·홀드·재개), 현재 위치 티칭 삽입, 파일 열기·다운로드 |
 | 그리퍼 | 15종 형상 라이브러리(아래 표)와 STL 사용자 그리퍼. DO로 개폐하고 DI로 닫힘·열림·감지를 피드백. 공작물 파지·이송·낙하 시뮬레이션 |
-| 조작 | 축 조그, 직교 조그(BASE/TOOL), 서보 ON/OFF, 모드 전환, I/O 강제 출력과 입력 시뮬레이션, 작업 영역(손목 중심 도달 범위) 3D 표시 |
+| 직접교시 | 3D 화면에서 TCP 핸들을 끌어 이동·회전(BASE/TOOL, 스냅), 링크를 끌어 관절 회전, 되돌리기, 그리퍼 토글, `Enter` 로 위치 기록. 도달 불가·특이점·간섭(정지 모드)은 거부하고 사유 표시 (`T` 키) |
+| 조작 | 축 조그, 직교 조그(BASE/TOOL), 서보 ON/OFF, 모드 전환, I/O 강제 출력과 입력 시뮬레이션, I/O 이름표(CSV 가져오기·내보내기), 작업 영역(손목 중심 도달 범위) 3D 표시 |
+| 모드 인터록 · 안전 | 외부(PLC·PC) 명령은 REMOTE 에서만, REMOTE 에서는 화면 시작 불가, 모드는 화면에서만 변경. 비상정지(정지 범주 0), 안전 펜스(범주 1/2), 인에이블 스위치. 거부 사유 코드를 Modbus·OPC UA·각 프로토콜 오류로 응답 |
+| 시스템 I/O | 제조사별 전용 입출력 프리셋(범용, Yaskawa, KUKA Automatic External, ABB System I/O, Kawasaki, Hyundai): 외부 서보 ON·시작·홀드·정지·리셋, 프로그램 번호(8비트+스트로브+패리티), 운전 중·알람·홈·사이클 완료 출력 |
 | 디버깅 | 에디터 라인 번호 클릭 → 브레이크포인트, 변수 감시(로컬·전역·레지스터, 변경 강조), 신호 타임라인(DO/DI·RUN·MOVING·HOLD·GRIP·ALARM 파형, 두 점 클릭으로 Δt 측정) |
 | 프로젝트 | 로봇·그리퍼·설정·제조사별 프로그램/변수·셀 레이아웃을 `projects/<이름>.json` 으로 저장/불러오기, JSON 내보내기·가져오기. 2초마다 자동 저장 → 서버 재시작 시 직전 세션 복원 (`config.json` 의 `"restoreSession": false` 로 끔). 제조사를 바꿨다 돌아와도 이전 프로그램 유지 |
 | 비전 카메라 | 카메라 탭에서 7종(2D 머신비전·스마트 카메라·RealSense D435·Zivid 2+ M70·ToF·셀 모니터링)을 플랜지·전완(J3)·고정 위치에 장착. 3D 뷰 우하단에 카메라 시점을 실시간 렌더링(컬러/흑백/깊이 컬러맵), 시야 프러스텀 표시, 카메라 해상도 PNG 저장. 프로젝트에 저장 (`shared/cameras.js`, `public/js/cameraView.js`) |
@@ -142,12 +148,14 @@ stdio 만 지원하는 클라이언트(예: Claude Desktop)는 브리지를 사�
 |---|---|---|---|
 | Coil | 0..511 | 로봇 DI 1..512 (PLC → 로봇 입력, `ctrl.setDI/getDI`) | R/W |
 | Discrete Input | 0..511 | 로봇 DO 1..512 | R |
-| Input Reg | 0 | 상태 비트: b0 서보 ON, b1 프로그램 실행 중, b2 HOLD, b3 알람, b4 이동 중, b5 TEACH, b6 PLAY, b7 REMOTE, b8 프로그램 완료, b9 프로그램 오류, b10 충돌 | R |
+| Input Reg | 0 | 상태 비트: b0 서보 ON, b1 프로그램 실행 중, b2 HOLD, b3 알람, b4 이동 중, b5 TEACH, b6 PLAY, b7 REMOTE, b8 프로그램 완료, b9 프로그램 오류, b10 충돌, b11 비상정지, b12 안전 펜스 열림, b13 모드 인터록 ON, b14 시스템 I/O 사용 | R |
 | Input Reg | 1 | 오버라이드 % | R |
 | Input Reg | 2 | 알람 개수 | R |
 | Input Reg | 3 | 마지막 알람 코드 (숫자 코드 또는 16bit 해시, 없으면 0) | R |
 | Input Reg | 4-5 | 프로그램 사이클 횟수 (u32) | R |
 | Input Reg | 6 | 제조사 코드 1 Yaskawa, 2 Kawasaki, 3 Hyundai, 4 ABB, 5 KUKA | R |
+| Input Reg | 7 | 마지막 명령 거부 사유 코드 (0 없음, 1 REMOTE 아님, 3 비상정지 … — [매뉴얼 9.2절](docs/MANUAL.md#92-안전--모드-인터록)) | R |
+| Input Reg | 8 | 마지막으로 확정된 프로그램 번호 (시스템 I/O) | R |
 | Input Reg | 10..21 | J1..J6 (int32, deg × 1000) | R |
 | Input Reg | 30..43 | TCP 자세 `vendorPose()` int32 × 7: X,Y,Z (mm × 1000), 각도 3개 (deg × 1000); ABB 는 q1..q4 (× 1,000,000, 36..43), 그 외 42-43 = 0 | R |
 | Input Reg | 50-51 | 마지막 사이클 시간 ms (u32) | R |
@@ -156,7 +164,7 @@ stdio 만 지원하는 클라이언트(예: Claude Desktop)는 브리지를 사�
 | Input Reg | 61 | 공작물 파지 중 (1/0) | R |
 | Holding Reg | 0 | 명령: 1 서보 ON, 2 서보 OFF, 3 시작, 4 HOLD, 5 재개, 6 정지, 7 알람 리셋, 8 프로그램 리셋, 9 HOME 이동 (쓰면 1회 실행, 읽으면 마지막 코드) | R/W |
 | Holding Reg | 1 | 오버라이드 % (1~100) | R/W |
-| Holding Reg | 2 | 마지막 명령 결과 (0 정상, 1 거부) | R |
+| Holding Reg | 2 | 마지막 명령 결과 (0 정상, 1 거부 — 사유는 Input Reg 7) | R |
 | Holding Reg | 100..355 | 사용자 레지스터 `ctrl.regs` 의 `MB:<n>` (n = 주소-100), int16 — 로봇 프로그램·OPC UA 와 공유 | R/W |
 
 Input Reg 의 0..99 중 미정의 주소는 0, Holding 3..99 는 예약(쓰기 시 예외 02).
@@ -170,9 +178,12 @@ Input Reg 의 0..99 중 미정의 주소는 0, Holding 3..99 는 예약(쓰기 �
 |---|---|---|
 | Vendor, Model, Controller | String | R |
 | Servo | Boolean | R/W (`setServo`) |
-| Mode | String (TEACH/PLAY/REMOTE) | R/W |
+| Mode | String (TEACH/PLAY/REMOTE) | R (모드 인터록 OFF 일 때만 W) |
 | Override | Double (%) | R/W |
 | Moving, Held, AlarmActive | Boolean | R |
+| EStop, FenceOpen, Interlock | Boolean | R |
+| LastRejectCode / LastRejectReason | Int32 / String | R |
+| ProgramNumber | Int32 (시스템 I/O 로 확정된 번호) | R |
 | Alarms | String[] | R |
 | ProgramName, ProgramStatus | String | R |
 | CurrentLine / CycleCount | Int32 / UInt32 | R |
@@ -234,5 +245,7 @@ server/protocols/  통신 서버 5종 + 필드버스(Modbus TCP, OPC UA)
 public/      웹 UI (Three.js 3D 뷰, 에디터, 패널)
 tools/       샘플 통신 클라이언트, 예제 내보내기
 test/        자동 테스트 (run-all.js 가 *.test.js 를 병렬 실행)
+docs/MANUAL.md        사용자 매뉴얼
+docs/ROADMAP-SI.md    SI 현장(PLC·상위 PC 개발자) 대상 개선 로드맵
 docs/DEV_CONTRACT.md  언어·통신 모듈 개발 규약 (새 제조사·언어 추가 시 참고)
 ```

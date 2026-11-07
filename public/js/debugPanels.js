@@ -1,10 +1,13 @@
 // 하단 패널: 신호 타임라인(로직 애널라이저) + 변수 감시
+import { ioLabelMap } from './ioLabels.js';
+
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 
 export function initDebugPanels({ cmd }) {
   const tl = { events: [], now: 0, current: {}, marks: [], hover: null };
   let active = 'pLog';
+  let lastSt = null;
 
   // ---- 탭
   $$('#ftabs button').forEach((b) => (b.onclick = () => {
@@ -72,8 +75,16 @@ export function initDebugPanels({ cmd }) {
     ctx.fillStyle = '#0f1215'; ctx.fillRect(0, 0, W, H);
     const win = Number($('#tlWin').value);
     const t1 = tl.now, t0 = t1 - win;
-    const L = 86, R = 10, top = 4;
     const sigs = selectedSignals();
+    // 트랙 이름: DO7 → 'DO7 CLAMP' (시스템 I/O 신호 이름 > 사용자 이름표 > 프로그램 신호 이름)
+    const lbl = { do: ioLabelMap(lastSt, 'do'), di: ioLabelMap(lastSt, 'di') };
+    const names = sigs.map((s) => {
+      const m = /^(DO|DI)(\d+)$/.exec(s);
+      const l = m && lbl[m[1].toLowerCase()][m[2]];
+      return l?.name ? `${s} ${l.name}` : s;
+    });
+    ctx.font = '10px Consolas, monospace';
+    const L = Math.min(170, Math.max(86, ...names.map((n) => ctx.measureText(n).width + 14))), R = 10, top = 4;
     const rowH = Math.max(14, Math.min(22, (H - top - 18) / Math.max(1, sigs.length)));
     const X = (t) => L + ((t - t0) / win) * (W - L - R);
     const bySig = {};
@@ -90,7 +101,7 @@ export function initDebugPanels({ cmd }) {
     sigs.forEach((s, i) => {
       const y = top + i * rowH, hi = y + 3, lo = y + rowH - 3;
       ctx.fillStyle = '#8c96a3';
-      ctx.fillText(s, 6, y + rowH / 2 + 3);
+      ctx.fillText(names[i], 6, y + rowH / 2 + 3, L - 10);
       const col = s.startsWith('DO') ? '#f0a020' : s.startsWith('DI') ? '#2fbf71' : s === 'ALARM' || s === 'COLLISION' ? '#e5484d' : '#3d8bfd';
       ctx.strokeStyle = col; ctx.fillStyle = col + '33'; ctx.lineWidth = 1.5;
       let v = valueAt(s, t0, bySig);
@@ -148,6 +159,7 @@ export function initDebugPanels({ cmd }) {
   return {
     onTimeline(m) { addEvents(m.events, $('#tlPause').checked ? null : m.now); },
     onState(st) {
+      lastSt = st;
       // 실행 중에는 시계를 계속 진행시켜 파형이 흐르도록
       if (!$('#tlPause').checked) { tl.now = Math.max(tl.now, st.simMs ?? tl.now); draw(); }
     },

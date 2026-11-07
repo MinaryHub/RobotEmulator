@@ -538,7 +538,7 @@ const FUNCS = {
     const u = K(a.name);
     return !!cx.frame?.locals.has(u) && cx.frame.locals.get(u) !== undefined;
   },
-  CLKREAD(cx, [c]) { const k = asRec('clock', c); return roundDec(k.acc + (k.running ? (performance.now() - k.start) / 1000 : 0), 3); },
+  CLKREAD(cx, [c]) { const k = asRec('clock', c); return roundDec(k.acc + (k.running ? (cx.ctrl.simMs - k.start) / 1000 : 0), 3); },
   ROBOS: () => false,
   ISPERS: () => false,
   OPMODE: (cx) => (cx.ctrl.mode === 'TEACH' ? 1 : 0),
@@ -1120,7 +1120,7 @@ const INSTR = {
     if (nm.HIGH) { ctrl.setDO(n, true); return; }
     const was = ctrl.getDO(n);
     ctrl.setDO(n, !was);
-    setTimeout(() => ctrl.setDO(n, was), len * 1000);
+    ctrl.after(len, () => ctrl.setDO(n, was));
   },
   TPWRITE: ({ args, named }) => (vm, f) => {
     const c = new Ctx(vm.prog, vm.ctrl, vm, f);
@@ -1147,9 +1147,9 @@ const INSTR = {
     vm.rapid.velOv = Math.max(0.01, num(c.ev(args[0])));
     vm.rapid.velMax = Math.max(0.1, num(c.ev(args[1])));
   },
-  CLKRESET: ({ args }) => (vm, f) => { const c = new Ctx(vm.prog, vm.ctrl, vm, f); assign(c, args[0], { $type: 'clock', acc: 0, start: performance.now(), running: false }); },
-  CLKSTART: ({ args }) => (vm, f) => { const c = new Ctx(vm.prog, vm.ctrl, vm, f); const k = asRec('clock', c.ev(args[0])); if (!k.running) { k.start = performance.now(); k.running = true; } },
-  CLKSTOP: ({ args }) => (vm, f) => { const c = new Ctx(vm.prog, vm.ctrl, vm, f); const k = asRec('clock', c.ev(args[0])); if (k.running) { k.acc += (performance.now() - k.start) / 1000; k.running = false; } },
+  CLKRESET: ({ args }) => (vm, f) => { const c = new Ctx(vm.prog, vm.ctrl, vm, f); assign(c, args[0], { $type: 'clock', acc: 0, start: vm.ctrl.simMs, running: false }); },
+  CLKSTART: ({ args }) => (vm, f) => { const c = new Ctx(vm.prog, vm.ctrl, vm, f); const k = asRec('clock', c.ev(args[0])); if (!k.running) { k.start = vm.ctrl.simMs; k.running = true; } },
+  CLKSTOP: ({ args }) => (vm, f) => { const c = new Ctx(vm.prog, vm.ctrl, vm, f); const k = asRec('clock', c.ev(args[0])); if (k.running) { k.acc += (vm.ctrl.simMs - k.start) / 1000; k.running = false; } },
 };
 
 function waitSig(type, args, named) {

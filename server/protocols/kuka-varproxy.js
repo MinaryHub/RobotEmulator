@@ -117,8 +117,9 @@ export async function start(ctrl, opts = {}) {
         return `{PRO_IP: NAME[] "${c?.file ? stripExt(c.file).toUpperCase() : ''}", SNR ${c?.line ?? 0}, NAME_C[] "${c?.proc ?? ''}", I_EXECUTED FALSE}`;
       }
       case '$PERI_RDY': return B(ctrl.servo);
-      case '$USER_SAF': return 'TRUE';
-      case '$STOPMESS': case '$ALARM_STOP': return B(ctrl.alarms.length > 0);
+      case '$USER_SAF': return B(!ctrl.safety?.fenceOpen);            // 운전자 보호(펜스) 정상 = TRUE
+      case '$ALARM_STOP': return B(!ctrl.estopActive);                  // 비상정지 시 FALSE
+      case '$STOPMESS': return B(ctrl.alarms.length > 0);
       case '$TOOL': return frame(ctrl.tool);
       case '$BASE': return frame(ctrl.base);
       case '$VEL_ACT': return '0.0';
@@ -160,7 +161,7 @@ export async function start(ctrl, opts = {}) {
     const nameU = name.trim().toUpperCase();
     // 실시간 시스템 변수는 컨트롤러 상태에서 직접 (언어 모듈보다 우선)
     const sys = sysRead(nameU);
-    if (sys !== undefined && /^\$(AXIS_ACT|POS_ACT|OV_PRO|OUT\[|IN\[|MODE_OP|PRO_STATE|PERI_RDY|STOPMESS|ALARM_STOP)/.test(nameU)) return sys;
+    if (sys !== undefined && /^\$(AXIS_ACT|POS_ACT|OV_PRO|OUT\[|IN\[|MODE_OP|PRO_STATE|PERI_RDY|STOPMESS|ALARM_STOP|USER_SAF)/.test(nameU)) return sys;
     const v = safeReadVar('kuka', ctrl, name.trim());
     if (v !== undefined) return formatKrl(v);
     if (sys !== undefined) return sys;
