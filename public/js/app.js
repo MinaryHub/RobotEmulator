@@ -318,7 +318,7 @@ function renderSpec(m) {
     <span>모델</span><span>${m.name}</span>
     <span>컨트롤러</span><span>${v.controller}</span>
     <span>로봇 언어</span><span>${v.language} (${v.ext})</span>
-    <span>가반하중</span><span>${m.payload} kg</span>
+    <span>가반하중</span><span>${m.ratedPayload ? `최대 ${m.payload} kg (정격 ${m.ratedPayload} kg)` : `${m.payload} kg`}</span>
     <span>최대 도달</span><span>${m.reach} mm</span>
     <span>반복정밀도</span><span>±${m.repeatability ?? '-'} mm</span>
     <span>OPW (mm)</span><span style="font-family:var(--mono);font-size:11px">a1 ${m.opw.a1} a2 ${m.opw.a2} c1 ${m.opw.c1}<br>c2 ${m.opw.c2} c3 ${m.opw.c3} c4 ${m.opw.c4}</span>
