@@ -370,6 +370,9 @@ export class Cell {
           const target = d.extendDO && c.getDO(d.extendDO) ? 1 : 0;
           if (r.pos !== target) {
             r.pos += Math.sign(target - r.pos) * Math.min(Math.abs(target - r.pos), dt / d.time);
+            // 끝단 확인 스위치(0.999 / 0.001)가 켜지는 순간 로드도 끝단에 있도록 맞춤
+            // (스텝 크기에 따라 0.9996 같은 값에서 확인 DI 는 ON 인데 로드 간섭 박스는 덜 나온 상태가 한 스텝 생기던 문제)
+            if (Math.abs(target - r.pos) < 1e-3) r.pos = target;
             changed = true;
           }
           r.extended = r.pos >= 0.999; r.retracted = r.pos <= 0.001;

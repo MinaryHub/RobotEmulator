@@ -258,5 +258,28 @@ console.log('[컨베이어 예제 실행 abb-irb1200]');
   ctrl.cell.applyPreset('default');
 }
 
+// ---------------------------------------------------------------- 회귀: 실린더 끝단 확인 DI 와 로드 위치 일치 (스텝 크기와 무관)
+// dt = 0.00833 s 로 진행하면 이전에는 pos = 0.9996 에서 DI 가 ON 인데 로드 간섭 박스가 덜 나온 스텝이 생겼다 (CI 간헐 실패 원인)
+console.log('[실린더 확인 DI ↔ 로드 위치]');
+{
+  const c = new Controller();
+  clearInterval(c._timer);
+  const base = c.cell.getLayout();
+  c.cell.setLayout({ ...base, devices: [...base.devices, { type: 'cylinder', id: 'CY', name: 'CY', x: 600, y: -300, z: 50, yaw: 0, length: 120, bore: 30, stroke: 80, time: 0.5, extendDO: 11, extDI: 11, retDI: 12 }] });
+  let bad = 0;
+  for (const dt of [0.00833, 0.0071, 0.0109]) {
+    for (const ext of [true, false]) {
+      c.setDO(11, ext);
+      for (let i = 0; i < 200; i++) {
+        c.cell.tick(dt);
+        const rod = c.cell.obstacles().find((o) => o.id === 'CY.rod');
+        if (c.getDI(11) && Math.abs(rod.h[0] * 2 - 89) > 1e-6) bad++;
+        if (c.getDI(12) && c.cell.rt.CY.pos !== 0) bad++;
+      }
+    }
+  }
+  check(bad === 0, `확인 DI ON 이면 실린더가 끝단에 있음 (불일치 ${bad} 스텝)`);
+}
+
 console.log(fails ? `\n실패 ${fails}건` : '\n모두 통과');
 process.exit(fails ? 1 : 0);
