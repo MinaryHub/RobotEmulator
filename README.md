@@ -46,7 +46,7 @@ npm test           # 기구학 · 5개 언어 · 5개 통신 프로토콜 · 필
 
 | 영역 | 내용 |
 |---|---|
-| 로봇 모델 | 17종: GP7/12/25, RS007N/010N/020N, HH7/HH020/HS220, IRB1200/2600/6700, KR6 R900 sixx·R900-2, KR10 R1100 sixx·R1100-2, KR210 R2700. 데이터시트·치수도·ROS-I/RoboDK 교차 확인 (모델별 출처는 `shared/robots.js`의 `source`) |
+| 로봇 모델 | 77종 — Yaskawa 21 (GP4~GP250, AR 아크용, 협동 HC20DTP), Kawasaki 14 (RS003N~RS080N, RS015X), Hyundai 15 (HDF·HH·HDR 시리즈 4~300 kg), ABB 9 (IRB 120~IRB 7600), KUKA 18 (AGILUS·CYBERTECH·IONTEC·QUANTEC 3~240 kg). 데이터시트·치수도·ROS-I/RoboDK 교차 확인 (모델별 출처는 `shared/robots.js`의 `source`) |
 | 기구학 | OPW 해석적 역기구학(최대 8해). 제조사별 관절 부호·영점, 자세 표현 관례(Rx·Ry·Rz / O·A·T / 쿼터니언 / A·B·C) 반영 |
 | 모션 | 관절보간, 직선보간, 원호보간. 사다리꼴 가감속, 관절 최고속도 제한(특이점 부근 자동 감속), 오버라이드, HOLD, 소프트리밋·도달불가·특이점 알람 |
 | 블렌딩 | 경유점 근사: INFORM `PL`, AS `ACCURACY`(+`BREAK`), HRScript `A=`, RAPID zonedata(`z10`…, `\Z`, `fine`), KRL `C_PTP/C_DIS`·인라인 `CONT`. UI에서 ON/OFF 비교 가능 |

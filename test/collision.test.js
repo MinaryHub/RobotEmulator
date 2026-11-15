@@ -112,7 +112,10 @@ for (const m of ROBOTS) {
       }
       if (found) break;
     }
-    const small = m.reach < 1500;
+    // 소형 로봇은 전완을 접으면 손목이 베이스에 닿아야 함.
+    // 예외: HH012A — 어깨 오프셋 a1=200 으로 접힌 손목이 J1 축 앞 약 300 mm 에 놓여 실제로도 베이스와 닿지 않음
+    const FOLD_EXEMPT = new Set(['hyundai-hh012a']);
+    const small = m.reach < 1500 && !FOLD_EXEMPT.has(m.id);
     line += '  ' + (found ? 'self: ' + found.self.map((p) => p.a + '-' + p.b).join(',') : 'none');
     if (small && !found) bad(`${m.id} folded pose not flagged as self collision`);
   }

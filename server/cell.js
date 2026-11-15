@@ -47,8 +47,9 @@ export const PRESETS = [
 ];
 
 // ------------------------------------------------------------------ 프리셋
-// 공작물 크기: 기존 resetScene 공식과 동일
-export const partSize = (R) => Math.round(Math.max(30, Math.min(160, R * 0.045)) / 5) * 5;
+// 공작물 크기: 도달거리에 비례 (상한 140 mm — 3 m 이상 대형 로봇도 기본 그리퍼(TCP 150 mm)로 공작물 중심을 집을 때
+//  손목이 공작물 윗면에 닿지 않도록. 도달거리 3.1 m 미만 모델은 이전 공식과 같은 값)
+export const partSize = (R) => Math.round(Math.max(30, Math.min(140, R * 0.045)) / 5) * 5;
 
 export function presetLayout(id, robot) {
   const R = robot.reach;

@@ -20,10 +20,18 @@ for (const m of ROBOTS) {
   console.log(m.id.padEnd(20), `${ok}/${n}`, 'home flange', fkFlange(m, m.home).p.map((v) => v.toFixed(1)).join(','));
   if (ok < n * 0.97) fail++;
 }
-// 공개 도달거리 vs 치수 계산값 (a1 + c2 + sqrt(c3² + a2²)) — 손목중심 기준
+// 공개 도달거리 vs 치수 계산값 (a1 + c2·max sin(J2) + sqrt(c3² + a2²)) — 손목중심 기준
+//  J2(하완) 관절 한계 안에서 하완이 앞으로 가장 많이 기울어진 각도를 사용 (예: Yaskawa GP180 L 상한 +76°, KUKA KR210 A2 -5°)
+const DEG_ = Math.PI / 180;
+function lowerArmMaxSin(m) {
+  // OPW 내부각 q2: 0 = 하완 수직, + = 전방
+  const [lo, hi] = m.limits[1].map((v) => v * m.signs[1] - m.offsets[1]).sort((x, y) => x - y);
+  if (lo <= 90 && hi >= 90) return 1;
+  return Math.max(Math.sin(lo * DEG_), Math.sin(hi * DEG_));
+}
 console.log('\n도달거리 검산 (공개값 / 치수계산 / 차이)');
 for (const m of ROBOTS) {
-  const k = m.opw, calc = k.a1 + k.c2 + Math.hypot(k.c3, k.a2), d = calc - m.reach;
+  const k = m.opw, calc = k.a1 + k.c2 * lowerArmMaxSin(m) + Math.hypot(k.c3, k.a2), d = calc - m.reach;
   console.log(m.id.padEnd(20), String(m.reach).padStart(6), calc.toFixed(1).padStart(8), d.toFixed(1).padStart(7), Math.abs(d) > 25 ? ' ← 확인 필요' : '');
   if (Math.abs(d) > 40) fail++;
 }
