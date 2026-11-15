@@ -1,5 +1,5 @@
 // 제조사 → 로봇 언어 모듈 매핑
-const MODS = { yaskawa: './inform.js', kawasaki: './as.js', hyundai: './hrscript.js', abb: './rapid.js', kuka: './krl.js' };
+const MODS = { yaskawa: './inform.js', kawasaki: './as.js', hyundai: './hrscript.js', abb: './rapid.js', kuka: './krl.js', doosan: './drl.js' };
 
 const stub = (id) => ({
   id, name: id, exts: [],

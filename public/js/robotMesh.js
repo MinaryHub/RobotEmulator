@@ -34,6 +34,7 @@ function vendorStyle(vendorId, vendor) {
     kawasaki: { base: 0x3c3e42, cap: acc, seam: 0x1b1b1b, motor: 0x34373b, motorCap: 0x1e1f21, rearCyl: false, armT: 0.9, bevel: 0.2, fork: true },
     hyundai: { base: body, cap: acc, seam: acc, motor: 0x3a3f46, motorCap: acc, rearCyl: true, armT: 0.9, bevel: 0.2, fork: true },
     abb: { base: body, cap: 0xdcdcd8, seam: 0x2a2c2f, motor: acc, motorCap: 0x34373b, rearCyl: true, armT: 0.8, bevel: 0.24, fork: true },
+    doosan: { base: body, cap: 0xdfe2e6, seam: 0x2a2d31, motor: body, motorCap: acc, rearCyl: false, armT: 0.85, bevel: 0.3, fork: false },
     kuka: { base: acc, cap: 0x222222, seam: 0x111111, motor: 0x1f2022, motorCap: 0x9da3aa, rearCyl: false, armT: 0.95, bevel: 0.14, fork: true },
   };
   return S[vendorId] || S.abb;

@@ -32,7 +32,7 @@
 
 ## 1. 이 프로그램으로 할 수 있는 일
 
-Yaskawa · Kawasaki · Hyundai · ABB · KUKA 로봇 컨트롤러를 **하나의 가상 컨트롤러**로 흉내 냅니다.
+Yaskawa · Kawasaki · Hyundai · ABB · KUKA · Doosan 로봇 컨트롤러를 **하나의 가상 컨트롤러**로 흉내 냅니다.
 
 | 하고 싶은 일 | 이 프로그램에서 |
 |---|---|
@@ -171,7 +171,7 @@ npm start
 
 ### 5.1 로봇 선택
 
-헤더의 `제조사` → `모델`. 5개 제조사 77종(협동로봇 HC20DTP 포함)이 있으며 사양(가반하중, 도달거리, 관절 한계·속도, 출처)은 `로봇` 탭 아래 `로봇 사양`에 표시됩니다.
+헤더의 `제조사` → `모델`. 6개 제조사 85종(협동로봇 HC20DTP, 두산 M·H·A 시리즈 8종 포함)이 있으며 사양(가반하중, 도달거리, 관절 한계·속도, 출처)은 `로봇` 탭 아래 `로봇 사양`에 표시됩니다.
 
 - 제조사를 바꾸면 해당 제조사의 언어·파일 형식·통신 표현으로 바뀝니다.
 - 다른 제조사로 갔다가 돌아오면 이전에 작업하던 프로그램이 그대로 남아 있습니다.
@@ -210,8 +210,11 @@ npm start
 | Hyundai | HRScript | `.job` |
 | ABB | RAPID | `.mod` |
 | KUKA | KRL | `.src` + `.dat` |
+| Doosan | DRL (파이썬 문법) | `.drl` / `.py` (메인은 `main.drl`) |
 
 지원 문법의 상세 목록은 각 언어 모듈 상단 주석(`server/lang/*.js`)에 있습니다. 지원하지 않는 명령은 **컴파일 오류**로 알려 줍니다.
+
+**DRL 참고:** 위치는 `posx(X, Y, Z, A, B, C)`(베이스 좌표, ZYZ 오일러)와 `posj(J1..J6)` 입니다. `movej` 속도는 `vel=`(deg/s) 또는 `set_velj()` 로 반드시 지정합니다. 다른 `.drl` 파일은 `sub_program_run("이름")` 으로 실행합니다. PC·비전 연동은 프로그램 안에서 `server_socket_open(포트)` / `client_socket_open(ip, 포트)` 로 TCP 소켓을 엽니다. 이 소켓은 프로그램이 끝나거나 정지하면 닫힙니다.
 
 ### 6.2 파일 다루기 (에디터 위 버튼)
 
@@ -381,7 +384,7 @@ DO,7,CLAMP,지그 클램프
 
 실제 셀에서 PLC 는 보통 로봇의 **전용 입출력**(외부 서보 ON, 외부 시작, 프로그램 번호 선택, 운전 중·알람 출력 등)으로 로봇을 운전합니다. `시스템 I/O` 탭에서 이 신호를 범용 DI/DO 에 할당해 같은 시퀀스를 시험합니다.
 
-1. `사용` 을 켜고 프리셋을 고릅니다: 범용, Yaskawa 전용 입출력, KUKA Automatic External, ABB System I/O, Kawasaki 전용 신호, Hyundai 원격 신호.
+1. `사용` 을 켜고 프리셋을 고릅니다: 범용, Yaskawa 전용 입출력, KUKA Automatic External, ABB System I/O, Kawasaki 전용 신호, Hyundai 원격 신호, Doosan 원격 제어 신호.
 2. 신호 번호는 기본으로 DI 401번 · DO 401번부터 차례로 할당됩니다. 표에서 번호와 입력 논리(NC/NO)를 현장 설정에 맞게 바꿉니다.
 3. `프로그램 번호` 표에 번호 → 프로그램 파일을 등록합니다. 표에 없으면 파일명이 같은 숫자인 프로그램(예: `0001.job` → 1)을 찾습니다.
 4. 모드를 **REMOTE** 로 둡니다 (시스템 I/O 입력은 외부 명령입니다).
@@ -517,6 +520,7 @@ PLC 를 Modbus TCP **클라이언트(마스터)**로 설정하고 에뮬레이�
 | **Hyundai** Hi6 Open API 스타일 REST (8888) | 상위 PC REST 연동 | `/project/...` 근사 경로 + 에뮬레이터 표준 `/api/...` | **공식 사양 미검증.** 실제 경로·필드명은 현대로보틱스 매뉴얼로 확인 |
 | **ABB** RWS 1.0/2.0 (8080) | PC SDK 대체, 웹 연동 | `Default User / robotics` 또는 인증 없음 | 실제 IRC5 는 80, OmniCore 는 443(HTTPS). 구독은 WebSocket |
 | **KUKA** KukaVarProxy (7000) | OpenShowVar, Python `py_openshowvar` 등 | 바이너리 TCP | `$AXIS_ACT`, `$POS_ACT`, `$OUT[n]`, `.dat` 전역 변수 |
+| **Doosan** DRL 소켓 (프로그램이 지정한 포트) | PC·비전과 TCP 문자열 통신 | DRL 의 `server_socket_open` / `client_socket_open` | 별도 상시 서버는 없음. 상태·I/O 는 공통 Modbus TCP·OPC UA 로 확인 |
 
 각 프로토콜 파일(`server/protocols/*.js`) 상단 주석에 지원 명령과 실제 컨트롤러와 다른 점이 정리되어 있습니다.
 

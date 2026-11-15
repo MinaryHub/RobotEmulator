@@ -46,10 +46,10 @@ npm test           # 기구학 · 5개 언어 · 5개 통신 프로토콜 · 필
 
 | 영역 | 내용 |
 |---|---|
-| 로봇 모델 | 77종 — Yaskawa 21 (GP4~GP250, AR 아크용, 협동 HC20DTP), Kawasaki 14 (RS003N~RS080N, RS015X), Hyundai 15 (HDF·HH·HDR 시리즈 4~300 kg), ABB 9 (IRB 120~IRB 7600), KUKA 18 (AGILUS·CYBERTECH·IONTEC·QUANTEC 3~240 kg). 데이터시트·치수도·ROS-I/RoboDK 교차 확인 (모델별 출처는 `shared/robots.js`의 `source`) |
-| 기구학 | OPW 해석적 역기구학(최대 8해). 제조사별 관절 부호·영점, 자세 표현 관례(Rx·Ry·Rz / O·A·T / 쿼터니언 / A·B·C) 반영 |
+| 로봇 모델 | 6개 제조사 85종 — Yaskawa 21 (GP4~GP250, AR 아크용, 협동 HC20DTP), Kawasaki 14 (RS003N~RS080N, RS015X), Hyundai 15 (HDF·HH·HDR 시리즈 4~300 kg), ABB 9 (IRB 120~IRB 7600), KUKA 18 (AGILUS·CYBERTECH·IONTEC·QUANTEC 3~240 kg), Doosan 8 (협동로봇 M0609·M0617·M1013·M1509·H2017·H2515·A0509·A0912). 데이터시트·치수도·ROS-I/RoboDK 교차 확인 (모델별 출처는 `shared/robots.js`의 `source`) |
+| 기구학 | OPW 해석적 역기구학(최대 8해). 제조사별 관절 부호·영점, 자세 표현 관례(Rx·Ry·Rz / O·A·T / 쿼터니언 / A·B·C / 두산 ZYZ A·B·C) 반영 |
 | 모션 | 관절보간, 직선보간, 원호보간. 사다리꼴 가감속, 관절 최고속도 제한(특이점 부근 자동 감속), 오버라이드, HOLD, 소프트리밋·도달불가·특이점 알람 |
-| 블렌딩 | 경유점 근사: INFORM `PL`, AS `ACCURACY`(+`BREAK`), HRScript `A=`, RAPID zonedata(`z10`…, `\Z`, `fine`), KRL `C_PTP/C_DIS`·인라인 `CONT`. UI에서 ON/OFF 비교 가능 |
+| 블렌딩 | 경유점 근사: INFORM `PL`, AS `ACCURACY`(+`BREAK`), HRScript `A=`, RAPID zonedata(`z10`…, `\Z`, `fine`), KRL `C_PTP/C_DIS`·인라인 `CONT`, DRL `radius=`(mm). UI에서 ON/OFF 비교 가능 |
 | 배속 | 실행 버튼 옆 ×0.1 ~ ×10 (단축키 `-` / `+`). 모션·대기·타이머·펄스·주변기기 모두 시뮬레이션 시계로 동작하므로 배속을 바꿔도 궤적·블렌딩·사이클 타임은 1배속과 같음. 조그는 항상 실시간. REST/WS 명령 `{"cmd":"timeScale","value":4}` |
 | 사이클 타임 | 시뮬레이션 시계 기준(HOLD 제외, PC 부하와 무관) 총 시간과 모션/대기/기타 구분, 라인별 상위 시간, 최근 이력. 시작할 때마다 공작물 자동 초기화(옵션) |
 | 간섭 체크 | 로봇 링크·그리퍼를 캡슐로 근사해 테이블·바닥·받침대·공작물과 자기 간섭을 매 틱 검사. 모드: OFF / 경고 / 정지(알람). 3D 하이라이트와 간섭 모델 표시 |
@@ -58,7 +58,7 @@ npm test           # 기구학 · 5개 언어 · 5개 통신 프로토콜 · 필
 | 직접교시 | 3D 화면에서 TCP 핸들을 끌어 이동·회전(BASE/TOOL, 스냅), 링크를 끌어 관절 회전, 되돌리기, 그리퍼 토글, `Enter` 로 위치 기록. 도달 불가·특이점·간섭(정지 모드)은 거부하고 사유 표시 (`T` 키) |
 | 조작 | 축 조그, 직교 조그(BASE/TOOL), 서보 ON/OFF, 모드 전환, I/O 강제 출력과 입력 시뮬레이션, I/O 이름표(CSV 가져오기·내보내기), 작업 영역(손목 중심 도달 범위) 3D 표시 |
 | 모드 인터록 · 안전 | 외부(PLC·PC) 명령은 REMOTE 에서만, REMOTE 에서는 화면 시작 불가, 모드는 화면에서만 변경. 비상정지(정지 범주 0), 안전 펜스(범주 1/2), 인에이블 스위치. 거부 사유 코드를 Modbus·OPC UA·각 프로토콜 오류로 응답 |
-| 시스템 I/O | 제조사별 전용 입출력 프리셋(범용, Yaskawa, KUKA Automatic External, ABB System I/O, Kawasaki, Hyundai): 외부 서보 ON·시작·홀드·정지·리셋, 프로그램 번호(8비트+스트로브+패리티), 운전 중·알람·홈·사이클 완료 출력 |
+| 시스템 I/O | 제조사별 전용 입출력 프리셋(범용, Yaskawa, KUKA Automatic External, ABB System I/O, Kawasaki, Hyundai, Doosan): 외부 서보 ON·시작·홀드·정지·리셋, 프로그램 번호(8비트+스트로브+패리티), 운전 중·알람·홈·사이클 완료 출력 |
 | 디버깅 | 에디터 라인 번호 클릭 → 브레이크포인트, 변수 감시(로컬·전역·레지스터, 변경 강조), 신호 타임라인(DO/DI·RUN·MOVING·HOLD·GRIP·ALARM 파형, 두 점 클릭으로 Δt 측정) |
 | 프로젝트 | 로봇·그리퍼·설정·제조사별 프로그램/변수·셀 레이아웃을 `projects/<이름>.json` 으로 저장/불러오기, JSON 내보내기·가져오기. 2초마다 자동 저장 → 서버 재시작 시 직전 세션 복원 (`config.json` 의 `"restoreSession": false` 로 끔). 제조사를 바꿨다 돌아와도 이전 프로그램 유지 |
 | 비전 카메라 | 카메라 탭에서 7종(2D 머신비전·스마트 카메라·RealSense D435·Zivid 2+ M70·ToF·셀 모니터링)을 플랜지·전완(J3)·고정 위치에 장착. 3D 뷰 우하단에 카메라 시점을 실시간 렌더링(컬러/흑백/깊이 컬러맵), 시야 프러스텀 표시, 카메라 해상도 PNG 저장. 프로젝트에 저장 (`shared/cameras.js`, `public/js/cameraView.js`) |
@@ -76,6 +76,7 @@ npm test           # 기구학 · 5개 언어 · 5개 통신 프로토콜 · 필
 | Hyundai | HRScript | `.job` | MOVE P/L/C, DO/DI, WAIT, IF·FOR·WHILE, CALL, V 변수, 포즈 연산 |
 | ABB | RAPID | `.mod` | MoveJ/L/C/AbsJ, Offs/RelTool, SetDO/WaitDI, PROC/FUNC, TEST, 레코드·배열, confdata |
 | KUKA | KRL | `.src` + `.dat` | PTP/LIN/CIRC, 인라인 폼(PDAT/LDAT), `:` 연산자, S/T, $OUT/$IN, SWITCH·LOOP·REPEAT |
+| Doosan | DRL (파이썬 문법) | `.drl` / `.py` | movej/movel/movec/movejx/movesx, posj·posx·trans·fkin·ikin, set_digital_output·wait_digital_input, def·if·while·for, 리스트·f 문자열, sub_program_run, TCP 소켓(server/client_socket_*) |
 
 언어별 상세 지원 문법은 각 모듈 파일(`server/lang/*.js`) 상단 주석에 있습니다.
 
@@ -141,6 +142,7 @@ stdio 만 지원하는 클라이언트(예: Claude Desktop)는 브리지를 사�
 | Hyundai | Hi6 Open API 스타일 REST | 8888 | 위치, 상태, IO, 변수, 프로그램 제어, 이동 |
 | ABB | Robot Web Services 1.0/2.0 | 8080 | jointtarget·robtarget, RAPID 실행·loadmod·심볼, IO 신호, 파일 서비스, 구독(WebSocket) |
 | KUKA | KukaVarProxy / OpenShowVar | 7000 | $AXIS_ACT, $POS_ACT, $OV_PRO, $OUT/$IN, .dat 전역 변수 읽기·쓰기 |
+| Doosan | DRL 소켓 (프로그램이 직접 엶) | 프로그램에서 지정 | `server_socket_open(port)` / `client_socket_open(ip, port)` 로 PC·비전과 TCP 통신. 바인딩 주소는 `host` 설정을 따름. 그 밖의 연동은 공통 Modbus TCP·OPC UA 사용 |
 | 공통 | REST / WebSocket | 3000 | `GET /api/state`, `POST /api/cmd`, `ws://…/ws` |
 | 공통 (AI) | MCP (Streamable HTTP) | 3000 | `http://<host>:3000/mcp` — 로봇 프로그램 생성·검증 · 직접 제어 도구 (위 Claude 연동) |
 | 공통 (필드버스) | Modbus TCP 서버 | 502 (실패 시 1502) | 코일=DI, 이산 입력=DO, 상태·관절·TCP·사이클 타임 입력 레지스터, 명령/오버라이드/사용자 홀딩 레지스터 |
@@ -169,7 +171,7 @@ stdio 만 지원하는 클라이언트(예: Claude Desktop)는 브리지를 사�
 | Input Reg | 2 | 알람 개수 | R |
 | Input Reg | 3 | 마지막 알람 코드 (숫자 코드 또는 16bit 해시, 없으면 0) | R |
 | Input Reg | 4-5 | 프로그램 사이클 횟수 (u32) | R |
-| Input Reg | 6 | 제조사 코드 1 Yaskawa, 2 Kawasaki, 3 Hyundai, 4 ABB, 5 KUKA | R |
+| Input Reg | 6 | 제조사 코드 1 Yaskawa, 2 Kawasaki, 3 Hyundai, 4 ABB, 5 KUKA, 6 Doosan | R |
 | Input Reg | 7 | 마지막 명령 거부 사유 코드 (0 없음, 1 REMOTE 아님, 3 비상정지 … — [매뉴얼 9.2절](docs/MANUAL.md#92-안전--모드-인터록)) | R |
 | Input Reg | 8 | 마지막으로 확정된 프로그램 번호 (시스템 I/O) | R |
 | Input Reg | 10..21 | J1..J6 (int32, deg × 1000) | R |
@@ -242,8 +244,12 @@ Input Reg 의 0..99 중 미정의 주소는 0, Holding 3..99 는 예약(쓰기 �
 - **로봇 치수·속도:** 로봇 치수(OPW 파라미터), 관절 한계, 속도는 공개 카탈로그 기반 근사값입니다. 실제 장비와 동일한 궤적이 필요하면 제조사 치수도의 값으로 [shared/robots.js](shared/robots.js)를 수정하십시오.
   - 특히 카와사키·현대 모델의 치수와 관절 부호·영점(`offsets`/`signs`)은 반드시 확인이 필요합니다.
   - 야스카와 `pulsePerDeg`는 컨트롤러 파라미터에 따라 다릅니다.
+  - 두산 모델은 공식 URDF 치수를 그대로 썼습니다. 다만 반복정밀도와 A 시리즈 가반하중은 매뉴얼 사양표의 열 정렬이 불분명해 확인이 필요합니다.
 - **블렌딩:** 앞 구간의 감속과 다음 구간의 가속을 관절 공간에서 겹치는 방식입니다. 코너 궤적은 실제 컨트롤러와 다소 다를 수 있습니다.
   - 레벨→반경 환산값은 기본 파라미터 기준 추정입니다. INFORM PL1~8은 12.5~500 mm, HRScript A1~7은 10~300 mm로 잡았습니다. 현장 파라미터에 맞게 `server/lang/inform.js`의 `PL_MM`, `hrscript.js`의 `ACC_MM`을 수정하십시오.
+- **DRL:** 파이썬 전체가 아니라 로봇 프로그램에 쓰는 부분집합입니다. 딕셔너리·클래스·try·외부 모듈은 지원하지 않습니다.
+  - 식 안의 사용자 함수와 대기 함수(`movel`, `wait_digital_input` 등)는 그 문장보다 먼저 실행되므로, `a and f()` 에서도 `f()` 가 호출됩니다.
+  - `amove*`(비동기 이동)는 동기 이동으로, `movejx` 의 `sol` 은 가장 가까운 해로, `movesx`/`movesj` 는 경유점 블렌딩으로 근사합니다. `acc` 는 반영하지 않습니다.
 - **가반하중:** 가반하중에 따른 가감속 변화는 모델링하지 않습니다.
 - **간섭 체크:** 캡슐 근사이므로 실제 외형과 수 mm~수십 mm 차이가 납니다.
   - 파지를 위해 그리퍼↔공작물, TCP 끝 5 mm 이내는 검사에서 제외합니다.
@@ -256,7 +262,7 @@ Input Reg 의 0..99 중 미정의 주소는 0, Holding 3..99 는 예약(쓰기 �
 ```
 shared/      기구학(OPW), 수학, 로봇·그리퍼 라이브러리, 자세 표현 변환 (서버·브라우저 공용)
 server/      controller.js(가상 컨트롤러), motion.js(궤적), vm.js(프로그램 VM), index.js(HTTP/WS)
-server/lang/ 언어 컴파일러: inform, as, hrscript, rapid, krl (+ 공용 수식 파서 expr.js)
+server/lang/ 언어 컴파일러: inform, as, hrscript, rapid, krl, drl (+ 공용 수식 파서 expr.js. drl 은 자체 파이썬 파서)
 server/protocols/  통신 서버 5종 + 필드버스(Modbus TCP, OPC UA)
 public/      웹 UI (Three.js 3D 뷰, 에디터, 패널)
 tools/       샘플 통신 클라이언트, 예제 내보내기

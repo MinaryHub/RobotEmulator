@@ -205,6 +205,36 @@ export const PRESETS = {
       { kind: 'estopOk', name: '비상정지 정상' },
     ],
   },
+  doosan: {
+    name: 'Doosan 원격 제어 신호 (근사)',
+    note: '컨트롤러 I/O 설정에서 기능을 할당하는 원격 제어 입력(서보 ON, 프로그램 시작·정지·일시정지, 리셋)과 상태 출력의 근사. 프로그램 선택은 8비트 이진수 + 스트로브로 모사.',
+    pgno: { bits: 8, type: 'binary', parity: 'none' },
+    inputs: [
+      { kind: 'servoOn', name: '서보 ON' },
+      { kind: 'start', name: '프로그램 시작/재개' },
+      { kind: 'hold', name: '프로그램 일시정지' },
+      { kind: 'stop', name: '프로그램 정지' },
+      { kind: 'alarmReset', name: '알람 리셋' },
+      { kind: 'estop', name: '외부 비상정지 (NC)', activeLow: true },
+      { kind: 'fence', name: '안전 정지 (NC)', activeLow: true },
+      { kind: 'pgnoStrobe', name: '프로그램 선택 스트로브' },
+      ...pgnoBits(8, (i) => `프로그램 번호 비트${i}`),
+    ],
+    outputs: [
+      { kind: 'ready', name: '원격 운전 준비' },
+      { kind: 'servoOn', name: '서보 ON 중' },
+      { kind: 'running', name: '프로그램 실행 중' },
+      { kind: 'held', name: '일시정지 중' },
+      { kind: 'alarm', name: '알람' },
+      { kind: 'remote', name: '자동(원격) 모드' },
+      { kind: 'home', name: '홈 위치' },
+      { kind: 'done', name: '프로그램 완료' },
+      { kind: 'pgnoAck', name: '프로그램 선택 확인' },
+      { kind: 'pgnoErr', name: '프로그램 선택 오류' },
+      { kind: 'estopOk', name: '비상정지 정상' },
+      { kind: 'moving', name: '로봇 이동 중' },
+    ],
+  },
 };
 
 const LEVEL_IN = new Set(['servoOff', 'hold', 'estop', 'fence', 'enable']);

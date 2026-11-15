@@ -41,7 +41,7 @@ export function bindServer(server, port, host) {
 // 다른 에이전트가 작성 중인 언어 모듈의 named export 를 동적으로 가져온다. 없으면 null.
 // 성공한 경우만 캐시 (모듈이 나중에 생기면 다시 시도)
 const extCache = new Map();
-const LANG_FILES = { yaskawa: 'inform', kawasaki: 'as', hyundai: 'hrscript', abb: 'rapid', kuka: 'krl' };
+const LANG_FILES = { yaskawa: 'inform', kawasaki: 'as', hyundai: 'hrscript', abb: 'rapid', kuka: 'krl', doosan: 'drl' };
 export async function langExt(vendor) {
   if (extCache.has(vendor)) return extCache.get(vendor);
   const file = LANG_FILES[vendor];

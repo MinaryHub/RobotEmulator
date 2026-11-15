@@ -549,7 +549,7 @@ async function saveAll() {
 $('#btnSave').onclick = saveAll;
 document.addEventListener('keydown', (e) => { if (e.ctrlKey && e.key === 's') { e.preventDefault(); saveAll(); } });
 $('#btnNew').onclick = () => {
-  const ext = { yaskawa: '.JBI', kawasaki: '.as', hyundai: '.job', abb: '.mod', kuka: '.src' }[app.st.vendor];
+  const ext = { yaskawa: '.JBI', kawasaki: '.as', hyundai: '.job', abb: '.mod', kuka: '.src', doosan: '.drl' }[app.st.vendor];
   const name = prompt('새 파일 이름', `NEW${ext}`);
   if (!name) return;
   app.buffers[name] = ''; app.dirty.add(name); openFile(name);
@@ -728,6 +728,7 @@ $('#btnTeach').onclick = () => {
       editor.insertAtCursor(`    MoveL [[${t.slice(0, 3).join(',')}],[${st.tcp.slice(3).map((v) => f2(v, 6)).join(',')}],[${cf.join(',')},0],[9E9,9E9,9E9,9E9,9E9,9E9]], v200, fine, ${tool};`);
       break;
     }
+    case 'doosan': editor.insertAtCursor(`movel(posx(${t.join(', ')}), vel=250, acc=1000)`); break;
     case 'kuka': editor.insertAtCursor(`LIN {X ${t[0]}, Y ${t[1]}, Z ${t[2]}, A ${t[3]}, B ${t[4]}, C ${t[5]}}`); break;
   }
   addLog({ t: Date.now(), src: 'system', msg: `현재 위치 삽입 (관절: ${j.join(', ')})` });
