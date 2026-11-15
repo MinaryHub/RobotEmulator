@@ -5,7 +5,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { TOOLS, callTool, validateInput } from './tools.js';
 
-const SYSTEM = `당신은 산업용 로봇 에뮬레이터에 내장된 로봇 프로그래밍 도우미입니다. 사용자는 PLC·로봇 엔지니어입니다.
+export const SYSTEM = `당신은 산업용 로봇 에뮬레이터에 내장된 로봇 프로그래밍·조작 도우미입니다. 사용자는 PLC·로봇 엔지니어입니다.
 에뮬레이터는 Yaskawa INFORM, Kawasaki AS, Hyundai HRScript, ABB RAPID, KUKA KRL 프로그램을 가상 컨트롤러에서 실행하고 3D 로 보여 줍니다.
 
 로봇 프로그램을 작성하거나 고칠 때:
@@ -13,6 +13,9 @@ const SYSTEM = `당신은 산업용 로봇 에뮬레이터에 내장된 로봇 �
 2. get_language_guide 로 이 에뮬레이터가 지원하는 문법과 현재 셀에 맞춘 동작하는 예제를 확인하고, 예제의 파일 구조·좌표 표기·툴 정의·그리퍼 신호 사용법을 따릅니다. 지원 목록에 없는 명령은 쓰지 않습니다.
 3. write_program 으로 저장합니다. compileError 가 있으면 해당 라인을 고쳐 다시 저장합니다.
 4. 사용자가 실행·검증을 원하거나 동작 확인이 중요한 작업이면 run_program(start) 으로 가상 로봇에서 실행해 알람·간섭·공작물 최종 위치·사이클 타임을 확인하고, 문제가 있으면 고칩니다. 가상 로봇이므로 실행해도 안전합니다.
+사용자가 로봇을 직접 움직이라고 하면("서보 켜", "홈으로", "Z 로 50mm 올려", "그리퍼 닫아" 등) 프로그램을 쓰지 말고 직접 제어 도구를 씁니다:
+set_servo(서보 ON/OFF·알람 리셋) → move_robot(home / joints / joint_offsets / pose / offset_mm, joint·linear 보간) → gripper(open/close) · set_io(DO 출력·DI 시뮬레이션) · stop_robot(hold/resume/stop).
+절대 위치로 움직이기 전에는 get_context 로 현재 자세와 셀 배치를 확인하고, 테이블·공작물과 부딪히지 않게 위에서 접근합니다. 결과의 alarms·collision 을 확인해 알립니다.
 접근 높이·안전 높이·속도는 셀 치수에서 합리적으로 정하고, 답변에서 무엇을 가정했는지 짧게 밝힙니다.
 코드는 에디터에 이미 저장되므로 답변에 전체 코드를 다시 붙이지 말고, 핵심 동작과 결과(컴파일·실행 결과, 사이클 타임)를 요약합니다.
 실제 로봇에 옮길 때 확인할 점(툴·유저 좌표계, 티칭 위치 보정, 속도)이 있으면 한두 줄로 알립니다. 사용자의 언어로 답합니다.`;
@@ -126,14 +129,21 @@ export class ChatSession {
   }
 }
 
-function summarizeInput(name, input = {}) {
+export function summarizeInput(name, input = {}) {
   if (name === 'write_program') return `${input.name} (${String(input.text ?? '').split('\n').length}줄)`;
   if (name === 'read_program') return input.name;
   if (name === 'run_program') return input.action;
+  if (name === 'set_servo') return input.on ? 'ON' : 'OFF';
+  if (name === 'move_robot') {
+    const t = input.home ? '홈' : input.joints ? `J [${input.joints}]` : input.joint_offsets ? `ΔJ [${input.joint_offsets}]` : input.pose ? `P [${input.pose}]` : input.offset_mm ? `Δ${input.frame === 'tool' ? 'TOOL' : 'BASE'} [${input.offset_mm}]mm` : '';
+    return `${t}${input.motion === 'linear' ? ' 직선' : ''}${input.speed_percent ? ` ${input.speed_percent}%` : ''}`;
+  }
+  if (name === 'gripper' || name === 'stop_robot') return input.action;
+  if (name === 'set_io') return `${String(input.type).toUpperCase()}${input.n}=${input.value ? 'ON' : 'OFF'}`;
   return '';
 }
 
-function summarizeResult(name, r) {
+export function summarizeResult(name, r) {
   if (r.isError) return r.text.slice(0, 300);
   try {
     const o = JSON.parse(r.text);
@@ -145,6 +155,13 @@ function summarizeResult(name, r) {
       if (o.collision?.length) parts.push(`간섭 ${o.collision.join(', ')}`);
       return parts.filter(Boolean).join(' · ');
     }
+    if (name === 'move_robot' || name === 'set_servo' || name === 'stop_robot') {
+      const parts = [o.result && o.result !== 'done' ? o.result : null, `J [${o.joints_deg?.join(', ')}]`];
+      if (o.alarms?.length) parts.push(`알람 ${o.alarms.join(', ')}`);
+      if (o.collision?.length) parts.push(`간섭 ${o.collision.join(', ')}`);
+      return parts.filter(Boolean).join(' · ');
+    }
+    if (name === 'gripper') return `${o.closed ? '닫힘' : '열림'}${o.holding ? ` · 파지 ${o.holding}` : ''}`;
     if (name === 'get_context') return `${o.robot.vendorName} ${o.robot.model} · ${o.language.name} · 공작물 ${o.objects.length}개`;
   } catch { /* 요약 실패 → 생략 */ }
   return '';
@@ -161,6 +178,7 @@ function describeError(e) {
   if (e instanceof Anthropic.APIError) return `API 오류 ${e.status ?? ''}: ${e.message}`;
   // 자격 증명을 찾지 못한 경우 등 요청 전에 SDK 가 낸 오류
   if (e instanceof Anthropic.AnthropicError) return `${e.message}
-→ 서버를 실행하는 터미널에서 ANTHROPIC_API_KEY 환경변수를 설정하거나 \`ant auth login\` 후 서버를 다시 시작하세요.`;
+→ 서버를 실행하는 터미널에서 ANTHROPIC_API_KEY 환경변수를 설정하거나 \`ant auth login\` 후 서버를 다시 시작하세요.
+→ API 키 없이 Claude 구독 계정으로 쓰려면 Claude Code 를 설치·로그인(\`claude\`)하고 AI_BACKEND=claude-code 로 서버를 시작하세요.`;
   return e?.message ?? String(e);
 }
