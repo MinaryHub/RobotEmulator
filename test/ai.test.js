@@ -56,7 +56,11 @@ ok((await callTool(ctrl, 'read_program', { name: 'NONE.JBI' })).isError, '없는
   ctrl.setMode('PLAY', 'ui');
   r = await callTool(ctrl, 'move_robot', { joint_offsets: [5, 0, 0, 0, 0, 0] });
   ok(r.isError && /REMOTE/.test(r.text), 'PLAY 모드: AI 직접 이동 거부');
-  ok(!(await callTool(ctrl, 'set_io', { type: 'do', n: 31, value: false })).isError && !(await callTool(ctrl, 'stop_robot', { action: 'status' })).isError, 'TEACH/PLAY 모드: I/O·상태 조회는 허용');
+  r = await callTool(ctrl, 'set_io', { type: 'do', n: 31, value: true });
+  ok(r.isError && /REMOTE/.test(r.text) && !ctrl.getDO(31), 'PLAY 모드: AI DO 출력 거부');
+  r = await callTool(ctrl, 'set_io', { type: 'di', n: 8, value: true });
+  ok(r.isError && /REMOTE/.test(r.text) && !ctrl.getDI(8), 'PLAY 모드: AI DI 시뮬레이션 거부');
+  ok(!(await callTool(ctrl, 'stop_robot', { action: 'status' })).isError && !(await callTool(ctrl, 'get_context', {})).isError, 'TEACH/PLAY 모드: 상태 조회는 허용');
   ctrl.setMode('TEACH', 'ui');
   const gio = ctrl.gripperIO, closed0 = ctrl.grip.closed;
   r = await callTool(ctrl, 'gripper', { action: 'close' });
@@ -64,9 +68,9 @@ ok((await callTool(ctrl, 'read_program', { name: 'NONE.JBI' })).isError, '없는
   r = await callTool(ctrl, 'gripper', { action: 'open' });
   ok(r.isError && /REMOTE/.test(r.text), 'TEACH 모드: AI 그리퍼 열기 거부');
   r = await callTool(ctrl, 'set_io', { type: 'do', n: gio.close, value: true });
-  ok(r.isError && /REMOTE/.test(r.text) && !ctrl.getDO(gio.close) && ctrl.grip.closed === closed0, 'TEACH 모드: set_io 로 그리퍼 DO 우회 거부');
+  ok(r.isError && /REMOTE/.test(r.text) && !ctrl.getDO(gio.close) && ctrl.grip.closed === closed0, 'TEACH 모드: set_io 로 그리퍼 DO 거부');
   ctrl.interlock = false;
-  ok(!(await callTool(ctrl, 'gripper', { action: 'open' })).isError, '인터록 OFF: 그리퍼 허용');
+  ok(!(await callTool(ctrl, 'gripper', { action: 'open' })).isError && !(await callTool(ctrl, 'set_io', { type: 'do', n: 31, value: false })).isError, '인터록 OFF: 그리퍼·I/O 허용');
   ctrl.interlock = true;
   ctrl.setServo(false, 'ui');
   ctrl.setMode('REMOTE', 'ui');
