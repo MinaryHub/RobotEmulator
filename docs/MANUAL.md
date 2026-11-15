@@ -546,7 +546,7 @@ PLC 를 Modbus TCP **클라이언트(마스터)**로 설정하고 에뮬레이�
 
 ## 14. Claude 연동
 
-- **웹 채팅** (헤더 `✦ Claude`): 현재 로봇·셀에 맞는 로봇 프로그램 생성·수정·컴파일·가상 실행 검증. 서버 실행 시 `ANTHROPIC_API_KEY` 환경변수 또는 `ant auth login` 필요.
+- **웹 채팅** (헤더 `✦ Claude`): 현재 로봇·셀에 맞는 로봇 프로그램 생성·수정·컴파일·가상 실행 검증, 대화로 서보·이동·그리퍼·I/O 직접 조작. API 키 없이 쓰려면 Claude Code 를 설치·로그인(`claude`)해 두면 구독 계정으로 자동 연결되고, API 를 쓰려면 `ANTHROPIC_API_KEY` 환경변수 또는 `ant auth login`.
 - **MCP 서버** (`http://<host>:3000/mcp`): Claude Code · Claude Desktop 에서 같은 도구 사용.
   ```bash
   claude mcp add --transport http robot-emulator http://localhost:3000/mcp

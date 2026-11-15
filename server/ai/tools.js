@@ -1,10 +1,12 @@
-// AI 도구: 로봇 프로그램 생성·검증용. MCP 서버(server/ai/mcp.js)와 Claude 채팅(server/ai/chat.js)이 함께 사용
+// AI 도구: 로봇 프로그램 생성·검증 + 가상 로봇 직접 제어(서보·이동·I/O·그리퍼). MCP 서버(server/ai/mcp.js)와 Claude 채팅(server/ai/chat.js)이 함께 사용
 //  - 모든 도구는 컨트롤러(ctrl)를 직접 조작한다 → 웹 UI 에 즉시 반영
 //  - 입력 스키마는 JSON Schema (MCP inputSchema / Claude API input_schema 공용)
 //  - run(ctrl, input) → 결과 객체(JSON 직렬화해 반환). 실패는 Error throw → 호출 측에서 isError 처리
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { VENDORS } from '../../shared/robots.js';
+import { fromVendorPose } from '../../shared/poseformat.js';
+import { mulv } from '../../shared/math.js';
 
 const LANG_FILE = { yaskawa: 'inform.js', kawasaki: 'as.js', hyundai: 'hrscript.js', abb: 'rapid.js', kuka: 'krl.js' };
 const EXT_RE = { yaskawa: /\.jbi$/i, kawasaki: /\.(as|pg)$/i, hyundai: /\.job$/i, abb: /\.(mod|modx|prg|sys|sysx)$/i, kuka: /\.(src|dat)$/i };
@@ -40,6 +42,42 @@ function programStatus(ctrl) {
     gripper: { closed: st.grip.closed, holding: st.grip.holding },
     objects: st.objects.map((o) => ({ id: o.id, p: o.p.map(r2) })),
   };
+}
+
+// 직접 제어 도구 공통: 현재 로봇 상태 요약
+function robotStatus(ctrl) {
+  const st = ctrl.snapshot();
+  return {
+    servo: st.servo, mode: st.mode, held: st.held, moving: !ctrl.motionIdle, override: st.override,
+    joints_deg: st.joints.map(r2), tcp_vendor: st.tcp.map(r2),
+    gripper: { closed: st.grip.closed, holding: st.grip.holding },
+    alarms: st.alarms.map((a) => `[${a.code}] ${a.msg}`),
+    collision: st.collision.hit ? st.collision.pairs.map((p) => `${p.a}↔${p.b}`) : [],
+    lastReject: ctrl.lastReject && Date.now() - ctrl.lastReject.t < 5000 ? `${ctrl.lastReject.op}: ${ctrl.lastReject.reason}` : null,
+  };
+}
+
+function programBusy(ctrl) {
+  const s = ctrl.vm?.status;
+  return s === 'running' || s === 'paused';
+}
+
+const numArray = (v, n, what) => {
+  if (!Array.isArray(v) || !n.includes(v.length) || !v.every((x) => typeof x === 'number' && Number.isFinite(x))) throw new Error(`${what}: 숫자 ${n.join(' 또는 ')}개 배열이어야 합니다`);
+  return v;
+};
+
+// 모션 완료(또는 시간 초과)까지 대기. 실패는 Error throw
+async function awaitMotion(ctrl, p, waitSec) {
+  let timer;
+  const timeout = new Promise((res) => { timer = setTimeout(() => res('timeout'), Math.max(0, Math.min(120, waitSec)) * 1000); });
+  try {
+    const r = await Promise.race([p.then(() => 'done'), timeout]);
+    return r;
+  } catch (e) {
+    if (e.aborted) return 'aborted';
+    throw new Error(`이동 실패 [${e.code ?? 'MOTION'}]: ${e.message}`);
+  } finally { clearTimeout(timer); }
 }
 
 function recentLogs(ctrl, n = 30, src) {
@@ -152,6 +190,139 @@ export const TOOLS = [
       };
     },
   },
+  // ------------------------------------------------------------ 직접 제어 (가상 로봇을 바로 움직임)
+  {
+    name: 'set_servo',
+    description: '가상 로봇의 서보 전원을 켜거나 끈다. 이동 전에 서보 ON 이 필요하다. 알람이 있으면 reset_alarms=true 로 먼저 해제할 수 있다. 비상정지 중에는 켜지지 않는다.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        on: { type: 'boolean', description: 'true = 서보 ON, false = 서보 OFF' },
+        reset_alarms: { type: 'boolean', description: 'true 면 서보 ON 전에 알람 리셋 (기본 false)' },
+      },
+      required: ['on'],
+      additionalProperties: false,
+    },
+    run(ctrl, { on, reset_alarms = false }) {
+      if (on && reset_alarms) ctrl.resetAlarms();
+      const r = ctrl.setServo(on);
+      if (on && r === false) throw new Error(`서보 ON 실패: ${ctrl.lastReject?.reason ?? '알 수 없는 이유'}`);
+      ctrl.log('system', `AI: 서보 ${on ? 'ON' : 'OFF'}`);
+      return robotStatus(ctrl);
+    },
+  },
+  {
+    name: 'move_robot',
+    description: '가상 로봇을 직접 이동시키고 도착(또는 wait_seconds 초과)까지 기다린 뒤 최종 관절각·TCP·알람을 반환한다. 대상은 정확히 하나만 지정: home(홈 자세) / joints(관절각 deg, 6개) / pose(TCP 절대 위치, 제조사 표기 — get_context 의 pose.tcp_vendor 와 같은 형식) / offset_mm(현재 TCP 기준 상대 이동 [dx,dy,dz], 자세 유지) / joint_offsets(현재 관절각에 더할 deg, 6개). motion: joint(관절보간, 기본) 또는 linear(직선보간, pose/offset_mm 에만). 서보 ON 이 필요하며 프로그램 실행 중에는 사용할 수 없다. 좌표는 로봇 베이스 기준 mm.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        home: { type: 'boolean', description: 'true 면 홈 자세로 관절 이동' },
+        joints: { type: 'array', items: { type: 'number' }, description: '목표 관절각 deg [J1..J6]' },
+        joint_offsets: { type: 'array', items: { type: 'number' }, description: '현재 관절각에 더할 값 deg [dJ1..dJ6]' },
+        pose: { type: 'array', items: { type: 'number' }, description: 'TCP 목표 (제조사 표기: yaskawa/hyundai X,Y,Z,Rx,Ry,Rz / kuka X,Y,Z,A,B,C / kawasaki X,Y,Z,O,A,T / abb x,y,z,q1..q4)' },
+        offset_mm: { type: 'array', items: { type: 'number' }, description: '현재 TCP 에서 상대 이동 [dx,dy,dz] mm' },
+        frame: { type: 'string', enum: ['base', 'tool'], description: 'offset_mm 의 좌표계 (기본 base)' },
+        motion: { type: 'string', enum: ['joint', 'linear'], description: '보간 방식 (기본 joint)' },
+        speed_percent: { type: 'number', description: '속도 % (1~100, 기본 20). joint: 관절 최고속 대비, linear: TCP 최고속 대비. 오버라이드가 추가로 적용됨' },
+        wait_seconds: { type: 'number', description: '도착 대기 최대 시간 초 (0~120, 기본 30). 0 이면 시작만 하고 바로 반환' },
+      },
+      additionalProperties: false,
+    },
+    async run(ctrl, input) {
+      const { home, joints, joint_offsets, pose, offset_mm, frame = 'base', motion = 'joint', speed_percent = 20, wait_seconds = 30 } = input;
+      const targets = [home ? 'home' : null, joints && 'joints', joint_offsets && 'joint_offsets', pose && 'pose', offset_mm && 'offset_mm'].filter(Boolean);
+      if (targets.length !== 1) throw new Error('home / joints / joint_offsets / pose / offset_mm 중 정확히 하나를 지정하세요');
+      if (programBusy(ctrl)) throw new Error('프로그램 실행 중에는 직접 이동할 수 없습니다. run_program 의 stop 을 먼저 호출하세요.');
+      const safe = ctrl.checkCommand('move', 'internal');
+      if (safe) throw new Error(`이동 거부: ${safe.reason}`);
+      if (!ctrl.servo) throw new Error('서보 OFF 상태입니다. set_servo(on=true) 를 먼저 호출하세요.');
+      if (ctrl.alarms.length) throw new Error(`알람 발생 중: ${ctrl.alarms.map((a) => `[${a.code}] ${a.msg}`).join(', ')} — set_servo(on=true, reset_alarms=true) 로 해제 후 다시 시도하세요.`);
+      if (ctrl.held) throw new Error('HOLD 상태입니다. stop_robot(action=resume 또는 stop) 후 다시 시도하세요.');
+      if (!ctrl.motionIdle) throw new Error('이전 이동이 아직 진행 중입니다. 끝날 때까지 기다리거나 stop_robot(action=stop) 을 호출하세요.');
+
+      const frac = Math.max(1, Math.min(100, speed_percent)) / 100;
+      let target;
+      if (home) target = { joints: [...ctrl.robot.home] };
+      else if (joints) target = { joints: [...numArray(joints, [6], 'joints')] };
+      else if (joint_offsets) target = { joints: ctrl.joints.map((v, i) => v + numArray(joint_offsets, [6], 'joint_offsets')[i]) };
+      else if (pose) target = { pose: fromVendorPose(ctrl.vendor, numArray(pose, ctrl.vendor === 'abb' ? [7] : [6], 'pose')) };
+      else {
+        const d = numArray(offset_mm, [3], 'offset_mm');
+        const cur = ctrl.tcpPose();
+        const dv = frame === 'tool' ? mulv(cur.R, d) : d;
+        target = { pose: { p: cur.p.map((v, i) => v + dv[i]), R: cur.R } };
+      }
+      const kind = motion === 'linear' ? 'L' : 'J';
+      if (kind === 'L' && target.joints) throw new Error('linear 이동은 pose 또는 offset_mm 대상에서만 사용할 수 있습니다');
+      const speed = kind === 'J' ? { frac } : { tcp: frac * ctrl.robot.tcpMaxSpeed };
+      ctrl.log('system', `AI: ${kind === 'J' ? '관절' : '직선'} 이동 (${targets[0]}, ${Math.round(frac * 100)}%)`);
+      const result = await awaitMotion(ctrl, ctrl.move({ kind, target, speed }), Number(wait_seconds) || 0);
+      return { result, ...robotStatus(ctrl) };
+    },
+  },
+  {
+    name: 'stop_robot',
+    description: '가상 로봇 동작 제어: hold(일시 정지 — 프로그램·이동 모두), resume(HOLD 해제 후 재개), stop(진행 중인 이동 취소 + 프로그램 정지). status 는 조회만.',
+    input_schema: {
+      type: 'object',
+      properties: { action: { type: 'string', enum: ['hold', 'resume', 'stop', 'status'] } },
+      required: ['action'],
+      additionalProperties: false,
+    },
+    run(ctrl, { action }) {
+      if (action === 'hold') ctrl.hold();
+      else if (action === 'resume') { if (ctrl.resume() === false) throw new Error(`재개 실패: ${ctrl.lastReject?.reason ?? ''}`); }
+      else if (action === 'stop') {
+        if (programBusy(ctrl)) ctrl.stopProgram();
+        ctrl.cancelMotion();
+        if (ctrl.held) { ctrl.held = false; ctrl.emitState(); }
+        ctrl.log('system', 'AI: 동작 정지');
+      }
+      return robotStatus(ctrl);
+    },
+  },
+  {
+    name: 'set_io',
+    description: '가상 컨트롤러 I/O 를 쓴다. type=do 는 로봇 출력(그리퍼 DO 면 그리퍼가 실제로 개폐), type=di 는 입력 시뮬레이션(센서·PLC 신호 흉내). 번호와 이름은 get_context 의 ioNames·gripper.io 참고.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        type: { type: 'string', enum: ['do', 'di'] },
+        n: { type: 'integer', description: 'I/O 번호 (1부터)' },
+        value: { type: 'boolean' },
+      },
+      required: ['type', 'n', 'value'],
+      additionalProperties: false,
+    },
+    run(ctrl, { type, n, value }) {
+      if (type === 'do') ctrl.setDO(n, value); else ctrl.setDI(n, value);
+      ctrl.log('system', `AI: ${type.toUpperCase()}${n} = ${value ? 'ON' : 'OFF'}`);
+      const st = ctrl.snapshot();
+      return { type, n, value: type === 'do' ? ctrl.getDO(n) : ctrl.getDI(n), doOn: st.io.do, diOn: st.io.di };
+    },
+  },
+  {
+    name: 'gripper',
+    description: '가상 그리퍼를 열거나 닫는다 (그리퍼 DO 로 구동 → 닫힘·열림·감지 DI 피드백도 갱신). 닫을 때 TCP 근처에 공작물이 있으면 파지하고, 열면 내려놓는다. 결과의 holding 에 파지한 공작물 id.',
+    input_schema: {
+      type: 'object',
+      properties: { action: { type: 'string', enum: ['open', 'close'] } },
+      required: ['action'],
+      additionalProperties: false,
+    },
+    async run(ctrl, { action }) {
+      const g = ctrl.gripperIO, close = action === 'close';
+      if (g.close) ctrl.setDO(g.close, close);
+      if (g.open && g.open !== g.close) ctrl.setDO(g.open, !close);
+      if (!g.close) ctrl.gripperCmd(close);
+      // 개폐 동작(시뮬레이션) 완료 대기 — 최대 3초
+      const until = Date.now() + 3000;
+      while (Date.now() < until && (close ? ctrl.grip.pos < 0.95 && !ctrl.grip.holding : ctrl.grip.pos > 0.05)) await sleep(50);
+      ctrl.log('system', `AI: 그리퍼 ${close ? '닫기' : '열기'}`);
+      return { action, closed: ctrl.grip.closed, holding: ctrl.grip.holding?.id ?? null, position: r2(ctrl.grip.pos) };
+    },
+  },
   {
     name: 'get_logs',
     description: '컨트롤러 로그(시스템·프로그램 PRINT/MSG·그리퍼·통신·알람)의 최근 항목을 반환한다.',
@@ -177,7 +348,9 @@ export function validateInput(tool, input) {
   for (const [k, v] of Object.entries(input)) {
     const p = s.properties?.[k];
     if (!p) { if (s.additionalProperties === false) return `알 수 없는 항목: ${k}`; continue; }
-    const ok = p.type === 'integer' ? Number.isInteger(v) : p.type === 'number' ? typeof v === 'number' && Number.isFinite(v) : typeof v === p.type;
+    const isNum = (x) => typeof x === 'number' && Number.isFinite(x);
+    const ok = p.type === 'integer' ? Number.isInteger(v) : p.type === 'number' ? isNum(v)
+      : p.type === 'array' ? Array.isArray(v) && (p.items?.type !== 'number' || v.every(isNum)) : typeof v === p.type;
     if (!ok) return `${k}: ${p.type} 형식이어야 합니다`;
     if (p.enum && !p.enum.includes(v)) return `${k}: ${p.enum.join('|')} 중 하나여야 합니다`;
   }

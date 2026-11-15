@@ -34,7 +34,9 @@ function loadConfig() {
     httpPort: 3000,
     host: null,
     robot: null, gripper: null,
-    ai: { model: 'claude-opus-5-5', effort: 'high', fallbacks: true }, // Claude 채팅 (인증: ANTHROPIC_API_KEY 또는 ant auth login)
+    // Claude 채팅. backend: 'auto'(API 키 환경변수가 있으면 api, 없으면 claude-code) | 'api'(ANTHROPIC_API_KEY 또는 ant auth login)
+    //   | 'claude-code'(설치된 Claude Code CLI 의 구독 로그인 사용, API 키 불필요). 환경변수 AI_BACKEND 로도 지정
+    ai: { backend: 'auto', model: 'claude-opus-5-5', effort: 'high', fallbacks: true, cliModel: null },
     protocols: {
       yaskawaHse: { port: 10040, filePort: 10041 },
       kawasakiAs: { port: 23, fallbackPort: 10023 },
@@ -205,11 +207,32 @@ const send = (ws, msg) => ws.readyState === 1 && ws.send(JSON.stringify(msg));
 const broadcast = (msg) => { const s = JSON.stringify(msg); for (const c of wss.clients) if (c.readyState === 1) c.send(s); };
 
 // Claude 채팅: 연결(브라우저 탭)마다 대화 세션 1개. SDK 는 처음 사용할 때 불러옴
-let ChatSession = null;
+let ChatSession = null, chatBackend = null;
+async function resolveChatBackend() {
+  if (chatBackend) return chatBackend;
+  const want = process.env.AI_BACKEND || config.ai.backend || 'auto';
+  if (want === 'api' || want === 'claude-code') chatBackend = want;
+  else if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) chatBackend = 'api';
+  else chatBackend = (await import('./ai/chat-cli.js')).claudeCliAvailable(config.ai.cliCommand) ? 'claude-code' : 'api';
+  ctrl.log('system', `Claude 채팅 백엔드: ${chatBackend === 'api' ? 'Claude API' : 'Claude Code CLI (구독 로그인)'}`);
+  return chatBackend;
+}
+// 채팅(Claude Code 백엔드)이 접속할 이 서버의 MCP 주소
+function localMcpUrl() {
+  const h = config.host;
+  const host = !h || h === '0.0.0.0' || h === '::' ? '127.0.0.1' : h.includes(':') ? `[${h}]` : h;
+  return `http://${host}:${server.address()?.port ?? config.httpPort}/mcp`;
+}
 async function chatSession(ws) {
   if (!ws.chat) {
-    ChatSession ??= (await import('./ai/chat.js')).ChatSession;
-    ws.chat = new ChatSession({ ctrl, config: config.ai, send: (ev) => send(ws, { type: 'chat', ...ev }) });
+    const sendChat = (ev) => send(ws, { type: 'chat', ...ev });
+    if (await resolveChatBackend() === 'claude-code') {
+      const { ClaudeCodeSession } = await import('./ai/chat-cli.js');
+      ws.chat = new ClaudeCodeSession({ ctrl, config: config.ai, mcpUrl: localMcpUrl(), send: sendChat });
+    } else {
+      ChatSession ??= (await import('./ai/chat.js')).ChatSession;
+      ws.chat = new ChatSession({ ctrl, config: config.ai, send: sendChat });
+    }
   }
   return ws.chat;
 }

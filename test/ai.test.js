@@ -4,6 +4,9 @@ import { Controller } from '../server/controller.js';
 import { TOOLS, callTool } from '../server/ai/tools.js';
 import { handleMcp } from '../server/ai/mcp.js';
 import { ChatSession } from '../server/ai/chat.js';
+import { ClaudeCodeSession } from '../server/ai/chat-cli.js';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 
 let fail = 0;
 const ok = (c, m) => { console.log(`${c ? '  OK ' : '  NG '} ${m}`); if (!c) fail++; };
@@ -32,6 +35,62 @@ const run = await J(callTool(ctrl, 'run_program', { action: 'start', wait_second
 ok(run.started && run.status === 'done' && run.lastCycle?.total_s > 0 && !run.alarms.length, `가상 실행 완료 (${run.status}, 사이클 ${run.lastCycle?.total_s}s)`);
 ok((await J(callTool(ctrl, 'read_program', { name: 'AI.JBI' }))).text.includes('//NAME AI'), '파일 읽기');
 ok((await callTool(ctrl, 'read_program', { name: 'NONE.JBI' })).isError, '없는 파일 오류');
+
+// 1b) 직접 제어 도구
+{
+  await callTool(ctrl, 'run_program', { action: 'reset' });
+  await J(callTool(ctrl, 'set_servo', { on: false }));
+  r = await callTool(ctrl, 'move_robot', { home: true });
+  ok(r.isError && /서보 OFF/.test(r.text), '직접 이동: 서보 OFF 거부');
+  let s = await J(callTool(ctrl, 'set_servo', { on: true, reset_alarms: true }));
+  ok(s.servo === true, '서보 ON');
+  ok((await callTool(ctrl, 'move_robot', { home: true, joints: [0, 0, 0, 0, 0, 0] })).isError, '대상 2개 지정 거부');
+  ok((await callTool(ctrl, 'move_robot', { joints: [0, 0, 0] })).isError, '관절 개수 오류 거부');
+  ok((await callTool(ctrl, 'move_robot', { joints: [0, 'a', 0, 0, 0, 0] })).isError, '배열 원소 형식 오류 거부');
+  ok((await callTool(ctrl, 'move_robot', { joints: [0, 0, 0, 0, 0, 0], motion: 'linear' })).isError, '관절 대상 linear 거부');
+
+  let m = await J(callTool(ctrl, 'move_robot', { joints: [10, 10, -10, 0, -60, 5], speed_percent: 100 }));
+  ok(m.result === 'done' && m.joints_deg.every((v, i) => Math.abs(v - [10, 10, -10, 0, -60, 5][i]) < 0.05), `관절 이동 도착 (${m.joints_deg})`);
+  m = await J(callTool(ctrl, 'move_robot', { joint_offsets: [5, 0, 0, 0, 0, 0], speed_percent: 100 }));
+  ok(m.result === 'done' && Math.abs(m.joints_deg[0] - 15) < 0.05, '관절 상대 이동');
+
+  const z0 = ctrl.tcpPose().p[2], x0 = ctrl.tcpPose().p[0];
+  m = await J(callTool(ctrl, 'move_robot', { offset_mm: [0, 0, 50], motion: 'linear', speed_percent: 50 }));
+  const p1 = ctrl.tcpPose().p;
+  ok(m.result === 'done' && Math.abs(p1[2] - z0 - 50) < 0.5 && Math.abs(p1[0] - x0) < 0.5, `직선 상대 이동 +Z50 (Δz=${(p1[2] - z0).toFixed(2)})`);
+
+  const tgt = [...m.tcp_vendor]; tgt[0] += 30; tgt[1] -= 20;
+  m = await J(callTool(ctrl, 'move_robot', { pose: tgt, speed_percent: 50 }));
+  ok(m.result === 'done' && m.tcp_vendor.slice(0, 3).every((v, i) => Math.abs(v - tgt[i]) < 0.5), '절대 TCP 이동 (제조사 표기)');
+  r = await callTool(ctrl, 'move_robot', { pose: [5000, 0, 0, 180, 0, 0] });
+  ok(r.isError && /도달/.test(r.text), `도달 불가 위치 오류 반환`);
+
+  m = await J(callTool(ctrl, 'move_robot', { home: true, speed_percent: 100, wait_seconds: 0 }));
+  ok(m.result === 'timeout' && m.moving, '대기 0초 → 이동 중 반환');
+  ok((await callTool(ctrl, 'move_robot', { home: true })).isError, '이동 중 새 이동 거부');
+  s = await J(callTool(ctrl, 'stop_robot', { action: 'stop' }));
+  ok(!s.moving && !s.held, '정지: 이동 취소');
+  m = await J(callTool(ctrl, 'move_robot', { home: true, speed_percent: 100 }));
+  ok(m.result === 'done' && m.joints_deg.every((v, i) => Math.abs(v - ctrl.robot.home[i]) < 0.05), '홈 복귀');
+
+  const g = await J(callTool(ctrl, 'gripper', { action: 'close' }));
+  ok(g.closed && (!ctrl.gripperIO.fbClosed || ctrl.getDI(ctrl.gripperIO.fbClosed)), '그리퍼 닫기 + 닫힘 DI');
+  const go = await J(callTool(ctrl, 'gripper', { action: 'open' }));
+  ok(!go.closed && go.holding === null, '그리퍼 열기');
+
+  const io = await J(callTool(ctrl, 'set_io', { type: 'do', n: 30, value: true }));
+  ok(io.value === true && io.doOn.includes(30) && ctrl.getDO(30), 'DO 출력');
+  await callTool(ctrl, 'set_io', { type: 'do', n: 30, value: false });
+  ok((await J(callTool(ctrl, 'set_io', { type: 'di', n: 7, value: true }))).diOn.includes(7), 'DI 시뮬레이션');
+  await callTool(ctrl, 'set_io', { type: 'di', n: 7, value: false });
+  ok((await callTool(ctrl, 'set_io', { type: 'do', n: 99999, value: true })).isError, 'I/O 범위 초과 오류');
+
+  ctrl.setEstop(true, 'ui');
+  r = await callTool(ctrl, 'move_robot', { joint_offsets: [1, 0, 0, 0, 0, 0] });
+  ok(r.isError, `비상정지 중 이동 거부 (${r.text.slice(0, 40)})`);
+  ctrl.setEstop(false, 'ui');
+  ctrl.resetAlarms();
+}
 
 // 2) MCP (Streamable HTTP, JSON 응답)
 const srv = http.createServer((req, res) => handleMcp(ctrl, req, res));
@@ -99,6 +158,48 @@ client.beta.messages.stream = () => { throw new Error('boom'); };
 events.length = 0;
 await chat.ask('다시');
 ok(chat.messages.length === before && events.at(-1).ev === 'error' && !chat.busy, '오류 시 턴 롤백');
+
+// 4) 채팅 — Claude Code CLI 백엔드 (가짜 프로세스: stream-json 출력)
+{
+  const runs = [];
+  let script = null;
+  const spawnFn = (cmd, args, opts) => {
+    runs.push({ cmd, args, env: opts.env });
+    const child = new EventEmitter();
+    child.stdout = new PassThrough(); child.stderr = new PassThrough();
+    child.kill = () => { child.stdout.end(); setImmediate(() => child.emit('close', null)); };
+    setImmediate(() => script(child));
+    return child;
+  };
+  const emitLines = (child, lines, code = 0) => { for (const l of lines) child.stdout.write(JSON.stringify(l) + '\n'); child.stdout.end(); setImmediate(() => child.emit('close', code)); };
+  script = (child) => emitLines(child, [
+    { type: 'system', subtype: 'init', session_id: 'x' },
+    { type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'tool_use', id: 't1', name: 'mcp__robot__move_robot' } } },
+    { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'mcp__robot__move_robot', input: { home: true } }] } },
+    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: '{"result":"done"}' }] }] } },
+    { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: '홈으로 이동했습니다' } } },
+    { type: 'result', subtype: 'success', is_error: false, result: '홈으로 이동했습니다' },
+  ]);
+  const ev = [];
+  process.env.ANTHROPIC_API_KEY ??= 'sk-test';
+  const cc = new ClaudeCodeSession({ ctrl, config: { effort: 'high' }, mcpUrl: 'http://127.0.0.1:1/mcp', send: (e) => ev.push(e), spawnFn });
+  await cc.ask('홈으로');
+  const a0 = runs[0].args;
+  ok(a0.includes('--session-id') && a0.includes('--strict-mcp-config') && a0[a0.indexOf('--tools') + 1] === '' && JSON.parse(a0[a0.indexOf('--mcp-config') + 1]).mcpServers.robot.url === 'http://127.0.0.1:1/mcp', 'CLI: MCP 전용·내장 도구 없음·새 세션');
+  ok(!('ANTHROPIC_API_KEY' in runs[0].env), 'CLI: API 키 환경변수 제거 (구독 로그인 사용)');
+  ok(ev.some((e) => e.ev === 'tool_start' && e.name === 'move_robot') && ev.some((e) => e.ev === 'tool_end' && e.name === 'move_robot' && e.ok) && ev.some((e) => e.ev === 'text') && ev.at(-1).ev === 'done', 'CLI: 도구·텍스트 이벤트 변환');
+  await cc.ask('다시');
+  ok(runs[1].args.includes('--resume') && runs[1].args[runs[1].args.indexOf('--resume') + 1] === runs[0].args[runs[0].args.indexOf('--session-id') + 1], 'CLI: 같은 세션 이어가기');
+  script = (child) => { child.stderr.write('Not logged in · Please run /login'); emitLines(child, [], 1); };
+  ev.length = 0; await cc.ask('x');
+  ok(ev.at(-1).ev === 'error' && /로그인/.test(ev.at(-1).msg) && !cc.busy, 'CLI: 로그인 필요 오류');
+  script = () => {};   // 응답 없이 대기 → stop
+  ev.length = 0; const p = cc.ask('y'); await sleep0(); cc.stop(); await p;
+  ok(ev.at(-1).ev === 'error' && /중단/.test(ev.at(-1).msg), 'CLI: 중단');
+  cc.reset();
+  ok(!cc.started && cc.sessionId !== runs[0].args[runs[0].args.indexOf('--session-id') + 1], 'CLI: 새 대화 = 새 세션');
+}
+function sleep0() { return new Promise((r) => setTimeout(r, 20)); }
 
 for (const c of [ctrl]) clearInterval(c._timer);
 console.log(fail ? `\n${fail}건 실패` : '\n모두 통과');
