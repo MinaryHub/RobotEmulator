@@ -12,7 +12,7 @@ const SERVER_INFO = { name: 'robot-emulator', title: '산업용 로봇 에뮬레
 const INSTRUCTIONS = `가상 산업용 로봇 컨트롤러(Yaskawa INFORM / Kawasaki AS / Hyundai HRScript / ABB RAPID / KUKA KRL)를 조작한다.
 로봇 프로그램을 만들 때: get_context 로 로봇·셀·I/O 를 확인 → get_language_guide 로 문법과 동작하는 예제를 확인 → write_program 으로 저장·컴파일(오류가 있으면 고쳐서 다시 저장) → 필요하면 run_program(start) 으로 가상 로봇에서 실행해 결과(사이클 타임, 알람, 간섭, 공작물 위치)를 확인한다.
 가상 로봇을 직접 조작할 때: set_servo(on) → move_robot(home/joints/joint_offsets/pose/offset_mm) · gripper(open/close) · set_io · stop_robot(hold/resume/stop). 각 결과에 최종 관절각·TCP·알람·간섭이 포함된다.
-로봇을 움직이는 명령(서보 ON·이동·프로그램 시작·재개)은 운전 모드가 REMOTE 일 때만 허용된다. 거부되면 사용자에게 화면에서 REMOTE 로 바꿔 달라고 요청한다.`;
+로봇을 움직이는 명령(서보 ON·이동·프로그램 시작·재개·그리퍼 개폐)은 운전 모드가 REMOTE 일 때만 허용된다. 거부되면 사용자에게 화면에서 REMOTE 로 바꿔 달라고 요청한다.`;
 
 const rpcError = (id, code, message) => ({ jsonrpc: '2.0', id: id ?? null, error: { code, message } });
 const ok = (id, result) => ({ jsonrpc: '2.0', id, result });

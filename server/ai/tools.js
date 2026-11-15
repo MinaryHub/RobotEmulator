@@ -44,10 +44,19 @@ function programStatus(ctrl) {
   };
 }
 
-// Claude 의 동작 명령(서보 ON·이동·시작·재개)은 외부 기기(PLC·상위 PC)와 같은 출처로 처리
-//  → 모드 인터록이 켜져 있으면 REMOTE 모드에서만 허용. 정지·HOLD·서보 OFF·I/O·파일 작업은 모드와 무관
+// Claude 의 동작 명령(서보 ON·이동·시작·재개·그리퍼)은 외부 기기(PLC·상위 PC)와 같은 출처로 처리
+//  → 모드 인터록이 켜져 있으면 REMOTE 모드에서만 허용. 정지·HOLD·서보 OFF·I/O(그리퍼 DO 제외)·파일 작업은 모드와 무관
 const AI_SOURCE = 'ext';
 const REMOTE_HINT = '운전 모드를 화면(펜던트)에서 REMOTE 로 바꿔 달라고 사용자에게 요청하세요. 모드는 Claude 가 바꿀 수 없습니다.';
+// 그리퍼 구동(전용 도구 또는 그리퍼 DO 직접 쓰기): 이동과 같은 모드 인터록 (인터록 OFF 면 제한 없음)
+function checkGripperMode(ctrl, what) {
+  if (ctrl.interlock && ctrl.mode !== 'REMOTE') {
+    ctrl.log('system', `거부: ${what} (외부) — 그리퍼는 REMOTE 모드에서만 조작할 수 있습니다`);
+    throw new Error(`${what} 거부: Claude 의 그리퍼 조작은 REMOTE 모드에서만 허용됩니다 (현재 모드 ${ctrl.mode}). ${REMOTE_HINT}`);
+  }
+}
+const isGripperDO = (ctrl, n) => { const g = ctrl.gripperIO; return n === g.close || n === g.open; };
+
 function rejectError(ctrl, what) {
   const r = ctrl.lastReject;
   const why = r?.reason ?? '알 수 없는 이유';
@@ -295,7 +304,7 @@ export const TOOLS = [
   },
   {
     name: 'set_io',
-    description: '가상 컨트롤러 I/O 를 쓴다. type=do 는 로봇 출력(그리퍼 DO 면 그리퍼가 실제로 개폐), type=di 는 입력 시뮬레이션(센서·PLC 신호 흉내). 번호와 이름은 get_context 의 ioNames·gripper.io 참고.',
+    description: '가상 컨트롤러 I/O 를 쓴다. 그리퍼 개폐 DO(get_context 의 gripper.io.close/open)는 REMOTE 모드에서만 쓸 수 있다. type=do 는 로봇 출력(그리퍼 DO 면 그리퍼가 실제로 개폐), type=di 는 입력 시뮬레이션(센서·PLC 신호 흉내). 번호와 이름은 get_context 의 ioNames·gripper.io 참고.',
     input_schema: {
       type: 'object',
       properties: {
@@ -307,6 +316,7 @@ export const TOOLS = [
       additionalProperties: false,
     },
     run(ctrl, { type, n, value }) {
+      if (type === 'do' && isGripperDO(ctrl, n)) checkGripperMode(ctrl, `그리퍼 DO${n}`);
       if (type === 'do') ctrl.setDO(n, value); else ctrl.setDI(n, value);
       ctrl.log('system', `AI: ${type.toUpperCase()}${n} = ${value ? 'ON' : 'OFF'}`);
       const st = ctrl.snapshot();
@@ -315,7 +325,7 @@ export const TOOLS = [
   },
   {
     name: 'gripper',
-    description: '가상 그리퍼를 열거나 닫는다 (그리퍼 DO 로 구동 → 닫힘·열림·감지 DI 피드백도 갱신). 닫을 때 TCP 근처에 공작물이 있으면 파지하고, 열면 내려놓는다. 결과의 holding 에 파지한 공작물 id.',
+    description: 'REMOTE 모드에서만 가능. 가상 그리퍼를 열거나 닫는다 (그리퍼 DO 로 구동 → 닫힘·열림·감지 DI 피드백도 갱신). 닫을 때 TCP 근처에 공작물이 있으면 파지하고, 열면 내려놓는다. 결과의 holding 에 파지한 공작물 id.',
     input_schema: {
       type: 'object',
       properties: { action: { type: 'string', enum: ['open', 'close'] } },
@@ -323,6 +333,7 @@ export const TOOLS = [
       additionalProperties: false,
     },
     async run(ctrl, { action }) {
+      checkGripperMode(ctrl, `그리퍼 ${action === 'close' ? '닫기' : '열기'}`);
       const g = ctrl.gripperIO, close = action === 'close';
       if (g.close) ctrl.setDO(g.close, close);
       if (g.open && g.open !== g.close) ctrl.setDO(g.open, !close);
