@@ -18,6 +18,7 @@ import { handleMcp } from './ai/mcp.js';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const config = loadConfig();
 const ctrl = new Controller();
+ctrl.netHost = config.host;   // DRL 소켓(server_socket_open) 바인딩 주소 — 통신 모듈과 같은 규칙 (null = 모든 인터페이스)
 if (config.robot) try { ctrl.setRobot(config.robot); } catch (e) { console.error(e.message); }
 if (config.gripper) ctrl.setGripper(config.gripper);
 // 프로젝트 저장소: 직전 세션 자동 복원 (config.restoreSession=false 또는 robot 지정 시 생략)

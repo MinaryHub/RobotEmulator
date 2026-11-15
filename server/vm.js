@@ -130,6 +130,7 @@ export class VM {
       this.cycle++;
       this.ctrl.finishCycle(st);
     } else this.ctrl.cycleStats.current = null;
+    try { this.prog.cleanup?.(this); } catch { /* 정리 실패는 무시 */ }
     this.ctrl.emitState();
     this.ctrl.onProgramEnd?.(this);
   }

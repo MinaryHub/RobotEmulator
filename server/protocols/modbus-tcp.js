@@ -23,7 +23,7 @@
 //     2      알람 개수
 //     3      마지막 알람 코드 (숫자 코드면 그 값 & 0xFFFF, 문자열이면 16bit FNV 해시, 없으면 0)
 //     4-5    프로그램 사이클 횟수 (u32)
-//     6      제조사 코드 (1 Yaskawa, 2 Kawasaki, 3 Hyundai, 4 ABB, 5 KUKA) — 30..43 자세 형식 판별용
+//     6      제조사 코드 (1 Yaskawa, 2 Kawasaki, 3 Hyundai, 4 ABB, 5 KUKA, 6 Doosan) — 30..43 자세 형식 판별용
 //     7      마지막 명령 거부 사유 코드 (server/controller.js REJECT: 1 REMOTE 아님, 2 REMOTE 에서 펜던트 조작,
 //            3 비상정지, 4 펜스 열림, 5 인에이블 OFF, 6 알람, 7 서보 OFF, 8 모드 변경 불가, 9 프로그램 번호 미할당,
 //            10 패리티 오류, 11 조그 모드, 12 실행 중 선택, 13 홀드 입력, 14 서보 OFF 입력), 거부 없으면 0
@@ -31,7 +31,7 @@
 //     10..21 관절 J1..J6, int32 = deg × 1000 (J1 = 10-11, J2 = 12-13, ...)
 //     30..43 TCP 자세 (ctrl.vendorPose(), 제조사 표현, 사용자 좌표계 적용) 7개 int32:
 //            30-31 X, 32-33 Y, 34-35 Z  (mm × 1000)
-//            36-37, 38-39, 40-41 : 각도 3개 (deg × 1000; Yaskawa/Hyundai Rx,Ry,Rz / KUKA A,B,C / Kawasaki O,A,T)
+//            36-37, 38-39, 40-41 : 각도 3개 (deg × 1000; Yaskawa/Hyundai Rx,Ry,Rz / KUKA A,B,C / Kawasaki O,A,T / Doosan A,B,C ZYZ)
 //                                  ABB 는 q1,q2,q3 (× 1,000,000)
 //            42-43 : ABB 는 q4 (× 1,000,000), 그 외 제조사는 0
 //     50-51  마지막 사이클 시간 ms (u32, ctrl.cycleStats.last.total 초 → ms, 없으면 0)
@@ -54,7 +54,7 @@ import { makeLogger, bindServer, startMove } from './common.js';
 
 const TAG = 'MODBUS';
 const NIO = 512;
-const VENDOR_CODE = { yaskawa: 1, kawasaki: 2, hyundai: 3, abb: 4, kuka: 5 };
+const VENDOR_CODE = { yaskawa: 1, kawasaki: 2, hyundai: 3, abb: 4, kuka: 5, doosan: 6 };
 export const COMMANDS = { 1: 'servoOn', 2: 'servoOff', 3: 'start', 4: 'hold', 5: 'resume', 6: 'stop', 7: 'resetAlarms', 8: 'resetProgram', 9: 'moveHome' };
 export const IR_SIZE = 100;
 export const HR_USER_BASE = 100;

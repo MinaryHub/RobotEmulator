@@ -6,6 +6,7 @@
 // limits: 관절 소프트 리밋(deg), maxSpeed: 관절 최대속도(deg/s), maxAccelTime: 최고속 도달 시간(s)
 // 2026-11 데이터시트 재대조: 아래 각 모델 source 에 확인 범위와 남은 불일치 기록
 // a2 부호: 0점 자세에서 손목 중심 높이 = c1 - a2 → 손목이 J3 축보다 위면 음수, 아래면 양수 (KUKA KR 16-2·QUANTEC extra/ultra 는 양수)
+// reachRef: 'flange' — 공개 도달거리가 손목 중심이 아니라 플랜지 면까지 (두산). 생략 시 손목 중심 기준
 // tcpMaxSpeed: 직선보간 최대 속도(mm/s) — 제조사 미공개, 컨트롤러 관례값(추정)
 
 export const VENDORS = {
@@ -34,6 +35,11 @@ export const VENDORS = {
     jointNames: ['A1', 'A2', 'A3', 'A4', 'A5', 'A6'], poseNames: ['X', 'Y', 'Z', 'A', 'B', 'C'],
     color: 0xf07a12, accent: 0x2b2b2b,
   },
+  doosan: {
+    name: 'Doosan Robotics', controller: 'CS-01 (DART-Platform)', language: 'DRL', ext: '.drl',
+    jointNames: ['J1', 'J2', 'J3', 'J4', 'J5', 'J6'], poseNames: ['X', 'Y', 'Z', 'A', 'B', 'C'],
+    color: 0xf3f4f5, accent: 0x2b6cb0,
+  },
 };
 
 // 제조사별 관절 부호/영점 (q_opw = q*sign - offset)
@@ -42,11 +48,13 @@ export const VENDORS = {
 //  Hyundai : RoboDK 라이브러리의 관절 방향/영점 기준 (H=90 하완 수직, V=0 상완 수평)
 //  ABB     : ROS-I abb OPW yaml 규약 (IRB1600 공식 yaml 과 동일 규약)
 //  KUKA    : ROS-I kuka_experimental OPW yaml 규약
+//  Doosan  : 두산 공식 doosan-robot2 URDF 와 동일 (변환 없음, 0 = 팔 전체 수직). 무작위 자세 FK 대조로 확인
 const Y = { offsets: [0, 0, -90, 0, 0, 0], signs: [1, 1, -1, -1, -1, -1] };
 const KW = { offsets: [0, 0, 0, 0, 0, 0], signs: [-1, 1, -1, 1, -1, 1] };
 const HY = { offsets: [0, -90, -90, 0, 0, 0], signs: [1, -1, -1, 1, -1, 1] };
 const AB = { offsets: [0, 0, -90, 0, 0, 0], signs: [1, 1, 1, 1, 1, 1] };
 const KU = { offsets: [0, -90, 0, 0, 0, 0], signs: [-1, 1, 1, -1, 1, -1] };
+const DS = { offsets: [0, 0, 0, 0, 0, 0], signs: [1, 1, 1, 1, 1, 1] };
 
 export const ROBOTS = [
   // ---------- Yaskawa ----------
@@ -613,6 +621,63 @@ export const ROBOTS = [
     limits: [[-185, 185], [-140, -5], [-120, 155], [-350, 350], [-122.5, 122.5], [-350, 350]],
     maxSpeed: [105, 101, 107, 136, 129, 206], home: [0, -90, 90, 0, 0, 0], tcpMaxSpeed: 2000,
     source: 'KUKA 공식 ROS2 kr210_r3100_ultra URDF (형상·범위·속도, rad/s→°/s 반올림) + RoboDK (210 kg, 3095 mm, ±0.06). 데이터시트 원본 미확보. a2=+41: URDF 상 손목이 A3 축보다 41 mm 아래. 도달거리 3095 는 A2 상한 -5° 로 제한된 값 (치수상 3100.6)',
+  },
+  // ---------- Doosan (협동로봇) ----------
+  {
+    id: 'doosan-m0609', vendor: 'doosan', reachRef: 'flange', name: 'M0609', payload: 6, reach: 900, repeatability: 0.03, ...DS,
+    opw: { a1: 0, a2: 0, b: 6.2, c1: 134.5, c2: 411, c3: 368, c4: 121 },
+    limits: [[-360, 360], [-360, 360], [-150, 150], [-360, 360], [-360, 360], [-360, 360]],
+    maxSpeed: [150, 150, 180, 225, 225, 225], home: [0, 0, 90, 0, 90, 0], tcpMaxSpeed: 1000,
+    source: 'doosan-robot2 URDF(m0609) — 치수·관절 한계·속도. 매뉴얼 3.5.0 사양표와 관절 범위·속도 일치. 반복정밀도는 사양표 열 정렬이 불분명해 열 순서대로 읽은 값(확인 필요)',
+  },
+  {
+    id: 'doosan-m0617', vendor: 'doosan', reachRef: 'flange', name: 'M0617', payload: 6, reach: 1700, repeatability: 0.1, ...DS,
+    opw: { a1: 0, a2: 0, b: 34.5, c1: 153, c2: 845, c3: 734, c4: 121 },
+    limits: [[-360, 360], [-360, 360], [-165, 165], [-360, 360], [-360, 360], [-360, 360]],
+    maxSpeed: [100, 100, 150, 225, 225, 225], home: [0, 0, 90, 0, 90, 0], tcpMaxSpeed: 1000,
+    source: 'doosan-robot2 URDF(m0617) — 치수·관절 한계·속도. 매뉴얼 3.5.0 사양표와 관절 범위·속도 일치. 반복정밀도는 사양표 열 정렬이 불분명해 열 순서대로 읽은 값(확인 필요)',
+  },
+  {
+    id: 'doosan-m1013', vendor: 'doosan', reachRef: 'flange', name: 'M1013', payload: 10, reach: 1300, repeatability: 0.05, ...DS,
+    opw: { a1: 0, a2: 0, b: 34.5, c1: 152.5, c2: 620, c3: 559, c4: 121 },
+    limits: [[-360, 360], [-360, 360], [-160, 160], [-360, 360], [-360, 360], [-360, 360]],
+    maxSpeed: [120, 120, 180, 225, 225, 225], home: [0, 0, 90, 0, 90, 0], tcpMaxSpeed: 1000,
+    source: 'doosan-robot2 URDF(m1013) — 치수·관절 한계·속도. 매뉴얼 3.5.0 사양표와 관절 범위·속도 일치. 반복정밀도 ±0.05 (매뉴얼 2.9; 구 브로슈어는 ±0.1)',
+  },
+  {
+    id: 'doosan-m1509', vendor: 'doosan', reachRef: 'flange', name: 'M1509', payload: 15, reach: 900, repeatability: 0.03, ...DS,
+    opw: { a1: 0, a2: 0, b: 34.5, c1: 153, c2: 411, c3: 368, c4: 121 },
+    limits: [[-360, 360], [-360, 360], [-150, 150], [-360, 360], [-360, 360], [-360, 360]],
+    maxSpeed: [150, 150, 180, 225, 225, 225], home: [0, 0, 90, 0, 90, 0], tcpMaxSpeed: 1000,
+    source: 'doosan-robot2 URDF(m1509) — 치수·관절 한계·속도. 매뉴얼 3.5.0 사양표와 관절 범위·속도 일치. 반복정밀도는 사양표 열 정렬이 불분명해 열 순서대로 읽은 값(확인 필요)',
+  },
+  {
+    id: 'doosan-h2017', vendor: 'doosan', reachRef: 'flange', name: 'H2017', payload: 20, reach: 1700, repeatability: 0.1, ...DS,
+    opw: { a1: 0, a2: 0, b: 9.9, c1: 344.3, c2: 845, c3: 734, c4: 121 },
+    limits: [[-360, 360], [-125, 125], [-160, 160], [-360, 360], [-360, 360], [-360, 360]],
+    maxSpeed: [100, 80, 100, 180, 180, 180], home: [0, 0, 90, 0, 90, 0], tcpMaxSpeed: 1000,
+    source: 'doosan-robot2 URDF(h2017) — 치수·관절 한계·속도. 매뉴얼 3.5.0 사양표와 관절 범위·속도 일치. 반복정밀도는 사양표 열 정렬이 불분명해 열 순서대로 읽은 값(확인 필요)',
+  },
+  {
+    id: 'doosan-h2515', vendor: 'doosan', reachRef: 'flange', name: 'H2515', payload: 25, reach: 1500, repeatability: 0.1, ...DS,
+    opw: { a1: 0, a2: 0, b: 9.9, c1: 344.3, c2: 759.5, c3: 619.5, c4: 121 },
+    limits: [[-360, 360], [-125, 125], [-160, 160], [-360, 360], [-360, 360], [-360, 360]],
+    maxSpeed: [100, 80, 100, 180, 180, 180], home: [0, 0, 90, 0, 90, 0], tcpMaxSpeed: 1000,
+    source: 'doosan-robot2 URDF(h2515) — 치수·관절 한계·속도. 매뉴얼 3.5.0 사양표와 관절 범위·속도 일치. 반복정밀도는 사양표 열 정렬이 불분명해 열 순서대로 읽은 값(확인 필요)',
+  },
+  {
+    id: 'doosan-a0509', vendor: 'doosan', reachRef: 'flange', name: 'A0509', payload: 5, reach: 900, repeatability: 0.03, ...DS,
+    opw: { a1: 0, a2: 0, b: 0, c1: 156, c2: 409, c3: 367, c4: 124 },
+    limits: [[-360, 360], [-360, 360], [-160, 160], [-360, 360], [-360, 360], [-360, 360]],
+    maxSpeed: [180, 180, 180, 360, 360, 360], home: [0, 0, 90, 0, 90, 0], tcpMaxSpeed: 1000,
+    source: 'doosan-robot2 URDF(a0509) — 치수. 관절 범위·속도는 매뉴얼 3.5.0 A 시리즈 사양표(URDF J4~J6 속도 360 일치). 가반하중·반복정밀도는 사양표 열 정렬이 불분명해 모델명 기준(확인 필요)',
+  },
+  {
+    id: 'doosan-a0912', vendor: 'doosan', reachRef: 'flange', name: 'A0912', payload: 9, reach: 1200, repeatability: 0.05, ...DS,
+    opw: { a1: 0, a2: 0, b: 39, c1: 195, c2: 560, c3: 516, c4: 124 },
+    limits: [[-360, 360], [-360, 360], [-160, 160], [-360, 360], [-360, 360], [-360, 360]],
+    maxSpeed: [180, 180, 180, 360, 360, 360], home: [0, 0, 90, 0, 90, 0], tcpMaxSpeed: 1000,
+    source: 'doosan-robot2 URDF(a0912) — 치수. 관절 범위·속도는 매뉴얼 3.5.0 A 시리즈 사양표. 가반하중·반복정밀도는 사양표 열 정렬이 불분명해 모델명 기준(확인 필요)',
   },
 ];
 

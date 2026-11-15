@@ -31,7 +31,7 @@ function lowerArmMaxSin(m) {
 }
 console.log('\n도달거리 검산 (공개값 / 치수계산 / 차이)');
 for (const m of ROBOTS) {
-  const k = m.opw, calc = k.a1 + k.c2 * lowerArmMaxSin(m) + Math.hypot(k.c3, k.a2), d = calc - m.reach;
+  const k = m.opw, calc = k.a1 + k.c2 * lowerArmMaxSin(m) + Math.hypot(k.c3, k.a2) + (m.reachRef === 'flange' ? k.c4 : 0), d = calc - m.reach;
   console.log(m.id.padEnd(20), String(m.reach).padStart(6), calc.toFixed(1).padStart(8), d.toFixed(1).padStart(7), Math.abs(d) > 25 ? ' ← 확인 필요' : '');
   if (Math.abs(d) > 40) fail++;
 }

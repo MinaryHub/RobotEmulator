@@ -7,7 +7,7 @@ import { Controller } from '../server/controller.js';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const ctrl = new Controller();
-for (const id of ['yaskawa-gp7', 'kawasaki-rs007n', 'hyundai-hh7', 'abb-irb1200', 'kuka-kr6-r900']) {
+for (const id of ['yaskawa-gp7', 'kawasaki-rs007n', 'hyundai-hh7', 'abb-irb1200', 'kuka-kr6-r900', 'doosan-m1013']) {
   ctrl.setRobot(id);
   const dir = path.join(ROOT, 'examples', ctrl.vendor, id);
   fs.mkdirSync(dir, { recursive: true });

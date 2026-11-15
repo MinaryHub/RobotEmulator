@@ -1,7 +1,7 @@
 {
   "name": "robot-emulator",
   "version": "1.0.0",
-  "description": "다제조사 산업용 로봇 에뮬레이터 (Yaskawa/Kawasaki/Hyundai/ABB/KUKA)",
+  "description": "다제조사 산업용 로봇 에뮬레이터 (Yaskawa/Kawasaki/Hyundai/ABB/KUKA/Doosan)",
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",
