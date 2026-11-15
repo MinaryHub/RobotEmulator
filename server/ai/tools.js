@@ -44,6 +44,16 @@ function programStatus(ctrl) {
   };
 }
 
+// Claude 의 동작 명령(서보 ON·이동·시작·재개)은 외부 기기(PLC·상위 PC)와 같은 출처로 처리
+//  → 모드 인터록이 켜져 있으면 REMOTE 모드에서만 허용. 정지·HOLD·서보 OFF·I/O·파일 작업은 모드와 무관
+const AI_SOURCE = 'ext';
+const REMOTE_HINT = '운전 모드를 화면(펜던트)에서 REMOTE 로 바꿔 달라고 사용자에게 요청하세요. 모드는 Claude 가 바꿀 수 없습니다.';
+function rejectError(ctrl, what) {
+  const r = ctrl.lastReject;
+  const why = r?.reason ?? '알 수 없는 이유';
+  return new Error(`${what} 거부: ${why}${r?.code === 1 ? ` (현재 모드 ${ctrl.mode}). ${REMOTE_HINT}` : ''}`);
+}
+
 // 직접 제어 도구 공통: 현재 로봇 상태 요약
 function robotStatus(ctrl) {
   const st = ctrl.snapshot();
@@ -152,7 +162,7 @@ export const TOOLS = [
   },
   {
     name: 'run_program',
-    description: '가상 로봇에서 메인 프로그램을 제어하고 결과를 확인한다. action: start(서보 자동 ON 후 처음부터 실행), step(한 줄 실행), stop(정지), reset(정지 후 처음으로), reset_alarms(알람 해제), status(조회만). start/step 은 wait_seconds 동안 종료를 기다린 뒤 상태·사이클 타임·알람·간섭·공작물 위치·최근 로그를 반환한다. 실제 로봇이 아니라 에뮬레이터의 가상 로봇만 움직인다.',
+    description: '가상 로봇에서 메인 프로그램을 제어하고 결과를 확인한다. start/step 은 운전 모드가 REMOTE 일 때만 가능하다 (모드 인터록). action: start(서보 자동 ON 후 처음부터 실행), step(한 줄 실행), stop(정지), reset(정지 후 처음으로), reset_alarms(알람 해제), status(조회만). start/step 은 wait_seconds 동안 종료를 기다린 뒤 상태·사이클 타임·알람·간섭·공작물 위치·최근 로그를 반환한다. 실제 로봇이 아니라 에뮬레이터의 가상 로봇만 움직인다.',
     input_schema: {
       type: 'object',
       properties: {
@@ -171,8 +181,9 @@ export const TOOLS = [
         case 'reset_alarms': ctrl.resetAlarms(); break;
         case 'status': break;
         case 'start': case 'step': {
-          if (!ctrl.servo) ctrl.setServo(true);
-          started = await ctrl.start({ step: action === 'step' });
+          if (!ctrl.servo && ctrl.setServo(true, AI_SOURCE) === false) throw rejectError(ctrl, '서보 ON');
+          started = await ctrl.start({ step: action === 'step', source: AI_SOURCE });
+          if (!started && ctrl.lastReject?.op === 'start') throw rejectError(ctrl, '프로그램 시작');
           if (started) {
             const until = Date.now() + Math.max(0, Math.min(120, Number(wait_seconds) || 0)) * 1000;
             await sleep(200);
@@ -193,7 +204,7 @@ export const TOOLS = [
   // ------------------------------------------------------------ 직접 제어 (가상 로봇을 바로 움직임)
   {
     name: 'set_servo',
-    description: '가상 로봇의 서보 전원을 켜거나 끈다. 이동 전에 서보 ON 이 필요하다. 알람이 있으면 reset_alarms=true 로 먼저 해제할 수 있다. 비상정지 중에는 켜지지 않는다.',
+    description: '가상 로봇의 서보 전원을 켜거나 끈다. 서보 ON 은 REMOTE 모드에서만 가능하다. 이동 전에 서보 ON 이 필요하다. 알람이 있으면 reset_alarms=true 로 먼저 해제할 수 있다. 비상정지 중에는 켜지지 않는다.',
     input_schema: {
       type: 'object',
       properties: {
@@ -205,15 +216,15 @@ export const TOOLS = [
     },
     run(ctrl, { on, reset_alarms = false }) {
       if (on && reset_alarms) ctrl.resetAlarms();
-      const r = ctrl.setServo(on);
-      if (on && r === false) throw new Error(`서보 ON 실패: ${ctrl.lastReject?.reason ?? '알 수 없는 이유'}`);
+      const r = ctrl.setServo(on, AI_SOURCE);
+      if (on && r === false) throw rejectError(ctrl, '서보 ON');
       ctrl.log('system', `AI: 서보 ${on ? 'ON' : 'OFF'}`);
       return robotStatus(ctrl);
     },
   },
   {
     name: 'move_robot',
-    description: '가상 로봇을 직접 이동시키고 도착(또는 wait_seconds 초과)까지 기다린 뒤 최종 관절각·TCP·알람을 반환한다. 대상은 정확히 하나만 지정: home(홈 자세) / joints(관절각 deg, 6개) / pose(TCP 절대 위치, 제조사 표기 — get_context 의 pose.tcp_vendor 와 같은 형식) / offset_mm(현재 TCP 기준 상대 이동 [dx,dy,dz], 자세 유지) / joint_offsets(현재 관절각에 더할 deg, 6개). motion: joint(관절보간, 기본) 또는 linear(직선보간, pose/offset_mm 에만). 서보 ON 이 필요하며 프로그램 실행 중에는 사용할 수 없다. 좌표는 로봇 베이스 기준 mm.',
+    description: '가상 로봇을 직접 이동시키고 도착(또는 wait_seconds 초과)까지 기다린 뒤 최종 관절각·TCP·알람을 반환한다. 대상은 정확히 하나만 지정: home(홈 자세) / joints(관절각 deg, 6개) / pose(TCP 절대 위치, 제조사 표기 — get_context 의 pose.tcp_vendor 와 같은 형식) / offset_mm(현재 TCP 기준 상대 이동 [dx,dy,dz], 자세 유지) / joint_offsets(현재 관절각에 더할 deg, 6개). motion: joint(관절보간, 기본) 또는 linear(직선보간, pose/offset_mm 에만). REMOTE 모드와 서보 ON 이 필요하며 프로그램 실행 중에는 사용할 수 없다. 좌표는 로봇 베이스 기준 mm.',
     input_schema: {
       type: 'object',
       properties: {
@@ -234,8 +245,8 @@ export const TOOLS = [
       const targets = [home ? 'home' : null, joints && 'joints', joint_offsets && 'joint_offsets', pose && 'pose', offset_mm && 'offset_mm'].filter(Boolean);
       if (targets.length !== 1) throw new Error('home / joints / joint_offsets / pose / offset_mm 중 정확히 하나를 지정하세요');
       if (programBusy(ctrl)) throw new Error('프로그램 실행 중에는 직접 이동할 수 없습니다. run_program 의 stop 을 먼저 호출하세요.');
-      const safe = ctrl.checkCommand('move', 'internal');
-      if (safe) throw new Error(`이동 거부: ${safe.reason}`);
+      const safe = ctrl.checkCommand('move', AI_SOURCE);
+      if (safe) throw new Error(`이동 거부: ${safe.reason}${safe.code === 1 ? ` (현재 모드 ${ctrl.mode}). ${REMOTE_HINT}` : ''}`);
       if (!ctrl.servo) throw new Error('서보 OFF 상태입니다. set_servo(on=true) 를 먼저 호출하세요.');
       if (ctrl.alarms.length) throw new Error(`알람 발생 중: ${ctrl.alarms.map((a) => `[${a.code}] ${a.msg}`).join(', ')} — set_servo(on=true, reset_alarms=true) 로 해제 후 다시 시도하세요.`);
       if (ctrl.held) throw new Error('HOLD 상태입니다. stop_robot(action=resume 또는 stop) 후 다시 시도하세요.');
@@ -257,13 +268,13 @@ export const TOOLS = [
       if (kind === 'L' && target.joints) throw new Error('linear 이동은 pose 또는 offset_mm 대상에서만 사용할 수 있습니다');
       const speed = kind === 'J' ? { frac } : { tcp: frac * ctrl.robot.tcpMaxSpeed };
       ctrl.log('system', `AI: ${kind === 'J' ? '관절' : '직선'} 이동 (${targets[0]}, ${Math.round(frac * 100)}%)`);
-      const result = await awaitMotion(ctrl, ctrl.move({ kind, target, speed }), Number(wait_seconds) || 0);
+      const result = await awaitMotion(ctrl, ctrl.move({ kind, target, speed, source: AI_SOURCE }), Number(wait_seconds) || 0);
       return { result, ...robotStatus(ctrl) };
     },
   },
   {
     name: 'stop_robot',
-    description: '가상 로봇 동작 제어: hold(일시 정지 — 프로그램·이동 모두), resume(HOLD 해제 후 재개), stop(진행 중인 이동 취소 + 프로그램 정지). status 는 조회만.',
+    description: '가상 로봇 동작 제어: hold(일시 정지 — 프로그램·이동 모두), resume(HOLD 해제 후 재개 — REMOTE 모드에서만), stop(진행 중인 이동 취소 + 프로그램 정지). status 는 조회만.',
     input_schema: {
       type: 'object',
       properties: { action: { type: 'string', enum: ['hold', 'resume', 'stop', 'status'] } },
@@ -272,7 +283,7 @@ export const TOOLS = [
     },
     run(ctrl, { action }) {
       if (action === 'hold') ctrl.hold();
-      else if (action === 'resume') { if (ctrl.resume() === false) throw new Error(`재개 실패: ${ctrl.lastReject?.reason ?? ''}`); }
+      else if (action === 'resume') { if (ctrl.resume(AI_SOURCE) === false) throw rejectError(ctrl, '재개'); }
       else if (action === 'stop') {
         if (programBusy(ctrl)) ctrl.stopProgram();
         ctrl.cancelMotion();
