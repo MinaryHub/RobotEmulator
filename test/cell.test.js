@@ -28,7 +28,7 @@ console.log('[기본 레이아웃]');
   for (const r of ROBOTS) {
     ctrl.setRobot(r.id);
     const R = r.reach;
-    const s = Math.round(Math.max(30, Math.min(160, R * 0.045)) / 5) * 5;
+    const s = Math.round(Math.max(30, Math.min(140, R * 0.045)) / 5) * 5;
     const floorZ = -Math.round(R * 0.45 / 50) * 50;
     const scene = { floorZ, table: { x: R * 0.6, y: 0, z: 0, w: R * 0.55, d: R * 1.1 }, pedestal: { d: Math.max(200, R * 0.3), h: -floorZ } };
     const colors = [0x3fa34d, 0xd9822b, 0x2f7ed8, 0xc03a3a];
@@ -37,7 +37,7 @@ console.log('[기본 레이아웃]');
       ctrl.objects.every((o, i) => o.id === objs[i].id && o.color === objs[i].color && near(o.size, objs[i].size) && near(o.pose.p, objs[i].p) && near(o.pose.R.flat(), [1, 0, 0, 0, 1, 0, 0, 0, 1]));
     if (!same) { okAll = false; console.log('   차이:', r.id, JSON.stringify(ctrl.scene), JSON.stringify(ctrl.objects.map((o) => o.pose.p))); }
   }
-  check(okAll, `17개 모델 모두 기존 씬·공작물(W1..W4) 위치와 동일`);
+  check(okAll, `${ROBOTS.length}개 모델 모두 기존 씬·공작물(W1..W4) 위치와 동일`);
   check(ctrl.cell.layout.preset === 'default' && ctrl.cell.layout.devices.length === 0, '기본 프리셋: 장치 없음');
   const snap = ctrl.snapshot();
   check(snap.cell && snap.cell.layout && snap.cell.presets.length >= 2, 'snapshot().cell 포함');
@@ -229,7 +229,7 @@ console.log('[컨베이어 프리셋 도달 가능성]');
     if (Math.abs(sen.y - g.pick[1]) > 1e-6) bad.push(`${r.id} 센서 위치`);
     for (const q of palletSlots(L.devices.find((d) => d.type === 'pallet'))) if (Math.abs(q[0] - t.x) > t.w / 2 - g.s || Math.abs(q[1] - t.y) > t.d / 2 - g.s) bad.push(`${r.id} 슬롯 테이블 밖`);
   }
-  check(!bad.length, `17개 모델: 픽/적재 위치(접근점 포함) 모두 도달 가능 ${bad.join('; ')}`);
+  check(!bad.length, `${ROBOTS.length}개 모델: 픽/적재 위치(접근점 포함) 모두 도달 가능 ${bad.join('; ')}`);
 }
 
 // ---------------------------------------------------------------- 7) 예제 프로그램: examples/conveyor (RAPID)
