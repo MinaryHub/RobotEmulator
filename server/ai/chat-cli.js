@@ -28,17 +28,20 @@ function resolveWin(cmd) {
   resolved.set(cmd, p);
   return p;
 }
-// cmd.exe 용 인자 인용 (줄바꿈은 cmd 가 전달 못 하므로 공백으로)
+// cmd.exe 용 인자 인용 (cross-spawn 과 같은 방식, 줄바꿈은 cmd 가 전달 못 하므로 공백으로)
+//  - .cmd/.bat 은 배치 파일이 %* 로 인자를 한 번 더 해석하므로 메타 문자를 두 번 이스케이프
+//  - 사용자 입력(채팅 내용)은 인자로 넘기지 않고 stdin 으로 보낸다 (run)
+const META = /([()\][%!^"`<>&|;, *?])/g;
 function quoteCmdArg(s) {
   s = String(s).replace(/\r?\n/g, ' ');
   s = '"' + s.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, '$1$1') + '"';
-  return s.replace(/[()%!^"<>&|]/g, '^$&');
+  return s.replace(META, '^$1').replace(META, '^$1');
 }
 export function spawnArgs(cmd, args, opts = {}, platform = process.platform) {
   if (platform !== 'win32') return [cmd, args, opts];
   const exe = resolveWin(cmd);
   if (!/\.(cmd|bat)$/i.test(exe)) return [exe, args, { ...opts, windowsHide: true }];
-  const line = [exe, ...args].map(quoteCmdArg).join(' ');
+  const line = [exe.replace(META, '^$1'), ...args.map((a) => quoteCmdArg(a))].join(' ');
   return [process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `"${line}"`], { ...opts, windowsHide: true, windowsVerbatimArguments: true }];
 }
 
@@ -79,10 +82,11 @@ export class ClaudeCodeSession {
   reset() { this.stop(); this.sessionId = crypto.randomUUID(); this.started = false; }
   stop() { if (this.child) { this.stopped = true; this.child.kill('SIGTERM'); } }
 
-  args(text) {
+  // 요청 내용은 인자가 아니라 stdin 으로 전달 (run) — 셸 해석을 거치지 않도록
+  args() {
     const mcp = { mcpServers: { [MCP_NAME]: { type: 'http', url: this.mcpUrl } } };
     const a = [
-      '-p', text,
+      '-p',
       '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
       '--mcp-config', JSON.stringify(mcp), '--strict-mcp-config',
       '--tools', '',                       // 내장 도구(파일·셸) 없음 — 에뮬레이터 도구만
@@ -114,8 +118,10 @@ export class ClaudeCodeSession {
     return new Promise((resolve) => {
       let child;
       try {
-        const opts = { cwd: os.tmpdir(), env: childEnv(), stdio: ['ignore', 'pipe', 'pipe'] };
-        child = this.spawnFn ? this.spawnFn(this.cmd, this.args(text), opts) : spawn(...spawnArgs(this.cmd, this.args(text), opts));
+        const opts = { cwd: os.tmpdir(), env: childEnv(), stdio: ['pipe', 'pipe', 'pipe'] };
+        child = this.spawnFn ? this.spawnFn(this.cmd, this.args(), opts) : spawn(...spawnArgs(this.cmd, this.args(), opts));
+        child.stdin?.on('error', () => {});   // 실행 실패 시 EPIPE 무시 (오류는 close/error 에서 처리)
+        child.stdin?.end(text, 'utf8');
       } catch (e) { resolve({ error: cliError(e) }); return; }
       this.child = child;
       const tools = new Map();   // tool_use_id → { name, input }

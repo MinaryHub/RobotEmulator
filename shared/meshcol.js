@@ -15,7 +15,10 @@ import { segSegDist } from './collision.js';   // 순환 import 이지만 함수
 // ------------------------------------------------------------------ 간소화 (정점 군집화)
 // positions: Float32Array (xyz...), indices: Uint32Array | null (null 이면 3정점씩 삼각형)
 // maxTris 이하가 될 때까지 격자 크기를 키운다. 반환 { positions, indices, cell }
-export function simplifyMesh(positions, indices, maxTris = 200000) {
+// 간섭 메시 최대 삼각형 수 (브라우저 간소화 목표 = 서버 업로드 상한)
+export const COL_MAX_TRIS = 200000;
+
+export function simplifyMesh(positions, indices, maxTris = COL_MAX_TRIS) {
   const nv = positions.length / 3;
   if (!indices) { indices = new Uint32Array(nv); for (let i = 0; i < nv; i++) indices[i] = i; }
   let lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
@@ -130,10 +133,11 @@ export function buildBVH(positions, indices) {
     }
     bounds.set([x0, y0, z0, x1, y1, z1], node * 6);
     const ex = [cx1 - cx0, cy1 - cy0, cz1 - cz0];
-    if (e - s <= LEAF || Math.max(...ex) <= 0) { left[node] = -1; start[node] = s; count[node] = e - s; continue; }
+    if (e - s <= LEAF) { left[node] = -1; start[node] = s; count[node] = e - s; continue; }
+    // 항상 개수 중앙에서 나눔 → 중심이 모두 겹친(퇴화) 메시도 잎 크기 ≤ LEAF, 깊이 O(log n)
     const axis = ex[0] >= ex[1] && ex[0] >= ex[2] ? 0 : ex[1] >= ex[2] ? 1 : 2;
     const mid = (s + e) >> 1;
-    quickselect(order, cen, axis, s, e - 1, mid);
+    if (ex[axis] > 0) quickselect(order, cen, axis, s, e - 1, mid);
     const l = n++, r = n++;
     left[node] = l; start[node] = r; count[node] = 0;     // 내부 노드: start = 오른쪽 자식
     stack.push([s, mid, l], [mid, e, r]);

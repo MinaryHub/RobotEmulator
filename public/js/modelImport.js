@@ -8,10 +8,9 @@ import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
-import { simplifyMesh, encodeCol } from '/shared/meshcol.js';
+import { simplifyMesh, encodeCol, COL_MAX_TRIS } from '/shared/meshcol.js';
 
 export const MODEL_ACCEPT = '.stl,.obj,.glb,.gltf,.step,.stp,.iges,.igs';
-const COL_MAX_TRIS = 200000;
 const DEFAULT_MAT = () => new THREE.MeshStandardMaterial({ color: 0xb4bcc6, metalness: 0.35, roughness: 0.55 });
 
 // file: File. onStatus(text): 진행 표시. 반환: 서버 메타 { id, name, format, bbox, tris, srcTris }
