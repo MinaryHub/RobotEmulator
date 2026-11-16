@@ -5,6 +5,7 @@
 //    hyundai:      { port: 8888 },
 //    abbRws:       { port: 8080 },
 //    kukaVarProxy: { port: 7000 },
+//    urDashboard:  { port: 29999 },
 //    modbus:       { port: 502, fallbackPort: 1502 },   ← 산업용 필드버스 (제조사 무관)
 //    opcua:        { port: 4840 },
 //  }  각 항목은 enabled:false 로 비활성화, host 로 바인딩 주소 지정 가능.
@@ -17,6 +18,7 @@ import * as kawasaki from './kawasaki-as.js';
 import * as hyundai from './hyundai-openapi.js';
 import * as abb from './abb-rws.js';
 import * as kuka from './kuka-varproxy.js';
+import * as urDash from './ur-dashboard.js';
 import * as modbus from './modbus-tcp.js';
 import * as opcua from './opcua.js';
 
@@ -26,6 +28,7 @@ export const PROTOCOLS = [
   { key: 'hyundai', mod: hyundai, vendor: 'hyundai', defaults: { port: 8888 } },
   { key: 'abbRws', mod: abb, vendor: 'abb', defaults: { port: 8080 } },
   { key: 'kukaVarProxy', mod: kuka, vendor: 'kuka', defaults: { port: 7000 } },
+  { key: 'urDashboard', mod: urDash, vendor: 'ur', defaults: { port: 29999 } },
   { key: 'modbus', mod: modbus, vendor: null, optional: true, defaults: { port: 502, fallbackPort: 1502 } },
   { key: 'opcua', mod: opcua, vendor: null, optional: true, defaults: { port: 4840 } },
 ];

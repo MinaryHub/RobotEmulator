@@ -109,7 +109,7 @@ export class CellMeshes {
 
     // 장애물
     for (const o of L.obstacles) {
-      const m = edges(box(o.w, o.d, o.h, std(o.color, { transparent: o.collide === false, opacity: o.collide === false ? 0.5 : 1 }), 0, 0, o.z));
+      const m = edges(box(o.w, o.d, o.h, std(o.color, (() => { const op = o.opacity ?? (o.collide === false ? 0.5 : 1); return { transparent: op < 1, opacity: op, depthWrite: op >= 1 }; })()), 0, 0, o.z));
       G.add(place(m, o.x, o.y, o.yaw || 0));
     }
 

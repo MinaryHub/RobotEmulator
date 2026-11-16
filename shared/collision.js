@@ -33,7 +33,7 @@
 //  - 선분↔평면: 양 끝점 높이의 최소값 (정확)
 
 import { getGripper } from './grippers.js';
-import { toOpw } from './kinematics.js';
+import { toOpw, jointFrames } from './kinematics.js';
 import { meshObstacleDist } from './meshcol.js';
 
 export const TABLE_THICKNESS = 30;   // robotView.buildCell 과 동일
@@ -158,6 +158,7 @@ function toolLocalCapsules(g) {
 // 반환: [{id, a:[x,y,z], b:[x,y,z], r}] — 로봇 베이스 좌표 (mm)
 export function robotCapsules(model, jointsDeg, gripper) {
   const g = typeof gripper === 'string' ? getGripper(gripper) : gripper;
+  if (model.kin === 'ur') return urCapsules(model, jointsDeg, g);
   const k = model.opw;
   const r = linkRadius(model);
   const q = toOpw(model, jointsDeg);
@@ -204,6 +205,32 @@ export function robotCapsules(model, jointsDeg, gripper) {
   for (const c of toolLocalCapsules(g)) {
     caps.push({ id: 'tool', a: loc(R6, p6, c.a[0], c.a[1], c.a[2]), b: loc(R6, p6, c.b[0], c.b[1], c.b[2]), r: c.r });
   }
+  return caps;
+}
+
+// UR (비구형 손목): 링크가 관절 축 방향으로 옆으로 비켜 있는 구조. public/js/urMesh.js 형상과 같은 배치
+//  lat = 어깨·팔꿈치·손목1 축 방향(평행). 상완은 lat 쪽으로 su, 전완은 sf 만큼 비켜 있고 손목1→손목2 사이가 나머지(d4)를 잇는다
+export const UR_OFFSETS = (k) => ({ su: k.d4 * 1.25, sf: k.d4 * 0.15 });
+export const urRadii = (model) => { const r = linkRadius(model); return { rj: r * 1.0, rt: r * 0.72 }; };
+function urCapsules(model, jointsDeg, g) {
+  const k = model.dh, F = jointFrames(model, jointsDeg);
+  const { su, sf } = UR_OFFSETS(k), { rj, rt } = urRadii(model);
+  const lat = [F[2].R[0][1], F[2].R[1][1], F[2].R[2][1]];
+  const off = (p, s) => [p[0] + lat[0] * s, p[1] + lat[1] * s, p[2] + lat[2] * s];
+  const D1 = F[2].p, D2 = F[3].p, D3 = F[4].p, D4 = F[5].p, R6 = F[6].R, p6 = F[6].p;
+  const D5 = [p6[0] - R6[0][2] * k.d6, p6[1] - R6[1][2] * k.d6, p6[2] - R6[2][2] * k.d6];
+  const caps = [
+    { id: 'turret', a: [0, 0, k.d1 * 0.35], b: D1, r: rj * SHRINK },
+    { id: 'turret', a: D1, b: off(D1, su), r: rj * SHRINK },
+    { id: 'upperArm', a: off(D1, su), b: off(D2, su), r: rt * SHRINK },
+    { id: 'elbow', a: off(D2, su), b: off(D2, sf), r: rj * 0.85 * SHRINK },
+    { id: 'forearm', a: off(D2, sf), b: off(D3, sf), r: rt * 0.85 * SHRINK },
+    { id: 'wrist', a: off(D3, sf), b: D4, r: rj * 0.7 * SHRINK },
+    { id: 'wrist', a: D4, b: D5, r: rj * 0.7 * SHRINK },
+    { id: 'wrist', a: D5, b: p6, r: rj * 0.68 * SHRINK },
+  ];
+  const loc = (x, y, z) => [p6[0] + R6[0][0] * x + R6[0][1] * y + R6[0][2] * z, p6[1] + R6[1][0] * x + R6[1][1] * y + R6[1][2] * z, p6[2] + R6[2][0] * x + R6[2][1] * y + R6[2][2] * z];
+  for (const c of toolLocalCapsules(g)) caps.push({ id: 'tool', a: loc(...c.a), b: loc(...c.b), r: c.r });
   return caps;
 }
 

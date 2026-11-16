@@ -61,7 +61,7 @@ const tHold = ctrl.cycleStats.last.total;
 ok(Math.abs(tHold - tZone) < 0.35, `HOLD 시간 제외 (${tHold.toFixed(2)}s ≈ ${tZone.toFixed(2)}s)`);
 
 // 4) 각 제조사 예제가 블렌딩 상태에서도 정상 완료 + 사이클 기록
-for (const id of ['yaskawa-gp7', 'kawasaki-rs007n', 'hyundai-hh7', 'abb-irb1200', 'kuka-kr6-r900', 'doosan-m1013']) {
+for (const id of ['yaskawa-gp7', 'kawasaki-rs007n', 'hyundai-hh7', 'abb-irb1200', 'kuka-kr6-r900', 'doosan-m1013', 'ur-ur5e']) {
   const c = new Controller();
   c.setRobot(id); c.setServo(true);
   const before = c.objects.map((o) => o.pose.p.join());

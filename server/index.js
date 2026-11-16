@@ -48,6 +48,7 @@ function loadConfig() {
       hyundai: { port: 8888 },
       abbRws: { port: 8080 },
       kukaVarProxy: { port: 7000 },
+      urDashboard: { port: 29999 },
       modbus: { port: 502, fallbackPort: 1502 },
       opcua: { port: 4840 },
     },

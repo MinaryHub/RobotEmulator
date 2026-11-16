@@ -1,0 +1,72 @@
+# 픽 앤 플레이스 예제 (UR5e) — 공작물 W1~W4 를 Y 대칭 위치로 이송
+# 단위: 위치 m, 각도 rad. 자세 p[x, y, z, rx, ry, rz] = 베이스 좌표 + 회전 벡터
+# I/O : 표준 DO0 = 그리퍼 닫기, DO1 = 열기, DI0 닫힘 확인, DI1 열림 확인, DI2 공작물 감지
+# 에뮬레이터 참고: 맨 위에 def 만 있으면 그 def 를 프로그램으로 실행합니다 (PolyScope 스크립트와 같음)
+def pick_and_place():
+  global home_q = [3.14159, -1.5708, 1.5708, -1.5708, -1.5708, 0]
+  global approach = p[0, 0, 0.1, 0, 0, 0]   # 접근 오프셋 (베이스 Z)
+  global picks = [
+    p[0.4675, -0.255, 0.02, 0, 3.14159, 0],
+    p[0.4675, -0.085, 0.02, 0, 3.14159, 0],
+    p[0.4675, 0.085, 0.02, 0, 3.14159, 0],
+    p[0.4675, 0.255, 0.02, 0, 3.14159, 0]
+  ]
+  global places = [
+    p[0.323, 0.255, 0.021, 0, 3.14159, 0],
+    p[0.323, 0.085, 0.021, 0, 3.14159, 0],
+    p[0.323, -0.085, 0.021, 0, 3.14159, 0],
+    p[0.323, -0.255, 0.021, 0, 3.14159, 0]
+  ]
+
+  # 입력이 켜질 때까지 대기 (timeout 초) → True / False
+  def wait_input(n, timeout):
+    t = 0
+    while not get_standard_digital_in(n):
+      if t >= timeout:
+        return False
+      end
+      sleep(0.01)
+      t = t + 0.01
+    end
+    return True
+  end
+
+  def grip():
+    set_standard_digital_out(1, False)
+    set_standard_digital_out(0, True)
+    wait_input(0, 3)
+    sleep(0.2)
+  end
+
+  def release():
+    set_standard_digital_out(0, False)
+    set_standard_digital_out(1, True)
+    wait_input(1, 3)
+    sleep(0.2)
+    set_standard_digital_out(1, False)
+  end
+
+  movej(home_q, a=1.4, v=1.05)
+  release()
+  i = 0
+  while i < length(picks):
+    pick_up = pose_add(picks[i], approach)
+    place_up = pose_add(places[i], approach)
+    movej(get_inverse_kin(pick_up), a=1.4, v=1.05, r=0.03)
+    movel(picks[i], a=1.2, v=0.2)
+    grip()
+    if not get_standard_digital_in(2):
+      popup("공작물 미검출 — 정지", "오류", False, True)
+      release()
+      halt
+    end
+    movel(pick_up, a=1.2, v=0.5, r=0.03)
+    movej(get_inverse_kin(place_up), a=1.4, v=1.05, r=0.03)
+    movel(places[i], a=1.2, v=0.2)
+    release()
+    movel(place_up, a=1.2, v=0.5, r=0.03)
+    i = i + 1
+  end
+  movej(home_q, a=1.4, v=1.05)
+  textmsg("완료: ", to_str(i), " 개 이송")
+end

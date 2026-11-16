@@ -130,4 +130,31 @@ export function ZYZfromR(R) {
   return [o * RAD, a * RAD, t * RAD];
 }
 
+// ---- 회전 벡터 (축 × 각도, rad) — Universal Robots 자세 표현 [rx, ry, rz] ----
+export function RfromRotvec(v) {
+  const th = Math.hypot(v[0], v[1], v[2]);
+  if (th < 1e-12) return I3();
+  const x = v[0] / th, y = v[1] / th, z = v[2] / th, c = Math.cos(th), s = Math.sin(th), C = 1 - c;
+  return [
+    [c + x * x * C, x * y * C - z * s, x * z * C + y * s],
+    [y * x * C + z * s, c + y * y * C, y * z * C - x * s],
+    [z * x * C - y * s, z * y * C + x * s, c + z * z * C],
+  ];
+}
+export function rotvecFromR(R) {
+  const c = clamp((R[0][0] + R[1][1] + R[2][2] - 1) / 2, -1, 1);
+  const th = Math.acos(c);
+  const w = [R[2][1] - R[1][2], R[0][2] - R[2][0], R[1][0] - R[0][1]];
+  if (th < 1e-9) return [w[0] / 2, w[1] / 2, w[2] / 2];
+  if (Math.PI - th > 1e-6) { const k = th / (2 * Math.sin(th)); return [w[0] * k, w[1] * k, w[2] * k]; }
+  // θ ≈ π: 대각 성분에서 축 (부호는 비대각 성분으로 맞춤)
+  const xx = Math.sqrt(Math.max(0, (R[0][0] + 1) / 2)), yy = Math.sqrt(Math.max(0, (R[1][1] + 1) / 2)), zz = Math.sqrt(Math.max(0, (R[2][2] + 1) / 2));
+  let ax;
+  if (xx >= yy && xx >= zz) ax = [xx, (R[0][1] + R[1][0]) / (4 * xx), (R[0][2] + R[2][0]) / (4 * xx)];
+  else if (yy >= zz) ax = [(R[0][1] + R[1][0]) / (4 * yy), yy, (R[1][2] + R[2][1]) / (4 * yy)];
+  else ax = [(R[0][2] + R[2][0]) / (4 * zz), (R[1][2] + R[2][1]) / (4 * zz), zz];
+  const n = Math.hypot(...ax);
+  return ax.map((a) => (a / n) * th);
+}
+
 export const fmt = (v, d = 3) => (Math.abs(v) < 0.5 * 10 ** -d ? 0 : v).toFixed(d);

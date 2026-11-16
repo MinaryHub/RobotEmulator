@@ -253,7 +253,8 @@ function renderPose(st, model) {
   const jn = vd.jointNames;
   const pn = vd.poseNames;
   const jointsTxt = st.joints.map((v, i) => `${jn[i].padEnd(5)} ${f2(v, 3).padStart(9)}°`).join('\n');
-  const poseTxt = st.tcp.map((v, i) => `${pn[i].padEnd(3)} ${f2(v, i < 3 ? 2 : (pn.length === 7 ? 5 : 3)).padStart(10)}${i < 3 ? 'mm' : pn.length === 7 ? '' : '°'}`).join('\n');
+  const rad = vd.rotUnit === 'rad';   // UR: 회전 벡터 (rad)
+  const poseTxt = st.tcp.map((v, i) => `${pn[i].padEnd(3)} ${f2(v, i < 3 ? 2 : (pn.length === 7 || rad ? 5 : 3)).padStart(10)}${i < 3 ? 'mm' : pn.length === 7 ? '' : rad ? 'r' : '°'}`).join('\n');
   $('#ovPose').textContent = `${vd.name} ${model.name}\n${jointsTxt}\n────────────────\n${poseTxt}\n그리퍼 ${(st.grip.pos * 100).toFixed(0)}% ${st.grip.holding ? '· ' + st.grip.holding : ''}`;
   $('#posView').textContent = `${jointsTxt}\n\n${poseTxt}`;
   st.joints.forEach((v, i) => {
@@ -321,7 +322,7 @@ function renderSpec(m) {
     <span>가반하중</span><span>${m.ratedPayload ? `최대 ${m.payload} kg (정격 ${m.ratedPayload} kg)` : `${m.payload} kg`}</span>
     <span>최대 도달</span><span>${m.reach} mm</span>
     <span>반복정밀도</span><span>±${m.repeatability ?? '-'} mm</span>
-    <span>OPW (mm)</span><span style="font-family:var(--mono);font-size:11px">a1 ${m.opw.a1} a2 ${m.opw.a2} c1 ${m.opw.c1}<br>c2 ${m.opw.c2} c3 ${m.opw.c3} c4 ${m.opw.c4}</span>
+    ${m.dh ? `<span>DH (mm)</span><span style="font-family:var(--mono);font-size:11px">d1 ${m.dh.d1} a2 ${m.dh.a2} a3 ${m.dh.a3}<br>d4 ${m.dh.d4} d5 ${m.dh.d5} d6 ${m.dh.d6}</span>` : `<span>OPW (mm)</span><span style="font-family:var(--mono);font-size:11px">a1 ${m.opw.a1} a2 ${m.opw.a2} c1 ${m.opw.c1}<br>c2 ${m.opw.c2} c3 ${m.opw.c3} c4 ${m.opw.c4}</span>`}
     <span>출처</span><span style="font-size:11px;color:var(--dim)">${m.source ?? '-'}</span>
     <table><tr><th style="text-align:left">축</th><th>-한계°</th><th>+한계°</th><th>속도°/s</th></tr>${rows}</table>`;
 }
@@ -549,7 +550,7 @@ async function saveAll() {
 $('#btnSave').onclick = saveAll;
 document.addEventListener('keydown', (e) => { if (e.ctrlKey && e.key === 's') { e.preventDefault(); saveAll(); } });
 $('#btnNew').onclick = () => {
-  const ext = { yaskawa: '.JBI', kawasaki: '.as', hyundai: '.job', abb: '.mod', kuka: '.src', doosan: '.drl' }[app.st.vendor];
+  const ext = { yaskawa: '.JBI', kawasaki: '.as', hyundai: '.job', abb: '.mod', kuka: '.src', doosan: '.drl', ur: '.script' }[app.st.vendor];
   const name = prompt('새 파일 이름', `NEW${ext}`);
   if (!name) return;
   app.buffers[name] = ''; app.dirty.add(name); openFile(name);
@@ -729,6 +730,7 @@ $('#btnTeach').onclick = () => {
       break;
     }
     case 'doosan': editor.insertAtCursor(`movel(posx(${t.join(', ')}), vel=250, acc=1000)`); break;
+    case 'ur': editor.insertAtCursor(`movel(p[${st.tcp.map((v, i) => (i < 3 ? +(v / 1000).toFixed(5) : +v.toFixed(5))).join(', ')}], a=1.2, v=0.25)`); break;
     case 'kuka': editor.insertAtCursor(`LIN {X ${t[0]}, Y ${t[1]}, Z ${t[2]}, A ${t[3]}, B ${t[4]}, C ${t[5]}}`); break;
   }
   addLog({ t: Date.now(), src: 'system', msg: `현재 위치 삽입 (관절: ${j.join(', ')})` });

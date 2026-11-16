@@ -181,6 +181,7 @@ function cable(points, rad, M) {
 // ------------------------------------------------------------------ 메인
 // 반환: { links: Group[7], update() } — update 는 링크 행렬 갱신 후 호출 (밸런서 등 링크 사이 부품)
 export function buildRobotLinks(model, vendor) {
+  if (model.kin === 'ur') return buildURLinks(model, vendor);
   const k = model.opw;
   const R = model.reach;
   const r = Math.max(36, Math.min(250, R * 0.072));
@@ -385,4 +386,72 @@ export function buildRobotLinks(model, vendor) {
   }
 
   return { links: L, update };
+}
+
+// ------------------------------------------------------------------ UR (비구형 손목 협동로봇)
+// 링크 프레임은 shared/kinematics.js urFrames: L1 Z=J1, L2·L3 Y=어깨·팔꿈치 축(팔은 ±X 로 a2·a3), L4 Z=손목1 축(+Z 로 d4 → 손목2),
+// L5 Y=손목2 축(+Y 로 d5 → 손목3, 손목3 축은 -Z), L6 = 플랜지. 링크 옆 비킴(su·sf)은 shared/collision.js UR_OFFSETS 와 같다.
+// 외형: 원통형 관절 하우징 + 알루미늄 튜브 + 관절 끝 캡 (특정 제품의 상표 디자인을 따르지 않은 일반 협동로봇 형태)
+function buildURLinks(model, vendor) {
+  const k = model.dh;
+  const r = Math.max(36, Math.min(250, model.reach * 0.072));
+  const rj = r, rt = r * 0.72;                         // 관절 하우징 / 튜브 반경 (collision.js urRadii 와 같음)
+  const su = k.d4 * 1.25, sf = k.d4 * 0.15;            // 상완·전완의 옆 비킴 (collision.js UR_OFFSETS)
+  const M = {
+    body: paint(vendor.color, { roughness: 0.42, clearcoat: 0.35 }),
+    cap: paint(vendor.accent, { roughness: 0.38, clearcoat: 0.5 }),
+    tube: metal(0xc5cad0, { roughness: 0.32, metalness: 0.7 }),
+    seam: plastic(0x2a2d31, { roughness: 0.6 }),
+    flange: metal(0xb9bec4, { roughness: 0.25 }),
+    dark: plastic(0x34383d),
+  };
+  const L = [];
+  for (let i = 0; i < 7; i++) { const g = new THREE.Group(); g.matrixAutoUpdate = false; L.push(g); }
+  // Y 축 원통 (y0..y1) 을 (x, 0, z) 에 / Z 축 원통
+  const cylY = (rad, y0, y1, mat, x = 0, z = 0, f = rad * 0.12) => mesh(roundCylY(rad, Math.min(y0, y1), Math.max(y0, y1), f, 40), mat, x, 0, z);
+  const cylZ = (rad, z0, z1, mat, x = 0, y = 0, f = rad * 0.12) => mesh(roundCylZ(rad, Math.min(z0, z1), Math.max(z0, z1), f, 40), mat, x, y, 0);
+  // X 방향 튜브: (0, y, 0) 에서 x = len 까지 (len 은 음수 가능)
+  const tubeX = (rad, len, y, mat) => along(V3(Math.sign(len) || 1, 0, 0), mesh(roundCylZ(rad, 0, Math.abs(len), rad * 0.05, 32), mat), V3(0, y, 0));
+  const seamY = (rad, y, x = 0, z = 0) => cylY(rad * 1.01, y - rad * 0.03, y + rad * 0.03, M.seam, x, z, 0);
+  const seamZ = (rad, z, x = 0, y = 0) => cylZ(rad * 1.01, z - rad * 0.03, z + rad * 0.03, M.seam, x, y, 0);
+
+  // L0 베이스: 설치 플랜지 + 베이스 관절 하부
+  const zSplit = k.d1 * 0.5;
+  L[0].add(cylZ(rj * 1.18, 0, rj * 0.16, M.body));
+  L[0].add(cylZ(rj, rj * 0.1, zSplit, M.body, 0, 0, rj * 0.05));
+  L[0].add(seamZ(rj, zSplit));
+  // L1 베이스 관절 상부 + 어깨 하우징 (어깨 축 = 로컬 -Y, 높이 d1)
+  L[1].add(cylZ(rj, zSplit, k.d1, M.body, 0, 0, rj * 0.05));
+  L[1].add(cylY(rj, 0, -(su - rt * 0.55), M.body));
+  L[1].add(cylY(rj * 1.0, rj * 0.25, 0, M.cap, 0, k.d1));             // 어깨 뒤쪽 캡
+  for (const m of L[1].children.slice(-2)) m.position.z = k.d1;
+  // L2 상완: 어깨 출력 디스크 + 튜브 + 팔꿈치 하우징
+  L[2].add(seamY(rj, su - rt * 0.55));
+  L[2].add(cylY(rj * 0.98, su - rt * 0.55, su + rt * 0.75, M.body));
+  L[2].add(cylY(rj * 0.98, su + rt * 0.75, su + rt * 0.95, M.cap));
+  L[2].add(tubeX(rt, k.a2, su, M.tube));
+  L[2].add(cylY(rj * 0.85, sf + rt * 0.8, su + rt * 0.75, M.body, k.a2));
+  L[2].add(cylY(rj * 0.85, su + rt * 0.75, su + rt * 0.93, M.cap, k.a2));
+  // L3 전완: 팔꿈치 출력 + 튜브 + 손목1 하우징
+  L[3].add(seamY(rj * 0.85, sf + rt * 0.8));
+  L[3].add(cylY(rj * 0.82, sf - rt * 0.62, sf + rt * 0.8, M.body));
+  L[3].add(cylY(rj * 0.82, sf - rt * 0.8, sf - rt * 0.62, M.cap));
+  L[3].add(tubeX(rt * 0.85, k.a3, sf, M.tube));
+  L[3].add(cylY(rj * 0.7, sf - rt * 0.6, k.d4 - rj * 0.72, M.body, k.a3));
+  L[3].add(cylY(rj * 0.7, sf - rt * 0.78, sf - rt * 0.6, M.cap, k.a3));
+  // L4 손목1 출력 (축 Z, 손목2 축은 -Y 로 d5)
+  L[4].add(seamZ(rj * 0.7, k.d4 - rj * 0.72));
+  L[4].add(cylZ(rj * 0.7, k.d4 - rj * 0.72, k.d4 + rj * 0.55, M.body));
+  L[4].add(cylZ(rj * 0.7, k.d4 + rj * 0.55, k.d4 + rj * 0.72, M.cap));
+  L[4].add(mesh(roundCylY(rj * 0.68, -(k.d5 - rj * 0.7), 0, rj * 0.06, 40), M.body, 0, 0, k.d4));
+  // L5 손목2 출력 (축 Y, 손목3 축은 -Z 로 d6)
+  L[5].add(seamY(rj * 0.68, k.d5 - rj * 0.7));
+  L[5].add(cylY(rj * 0.68, k.d5 - rj * 0.7, k.d5 + rj * 0.5, M.body));
+  L[5].add(cylY(rj * 0.68, k.d5 + rj * 0.5, k.d5 + rj * 0.66, M.cap));
+  L[5].add(mesh(roundCylZ(rj * 0.66, -(k.d6 - rj * 0.62), 0, rj * 0.06, 40), M.body, 0, k.d5, 0));
+  // L6 손목3 출력 캡 + 툴 플랜지 (플랜지 면 z = 0)
+  L[6].add(seamZ(rj * 0.66, -(rj * 0.62)));
+  L[6].add(cylZ(rj * 0.66, -rj * 0.62, -rj * 0.12, M.cap));
+  L[6].add(cylZ(rj * 0.42, -rj * 0.12, 0, M.flange, 0, 0, rj * 0.02));
+  return { links: L, update: () => {} };
 }

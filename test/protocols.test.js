@@ -1,6 +1,6 @@
 // 통신 인터페이스 통합 테스트
 //   node test/protocols.test.js
-// 가상 컨트롤러 + 5개 프로토콜 서버를 높은 포트로 기동하고 tools/clients/* 의 샘플 클라이언트로 검증한다.
+// 가상 컨트롤러 + 6개 프로토콜 서버를 높은 포트로 기동하고 tools/clients/* 의 샘플 클라이언트로 검증한다.
 // 언어 모듈(inform/as/hrscript/rapid/krl)이 아직 미완성(스텁)일 수 있으므로, 프로그램 컴파일/실행 및
 // 언어 변수 관련 항목은 "관대(tolerant)" 검사로 처리하고 결과를 경고로만 출력한다.
 import net from 'node:net';
@@ -20,6 +20,7 @@ const PORTS = {
   hyundai: { port: 21888 },
   abbRws: { port: 21080 },
   kukaVarProxy: { port: 21070 },
+  urDashboard: { port: 21099 },
 };
 
 let pass = 0, fail = 0, warn = 0;
@@ -38,7 +39,7 @@ const ctrl = new Controller();
 ctrl.setMode('REMOTE');   // 모드 인터록: 외부 명령(서보 ON·시작·이동)은 REMOTE 모드에서만 허용
 const handles = await startAll(ctrl, PORTS);
 console.log('기동된 프로토콜:', handles.map((h) => `${h.key}:${h.port}`).join(', '));
-ok(handles.length === 5 && handles.every((h) => h.port), '5개 프로토콜 모두 포트 바인딩');
+ok(handles.length === 6 && handles.every((h) => h.port), '6개 프로토콜 모두 포트 바인딩');
 const port = (k) => handles.find((h) => h.key === k).port;
 
 // ------------------------------------------------------------------ Yaskawa
