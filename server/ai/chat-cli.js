@@ -11,12 +11,43 @@ import { SYSTEM, summarizeInput, summarizeResult } from './chat.js';
 const MCP_NAME = 'robot';
 const PREFIX = `mcp__${MCP_NAME}__`;
 
+// Windows: shell:true 는 인자를 따옴표 없이 이어 붙이므로 JSON·공백·줄바꿈이 깨짐.
+//  - claude.exe(네이티브 설치) → 셸 없이 직접 실행 (Node 가 인자를 올바르게 인용)
+//  - claude.cmd/.bat(npm 설치) → cmd.exe 로 실행하되 인자를 직접 인용
+const resolved = new Map();
+function resolveWin(cmd) {
+  if (resolved.has(cmd)) return resolved.get(cmd);
+  let p = cmd;
+  if (!/[\\/]/.test(cmd) || !/\.\w+$/.test(cmd)) {
+    try {
+      const r = spawnSync('where', [cmd], { encoding: 'utf8', timeout: 5000, windowsHide: true });
+      const lines = (r.stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+      p = lines.find((l) => /\.exe$/i.test(l)) || lines.find((l) => /\.(cmd|bat)$/i.test(l)) || cmd;
+    } catch { /* PATH 조회 실패 → 원래 이름 */ }
+  }
+  resolved.set(cmd, p);
+  return p;
+}
+// cmd.exe 용 인자 인용 (줄바꿈은 cmd 가 전달 못 하므로 공백으로)
+function quoteCmdArg(s) {
+  s = String(s).replace(/\r?\n/g, ' ');
+  s = '"' + s.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, '$1$1') + '"';
+  return s.replace(/[()%!^"<>&|]/g, '^$&');
+}
+export function spawnArgs(cmd, args, opts = {}, platform = process.platform) {
+  if (platform !== 'win32') return [cmd, args, opts];
+  const exe = resolveWin(cmd);
+  if (!/\.(cmd|bat)$/i.test(exe)) return [exe, args, { ...opts, windowsHide: true }];
+  const line = [exe, ...args].map(quoteCmdArg).join(' ');
+  return [process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `"${line}"`], { ...opts, windowsHide: true, windowsVerbatimArguments: true }];
+}
+
 let cliChecked = null;
 // claude CLI 가 실행 가능한지 (결과 캐시)
 export function claudeCliAvailable(cmd = 'claude') {
   if (cliChecked !== null) return cliChecked;
   try {
-    const r = spawnSync(cmd, ['--version'], { encoding: 'utf8', timeout: 10000, shell: process.platform === 'win32' });
+    const r = spawnSync(...spawnArgs(cmd, ['--version'], { encoding: 'utf8', timeout: 10000 }));
     cliChecked = r.status === 0;
   } catch { cliChecked = false; }
   return cliChecked;
@@ -38,7 +69,7 @@ export class ClaudeCodeSession {
     this.config = config;
     this.mcpUrl = mcpUrl;
     this.send = send;
-    this.spawn = spawnFn || spawn;
+    this.spawnFn = spawnFn || null;   // 테스트용 주입
     this.cmd = config.cliCommand || 'claude';
     this.busy = false;
     this.child = null;
@@ -83,7 +114,8 @@ export class ClaudeCodeSession {
     return new Promise((resolve) => {
       let child;
       try {
-        child = this.spawn(this.cmd, this.args(text), { cwd: os.tmpdir(), env: childEnv(), stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32' });
+        const opts = { cwd: os.tmpdir(), env: childEnv(), stdio: ['ignore', 'pipe', 'pipe'] };
+        child = this.spawnFn ? this.spawnFn(this.cmd, this.args(text), opts) : spawn(...spawnArgs(this.cmd, this.args(text), opts));
       } catch (e) { resolve({ error: cliError(e) }); return; }
       this.child = child;
       const tools = new Map();   // tool_use_id → { name, input }

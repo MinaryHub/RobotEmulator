@@ -1,4 +1,13 @@
 node_modules/
 # OPC UA 자체 서명 인증서/PKI (자동 생성)
 .opcua-pki/
-projects/_autosave.json
+# 실행 중 저장되는 프로젝트 파일 (자동 저장 포함)
+projects/
+# Playwright MCP 스크린샷·스냅샷·로그
+.playwright-mcp/
+# 로그·OS·에디터 임시 파일
+*.log
+.DS_Store
+Thumbs.db
+# 사용자 3D 모델 자산 (업로드 시 생성)
+assets/

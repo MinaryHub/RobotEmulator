@@ -23,6 +23,8 @@
 //     [{id, c:[x,y,z], h:[hx,hy,hz], R?:3x3(열 = 박스 축), tool?:false}]
 //     로봇 링크는 항상, 툴은 tool !== false 일 때 검사 (툴 캡슐은 테이블과 동일하게 TCP 5mm 앞에서 잘림
 //     → 컨베이어 위 공작물을 파지할 때 벨트 면은 검출되지 않음). pairs.b = 장애물 id
+//     mesh 가 있으면(사용자 3D 모델, shared/meshcol.js meshObstacle) c/h/R 은 경계 OBB 이고
+//     OBB 근처에서는 삼각형 단위 정밀 거리로 판정
 //
 // 거리 계산
 //  - 선분↔선분: 정확한 최근접점 (Ericson, Real-Time Collision Detection 5.1.9)
@@ -32,6 +34,7 @@
 
 import { getGripper } from './grippers.js';
 import { toOpw } from './kinematics.js';
+import { meshObstacleDist } from './meshcol.js';
 
 export const TABLE_THICKNESS = 30;   // robotView.buildCell 과 동일
 export const TOOL_TIP_CLEAR = 5;     // 툴 캡슐을 TCP 보다 짧게 끝내는 여유 (mm)
@@ -368,13 +371,17 @@ export function checkCollision(model, jointsDeg, gripper, scene, objects, opts =
       const p = env.pedestal;
       report(c.id, 'pedestal', segCylDist(c.a, c.b, 0, 0, p.r, p.z0, p.z1) - rr, 'env');
     }
-    // 셀 장애물 (OBB). 외접구로 빠른 배제
+    // 셀 장애물 (OBB / 메시). 외접구 → OBB 순으로 빠른 배제
     if (obstacles) {
       for (const ob of obstacles) {
         if (isTool && ob.tool === false) continue;
         const br = Math.hypot(ob.h[0], ob.h[1], ob.h[2]);
         const dc = pointSegDist(ob.c, c.a, c.b) - br;
-        report(c.id, ob.id, dc > rr + 1 ? dc - rr : segBoxDist(c.a, c.b, ob) - rr, 'env');
+        if (dc > rr + 1) { report(c.id, ob.id, dc - rr, 'env'); continue; }
+        const db = segBoxDist(c.a, c.b, ob);
+        if (!ob.mesh || db > rr + 1) { report(c.id, ob.id, db - rr, 'env'); continue; }
+        // 사용자 3D 모델: 삼각형 단위 정밀 거리 (반경 + 50mm 밖은 탐색 생략)
+        report(c.id, ob.id, meshObstacleDist(c.a, c.b, ob, rr + 50) - rr, 'env');
       }
     }
     // 공작물 (링크만)

@@ -4,7 +4,7 @@ import { Controller } from '../server/controller.js';
 import { TOOLS, callTool } from '../server/ai/tools.js';
 import { handleMcp } from '../server/ai/mcp.js';
 import { ChatSession } from '../server/ai/chat.js';
-import { ClaudeCodeSession } from '../server/ai/chat-cli.js';
+import { ClaudeCodeSession, spawnArgs } from '../server/ai/chat-cli.js';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 
@@ -230,6 +230,12 @@ ok(chat.messages.length === before && events.at(-1).ev === 'error' && !chat.busy
   ok(ev.at(-1).ev === 'error' && /중단/.test(ev.at(-1).msg), 'CLI: 중단');
   cc.reset();
   ok(!cc.started && cc.sessionId !== runs[0].args[runs[0].args.indexOf('--session-id') + 1], 'CLI: 새 대화 = 새 세션');
+  // Windows: shell:true 로 인자를 이어 붙이면 --mcp-config JSON 의 따옴표가 사라짐 → 셸 없이 / 직접 인용
+  const json = '{"mcpServers":{"robot":{"url":"http://x/mcp"}}}';
+  const [c1, a1, o1] = spawnArgs('C:\\bin\\claude.exe', ['--mcp-config', json], {}, 'win32');
+  ok(c1 === 'C:\\bin\\claude.exe' && a1[1] === json && !o1.shell, 'CLI(Windows): .exe 는 셸 없이 인자 그대로');
+  const [c2, a2, o2] = spawnArgs('C:\\bin\\claude.cmd', ['--mcp-config', json, 'a b'], {}, 'win32');
+  ok(/cmd/i.test(c2) && o2.windowsVerbatimArguments && a2.at(-1).includes('^"{\\^"mcpServers\\^"') && a2.at(-1).includes('^"a b^"'), 'CLI(Windows): .cmd 는 cmd.exe 인자 인용');
 }
 function sleep0() { return new Promise((r) => setTimeout(r, 20)); }
 

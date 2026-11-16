@@ -1,6 +1,7 @@
 # 내부 개발 계약 (언어 모듈 / 통신 모듈)
 
-프로젝트: Node.js 20+(ESM, 의존성 `ws`, `three`, `node-opcua`. 모두 순수 JS, OS 무관) 기반 다제조사 산업용 로봇 에뮬레이터.
+프로젝트: Node.js 20+(ESM, 의존성 `ws`, `three`, `node-opcua`, `@anthropic-ai/sdk`, `occt-import-js`(브라우저 전용 WASM). 모두 순수 JS/WASM, OS 무관) 기반 다제조사 산업용 로봇 에뮬레이터.
+사용자 3D 모델: 서버는 CAD 형식을 해석하지 않는다 — 브라우저가 GLB(표시) + `.col`(간섭 메시, `shared/meshcol.js`)로 변환해 `POST /api/assets` 로 올린다 (`server/assets.js`).
 단위: 위치 mm, 각도 deg. 좌표계: 로봇 베이스 원점, Z 위쪽. 플랜지/툴 Z축 = 툴 진행 방향.
 
 ## 핵심 파일 (반드시 먼저 읽을 것)
