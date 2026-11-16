@@ -1,5 +1,7 @@
 // 셀 탭: 레이아웃 프리셋 / 장치 목록 편집 / 실시간 상태 / 레이아웃 JSON 내보내기·가져오기
-// 서버 명령: { cmd:'cell', op:'get'|'set'|'preset'|'resetObjects'|'add'|'remove'|'update', ... } (server/cell.js)
+// 서버 명령: { cmd:'cell', op:'get'|'set'|'preset'|'resetObjects'|'add'|'addModel'|'remove'|'update', ... } (server/cell.js)
+// 3D 모델 가져오기: public/js/modelImport.js (변환·업로드) → op:'addModel'
+import { importModelFile, MODEL_ACCEPT } from './modelImport.js';
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 
@@ -8,13 +10,16 @@ let root = null;
 let builtKey = null;     // 목록을 마지막으로 그린 레이아웃 키
 let force = false;
 
-const KIND_NAME = { table: '테이블', workpiece: '공작물', obstacle: '장애물', conveyor: '컨베이어', feeder: '피더', sensor: '센서', cylinder: '실린더', sink: '배출구', pallet: '팔레트' };
+const KIND_NAME = { table: '테이블', workpiece: '공작물', obstacle: '장애물', conveyor: '컨베이어', feeder: '피더', sensor: '센서', cylinder: '실린더', sink: '배출구', pallet: '팔레트', model: '3D 모델' };
+const UNITS = [[1, 'mm'], [10, 'cm'], [1000, 'm'], [25.4, 'inch']];
+const UPS = [['z', 'Z 위 (CAD·STL)'], ['y', 'Y 위 (glTF·OBJ)'], ['x', 'X 위']];
 const LBL = {
   name: '이름', x: 'X', y: 'Y', z: 'Z', w: '폭 W', d: '깊이 D', h: '높이 H', yaw: '회전°', size: '크기',
   x0: '시작 X', y0: '시작 Y', x1: '끝 X', y1: '끝 Y', width: '벨트 폭', speed: '속도 mm/s', runDO: '운전 DO (0=항상)', reverseDO: '역방향 DO', stopper: '끝 스토퍼',
   mode: '모드', triggerDO: '배출 DO', interval: '간격 s', max: '최대 (0=∞)', prefix: 'ID 접두어',
   di: 'DI', invert: '반전', length: '몸체 길이', bore: '보어', stroke: '행정', time: '행정 시간 s', extendDO: '전진 DO', extDI: '전진 확인 DI', retDI: '후진 확인 DI',
   pulseDI: '배출 펄스 DI', rows: '행', cols: '열', pitchX: '피치 X', pitchY: '피치 Y', color: '색', collide: '간섭 체크',
+  rx: 'Rx°', ry: 'Ry°', rz: 'Rz°', scale: '배율', unit: '파일 단위', up: '위쪽 축', opacity: '불투명도', origColor: '원본 색', tool: '툴도 검사', support: '공작물 지지면',
 };
 const FIELDS = {
   table: ['name', 'x', 'y', 'z', 'w', 'd'],
@@ -26,8 +31,9 @@ const FIELDS = {
   cylinder: ['name', 'x', 'y', 'z', 'yaw', 'length', 'bore', 'stroke', 'time', 'extendDO', 'extDI', 'retDI'],
   sink: ['name', 'x', 'y', 'z', 'w', 'd', 'h', 'pulseDI'],
   pallet: ['name', 'x', 'y', 'z', 'rows', 'cols', 'pitchX', 'pitchY'],
+  model: ['name', 'x', 'y', 'z', 'rx', 'ry', 'rz', 'scale', 'unit', 'up', 'opacity', 'color', 'origColor', 'collide', 'tool', 'support'],
 };
-const BOOL = new Set(['stopper', 'invert', 'collide']);
+const BOOL = new Set(['stopper', 'invert', 'collide', 'tool', 'support']);
 const TEXT = new Set(['name', 'prefix']);
 
 const STYLE = `
@@ -68,6 +74,11 @@ export function initCellPanel(opts) {
     </div>
     <h3>항목 추가</h3>
     <div class="row btns addbtns">
+      <button id="cellAddModel" class="primary" title="장비·지그·펜스 등 CAD 모델을 불러와 배치 (STL·OBJ·GLB·glTF·STEP·IGES). 간섭은 삼각형 단위로 검사">＋ 3D 모델 가져오기</button>
+      <input type="file" id="cellModelFile" accept="${MODEL_ACCEPT}" hidden>
+      <span id="cellModelStatus" class="note" style="margin:0"></span>
+    </div>
+    <div class="row btns addbtns">
       ${['obstacle', 'sensor', 'conveyor', 'feeder', 'cylinder', 'sink', 'pallet', 'table', 'workpiece'].map((k) => `<button data-add="${k}">＋ ${KIND_NAME[k]}</button>`).join('')}
     </div>
     <h3>장치 / 항목 <small>값 변경 시 즉시 적용 (사용자 정의 레이아웃)</small></h3>
@@ -100,6 +111,23 @@ export function initCellPanel(opts) {
     } catch (err) { alert(`레이아웃 파일 오류: ${err.message}`); }
   };
   $$('[data-add]', root).forEach((b) => (b.onclick = () => cmd('add', { kind: b.dataset.add })));
+  $('#cellAddModel', root).onclick = () => $('#cellModelFile', root).click();
+  $('#cellModelFile', root).onchange = async (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    const btn = $('#cellAddModel', root), stEl = $('#cellModelStatus', root);
+    btn.disabled = true;
+    const t0 = performance.now();
+    try {
+      const meta = await importModelFile(f, (s) => (stEl.textContent = `${f.name}: ${s}`));
+      await ctx.cmd('cell', { op: 'addModel', asset: meta.id, name: f.name });
+      const reduced = meta.srcTris && meta.srcTris > meta.tris ? ` (간섭용 ${meta.tris.toLocaleString()}개로 간소화)` : '';
+      stEl.textContent = `✔ ${f.name}: ${(meta.srcTris ?? meta.tris).toLocaleString()} 삼각형${reduced} · ${((performance.now() - t0) / 1000).toFixed(1)}s`;
+    } catch (err) {
+      stEl.textContent = `✖ ${f.name}: ${err.message}`;
+    } finally { btn.disabled = false; }
+  };
 
   const list = $('#cellList', root);
   list.addEventListener('change', (e) => {
@@ -108,9 +136,11 @@ export function initCellPanel(opts) {
     const item = inp.closest('[data-id]');
     const f = inp.dataset.f;
     let v;
+    if (f === 'origColor') return void cmd('update', { id: item.dataset.id, patch: { color: inp.checked ? null : parseInt($('[data-f=color]', item).value.slice(1), 16) } });
     if (BOOL.has(f)) v = inp.checked;
     else if (f === 'color') v = parseInt(inp.value.slice(1), 16);
-    else if (TEXT.has(f) || f === 'mode') v = inp.value;
+    else if (TEXT.has(f) || f === 'mode' || f === 'up') v = inp.value;
+    else if (f === 'unit') v = Number(inp.value);
     else if (f.startsWith('size')) {
       v = [0, 1, 2].map((i) => Number($(`[data-f=size${i}]`, item).value));
       return void cmd('update', { id: item.dataset.id, patch: { size: v } });
@@ -137,7 +167,14 @@ const hex = (c) => '#' + (Number(c) & 0xffffff).toString(16).padStart(6, '0');
 function fieldHtml(it, f) {
   const lb = LBL[f] ?? f;
   if (BOOL.has(f)) return `<label>${lb}<input type="checkbox" data-f="${f}" ${it[f] !== false && it[f] ? 'checked' : ''}></label>`;
-  if (f === 'color') return `<label>${lb}<input type="color" data-f="color" value="${hex(it.color)}"></label>`;
+  if (f === 'origColor') return `<label>${lb}<input type="checkbox" data-f="origColor" ${it.color === null || it.color === undefined ? 'checked' : ''}></label>`;
+  if (f === 'color') return `<label>${lb}<input type="color" data-f="color" value="${hex(it.color ?? 0xb4bcc6)}"></label>`;
+  if (f === 'unit') {
+    const opts = UNITS.some(([u]) => u === it.unit) ? UNITS : [...UNITS, [it.unit, `${it.unit} mm`]];
+    return `<label>${lb}<select data-f="unit">${opts.map(([u, n]) => `<option value="${u}" ${u === it.unit ? 'selected' : ''}>${n}</option>`).join('')}</select></label>`;
+  }
+  if (f === 'up') return `<label>${lb}<select data-f="up">${UPS.map(([u, n]) => `<option value="${u}" ${u === it.up ? 'selected' : ''}>${n}</option>`).join('')}</select></label>`;
+  if (f === 'opacity') return `<label>${lb}<input type="number" step="0.05" min="0.05" max="1" data-f="opacity" value="${it.opacity}"></label>`;
   if (f === 'mode') return `<label>${lb}<select data-f="mode"><option value="auto" ${it.mode === 'auto' ? 'selected' : ''}>자동(비면 배출)</option><option value="edge" ${it.mode === 'edge' ? 'selected' : ''}>DO 상승 에지</option></select></label>`;
   if (f === 'size') return [0, 1, 2].map((i) => `<label>${['크기 X', '크기 Y', '크기 Z'][i]}<input type="number" step="any" data-f="size${i}" value="${r1(it.size[i])}"></label>`).join('');
   if (TEXT.has(f)) return `<label>${lb}<input type="text" data-f="${f}" value="${String(it[f] ?? '').replace(/"/g, '&quot;')}"></label>`;
@@ -158,6 +195,18 @@ function statusText(d, s) {
   return '';
 }
 
+// 모델 크기 (위쪽 축 보정·단위·배율 적용, 회전 전) + 간섭 상태
+function modelStatus(m, hit) {
+  let size = '';
+  if (m.bbox) {
+    const d = [0, 1, 2].map((k) => (m.bbox[1][k] - m.bbox[0][k]) * m.unit * m.scale);
+    const s = m.up === 'y' ? [d[0], d[2], d[1]] : m.up === 'x' ? [d[2], d[1], d[0]] : d;
+    size = `${s.map((v) => Math.round(v)).join(' × ')} mm`;
+  }
+  const flags = [m.collide ? (m.tool ? '간섭(링크+툴)' : '간섭(링크)') : '간섭 제외', m.support ? '지지면' : ''].filter(Boolean).join(' · ');
+  return `${size} · ${flags}${hit ? ' · <span style="color:#ff6b6b;font-weight:600">● 간섭 중</span>' : ''}`;
+}
+
 export function renderCellPanel(st) {
   if (!root || !st?.cell?.layout) return;
   const { layout: L, status = {}, presets = [], rev } = st.cell;
@@ -172,6 +221,7 @@ export function renderCellPanel(st) {
     builtKey = key; force = false;
     const collapsed = new Set($$('.cell-item.collapsed', list).map((e) => e.dataset.id));
     const items = [
+      ...(L.models || []).map((m) => ({ kind: 'model', it: m })),
       ...L.devices.map((d) => ({ kind: d.type, it: d })),
       ...L.obstacles.map((o) => ({ kind: 'obstacle', it: o })),
       ...L.tables.map((t) => ({ kind: 'table', it: t })),
@@ -186,10 +236,11 @@ export function renderCellPanel(st) {
       </div>`;
     }).join('') || '<div class="note">항목 없음</div>';
   }
-  for (const d of L.devices) {
+  const hit = new Set((st.collision?.pairs || []).map((p) => p.b));
+  for (const d of [...L.devices, ...(L.models || [])]) {
     const el = list.querySelector(`[data-st="${window.CSS.escape(d.id)}"]`);
     if (!el) continue;
-    const html = statusText(d, status[d.id]);
+    const html = d.asset ? modelStatus(d, hit.has(d.id)) : statusText(d, status[d.id]);
     if (el.dataset.sig !== html) { el.innerHTML = html; el.dataset.sig = html; }
   }
 }
