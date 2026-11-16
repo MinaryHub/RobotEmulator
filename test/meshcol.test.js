@@ -153,5 +153,17 @@ function boxMesh(c, h) {
   ok(ms < 2, `16만 삼각형 근접 검사 ${ms.toFixed(3)} ms/회 (< 2ms, 틱 주기 대비 여유)`);
 }
 
+console.log('[퇴화 메시 BVH]');
+{
+  // 모든 삼각형 중심이 같은 메시 → 잎이 하나로 뭉치면 매 검사가 전수 탐색이 됨
+  const n = 50000, pos = new Float32Array(n * 9), idx = new Uint32Array(n * 3);
+  for (let i = 0; i < n; i++) { pos.set([-1, -1, 0, 1, -1, 0, 0, 2, 0], i * 9); idx.set([i * 3, i * 3 + 1, i * 3 + 2], i * 3); }
+  const b = buildBVH(pos, idx);
+  let maxLeaf = 0;
+  for (let i = 0; i < b.nodes; i++) if (b.left[i] === -1) maxLeaf = Math.max(maxLeaf, b.count[i]);
+  ok(maxLeaf <= 8, `중심이 모두 같아도 잎 크기 ≤ 8 (최대 ${maxLeaf})`);
+  ok(Math.abs(segMeshDist(b, [0, 0, 100], [0, 0, 50]) - 50) < 1e-3, '퇴화 메시 거리 정확');
+}
+
 console.log(fail ? `\n${fail}건 실패` : '\n모두 통과');
 process.exit(fail ? 1 : 0);

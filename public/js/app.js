@@ -780,11 +780,22 @@ $('#projSave').onclick = async () => {
 };
 $('#projExport').onclick = async () => {
   await saveAll();
-  const r = await cmd('projectExport', { name: $('#projName').value.trim() || undefined });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([JSON.stringify(r.project, null, 1)], { type: 'application/json' }));
-  a.download = `${r.project.name || 'project'}.json`;
-  a.click();
+  // 셀에 배치한 3D 모델 파일까지 묶은 JSON 1개 → 다른 PC 에서 그대로 가져오기 가능
+  const n = $('#projName').value.trim();
+  try {
+    const res = await fetch(`/api/project/export${n ? `?name=${encodeURIComponent(n)}` : ''}`);
+    const r = await res.json();
+    if (!res.ok) throw new Error(r.error || res.statusText);
+    const blob = new Blob([JSON.stringify(r)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${r.name || 'project'}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    const k = Object.keys(r.assets || {}).length;
+    const size = blob.size >= 1048576 ? `${(blob.size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(blob.size / 1024))} KB`;
+    showToast(k ? `내보냄: 3D 모델 ${k}개 포함 (${size})` : `내보냄 (${size})`, 'ok');
+  } catch (err) { alert(`내보내기 실패: ${err.message}`); }
 };
 $('#projImport').onclick = () => $('#projFile').click();
 $('#projFile').onchange = async (e) => {
@@ -793,7 +804,10 @@ $('#projFile').onchange = async (e) => {
   if (!f) return;
   try {
     app.dirty.clear(); app.buffers = {};
-    await cmd('projectImport', { project: JSON.parse(await f.text()) });
+    const res = await fetch('/api/project/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: f });
+    const r = await res.json();
+    if (!res.ok) throw new Error(r.error || res.statusText);
+    showToast(r.models ? `가져옴: 3D 모델 ${r.models}개 포함` : '가져옴', 'ok');
     dlg.close();
   } catch (err) { alert(`가져오기 실패: ${err.message}`); }
 };
