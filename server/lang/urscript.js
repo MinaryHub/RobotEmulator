@@ -676,7 +676,7 @@ function sockOpen(vm, host, port, name) {
     s.once('connect', () => {
       clearTimeout(to);
       st.sock = s;
-      s.on('data', (d) => { st.buf += d.toString('latin1'); });
+      s.on('data', (d) => { st.buf += d.toString('latin1'); if (st.buf.length > 1048576) st.buf = st.buf.slice(-1048576); });   // 최대 1MB 유지
       s.on('close', () => { st.closed = true; });
       s.on('error', () => { st.closed = true; });
       vm.urs.socks.set(name, st);
