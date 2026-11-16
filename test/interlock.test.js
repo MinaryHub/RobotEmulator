@@ -106,7 +106,7 @@ console.log('■ 시스템 I/O — KUKA Automatic External via Modbus');
   c.setTimeScale(5);
   c.setRobot('kuka-kr6-r900');
   const handles = await startAll(c, {
-    yaskawaHse: { enabled: false }, kawasakiAs: { enabled: false }, hyundai: { enabled: false }, abbRws: { enabled: false }, kukaVarProxy: { enabled: false },
+    yaskawaHse: { enabled: false }, kawasakiAs: { enabled: false }, hyundai: { enabled: false }, abbRws: { enabled: false }, kukaVarProxy: { enabled: false }, urDashboard: { enabled: false },
     modbus: { port: 22502, fallbackPort: 22503, host: '127.0.0.1' },
   });
   const mb = await new ModbusClient('127.0.0.1', handles.find((h) => h.key === 'modbus').port).connect();

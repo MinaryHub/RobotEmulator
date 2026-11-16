@@ -99,7 +99,20 @@ for (const m of ROBOTS) {
   }
 
   // (d) 전완을 베이스 쪽으로 접은 자세: 하완 수직(q2=0), 전완이 아래를 향하도록 q3≈π-ψ, 툴은 아래로
-  {
+  if (m.kin === 'ur') {
+    // UR: 상완 수직(Shoulder -90°)에서 팔꿈치를 거의 끝까지 접으면 손목이 베이스·상완에 닿아야 함
+    let found = null;
+    for (const e of [165, 155, 145, -165, -155]) {
+      for (const w of [0, 90, -90]) {
+        const r = checkCollision(m, [0, -90, e, w, 90, 0], gripper, scene, objects);
+        const self = r.pairs.filter((p) => p.type === 'self');
+        if (self.length) { found = { self }; break; }
+      }
+      if (found) break;
+    }
+    line += '  ' + (found ? 'self: ' + found.self.map((p) => p.a + '-' + p.b).join(',') : 'none');
+    if (!found) bad(`${m.id} folded pose not flagged as self collision`);
+  } else {
     const k = m.opw, psi = Math.atan2(k.a2, k.c3);
     let found = null;
     for (const d3 of [0.15, 0.3, 0.45]) {

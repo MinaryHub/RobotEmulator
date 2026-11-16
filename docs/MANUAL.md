@@ -32,7 +32,7 @@
 
 ## 1. 이 프로그램으로 할 수 있는 일
 
-Yaskawa · Kawasaki · Hyundai · ABB · KUKA · Doosan 로봇 컨트롤러를 **하나의 가상 컨트롤러**로 흉내 냅니다.
+Yaskawa · Kawasaki · Hyundai · ABB · KUKA · Doosan · Universal Robots 로봇 컨트롤러를 **하나의 가상 컨트롤러**로 흉내 냅니다.
 
 | 하고 싶은 일 | 이 프로그램에서 |
 |---|---|
@@ -171,7 +171,7 @@ npm start
 
 ### 5.1 로봇 선택
 
-헤더의 `제조사` → `모델`. 6개 제조사 85종(협동로봇 HC20DTP, 두산 M·H·A 시리즈 8종 포함)이 있으며 사양(가반하중, 도달거리, 관절 한계·속도, 출처)은 `로봇` 탭 아래 `로봇 사양`에 표시됩니다.
+헤더의 `제조사` → `모델`. 7개 제조사 93종(협동로봇 HC20DTP, 두산 M·H·A 시리즈 8종, UR e-Series·UR20·UR30 8종 포함)이 있으며 사양(가반하중, 도달거리, 관절 한계·속도, 출처)은 `로봇` 탭 아래 `로봇 사양`에 표시됩니다.
 
 - 제조사를 바꾸면 해당 제조사의 언어·파일 형식·통신 표현으로 바뀝니다.
 - 다른 제조사로 갔다가 돌아오면 이전에 작업하던 프로그램이 그대로 남아 있습니다.
@@ -211,10 +211,21 @@ npm start
 | ABB | RAPID | `.mod` |
 | KUKA | KRL | `.src` + `.dat` |
 | Doosan | DRL (파이썬 문법) | `.drl` / `.py` (메인은 `main.drl`) |
+| Universal Robots | URScript | `.script` (메인은 `main.script`) |
 
 지원 문법의 상세 목록은 각 언어 모듈 상단 주석(`server/lang/*.js`)에 있습니다. 지원하지 않는 명령은 **컴파일 오류**로 알려 줍니다.
 
 **DRL 참고:** 위치는 `posx(X, Y, Z, A, B, C)`(베이스 좌표, ZYZ 오일러)와 `posj(J1..J6)` 입니다. `movej` 속도는 `vel=`(deg/s) 또는 `set_velj()` 로 반드시 지정합니다. 다른 `.drl` 파일은 `sub_program_run("이름")` 으로 실행합니다. PC·비전 연동은 프로그램 안에서 `server_socket_open(포트)` / `client_socket_open(ip, 포트)` 로 TCP 소켓을 엽니다. 이 소켓은 프로그램이 끝나거나 정지하면 닫힙니다.
+
+**URScript 참고:** 단위는 실제 UR 과 같이 **m · rad** 입니다. 자세는 `p[x, y, z, rx, ry, rz]`(베이스 좌표 + 회전 벡터), 관절 위치는 rad 6개 리스트입니다. 블록은 `def … end`, `if … elif … else … end`, `while … end` 로 닫습니다. 파일 맨 위에 `def` 만 있으면(PolyScope 가 내보낸 스크립트처럼) 인수 없는 첫 `def` 를 프로그램으로 실행하고 그 안의 변수는 전역으로 다룹니다. 화면의 자세 표시도 PolyScope 와 같이 mm + 회전 벡터(rad, 표시 `r`)입니다.
+
+| URScript 함수 | 에뮬레이터 신호 |
+|---|---|
+| `set_standard_digital_out(n)` / `get_standard_digital_in(n)` (n = 0~7) | DO / DI **n + 1** (그리퍼 규약: 표준 DO0 닫기, DO1 열기, DI0 닫힘, DI1 열림, DI2 공작물 감지) |
+| `set_configurable_digital_out(n)` / `get_configurable_digital_in(n)` (n = 0~7) | DO / DI **n + 9** (셀 프리셋의 컨베이어 DO9 = 구성 출력 0) |
+| `set_tool_digital_out(n)` / `get_tool_digital_in(n)` (n = 0~1) | DO / DI **n + 17** |
+
+`set_tcp(p[…])` 는 프로그램 툴로 반영됩니다. 스레드(`thread`/`run`/`join`), 구조체, RTDE 레지스터 함수, 힘 제어는 지원하지 않습니다.
 
 ### 6.2 파일 다루기 (에디터 위 버튼)
 
@@ -384,7 +395,7 @@ DO,7,CLAMP,지그 클램프
 
 실제 셀에서 PLC 는 보통 로봇의 **전용 입출력**(외부 서보 ON, 외부 시작, 프로그램 번호 선택, 운전 중·알람 출력 등)으로 로봇을 운전합니다. `시스템 I/O` 탭에서 이 신호를 범용 DI/DO 에 할당해 같은 시퀀스를 시험합니다.
 
-1. `사용` 을 켜고 프리셋을 고릅니다: 범용, Yaskawa 전용 입출력, KUKA Automatic External, ABB System I/O, Kawasaki 전용 신호, Hyundai 원격 신호, Doosan 원격 제어 신호.
+1. `사용` 을 켜고 프리셋을 고릅니다: 범용, Yaskawa 전용 입출력, KUKA Automatic External, ABB System I/O, Kawasaki 전용 신호, Hyundai 원격 신호, Doosan 원격 제어 신호, UR 구성 가능 I/O.
 2. 신호 번호는 기본으로 DI 401번 · DO 401번부터 차례로 할당됩니다. 표에서 번호와 입력 논리(NC/NO)를 현장 설정에 맞게 바꿉니다.
 3. `프로그램 번호` 표에 번호 → 프로그램 파일을 등록합니다. 표에 없으면 파일명이 같은 숫자인 프로그램(예: `0001.job` → 1)을 찾습니다.
 4. 모드를 **REMOTE** 로 둡니다 (시스템 I/O 입력은 외부 명령입니다).
@@ -424,7 +435,18 @@ DO,7,CLAMP,지그 클램프
 
 `셀` 탭:
 
-- **프리셋**: 기본 / 컨베이어 픽 앤 플레이스.
+- **프리셋** (모두 로봇 도달거리에 맞춰 자동 배치, 로봇을 바꾸면 다시 계산):
+
+  | 프리셋 | 구성 | 신호 |
+  |---|---|---|
+  | 기본 | 작업 테이블 + 공작물 4개 | — |
+  | 컨베이어 픽 앤 플레이스 | 피더 → 공급 컨베이어(스토퍼) → 적재 테이블·팔레트 | DO9 운전, DI9 도착 센서 |
+  | 머신 텐딩 (CNC) | 소재 테이블 + 왼쪽 CNC 본체·조작반, 도어 실린더 | DO11 도어 열기, DI11 열림 / DI12 닫힘 |
+  | 2테이블 이송 | 왼쪽 공급 테이블(스토퍼 레일) → 오른쪽 배출 테이블 | — |
+  | 출하 컨베이어 | 공급 테이블 → 출하 컨베이어 → 바닥 배출구(계수) | DO9 운전, DI9 끝 센서, DI10 배출 펄스 |
+  | 안전펜스 셀 | 작업 테이블 + 둘레 반투명 펜스, 앞쪽 반입구 테이블·센서 | DI13 반입구 센서 |
+
+  모든 프리셋은 공작물을 높이 0 테이블에 두므로 제조사별 기본 예제(공작물 집어 옮기기)가 그대로 실행됩니다. 장애물은 `불투명도`를 지정할 수 있습니다 (펜스처럼 안이 보여야 할 때).
 - **장치 추가·편집**: 테이블, 장애물, 공작물, 컨베이어, 피더, 센서, 공압 실린더, 배출구, 팔레트. 위치·크기·연동 I/O 를 편집.
 - 장치는 로봇 I/O 로 연동됩니다 (기본: DO9 = 컨베이어 운전, DI9 = 도착 센서). 따라서 PLC 가 Modbus 로 컨베이어를 직접 제어하거나 센서를 읽는 시나리오도 시험할 수 있습니다.
 - 장애물과 컨베이어 프레임은 간섭 체크 대상입니다.
@@ -539,6 +561,8 @@ PLC 를 Modbus TCP **클라이언트(마스터)**로 설정하고 에뮬레이�
 | **Hyundai** Hi6 Open API 스타일 REST (8888) | 상위 PC REST 연동 | `/project/...` 근사 경로 + 에뮬레이터 표준 `/api/...` | **공식 사양 미검증.** 실제 경로·필드명은 현대로보틱스 매뉴얼로 확인 |
 | **ABB** RWS 1.0/2.0 (8080) | PC SDK 대체, 웹 연동 | `Default User / robotics` 또는 인증 없음 | 실제 IRC5 는 80, OmniCore 는 443(HTTPS). 구독은 WebSocket |
 | **KUKA** KukaVarProxy (7000) | OpenShowVar, Python `py_openshowvar` 등 | 바이너리 TCP | `$AXIS_ACT`, `$POS_ACT`, `$OUT[n]`, `.dat` 전역 변수 |
+| **Universal Robots** Dashboard Server (TCP 29999) | PLC·MES 가 프로그램 로드·시작·정지, 상태 조회 | 줄 단위 텍스트 (`
+`). 접속 시 `Connected: Universal Robots Dashboard Server` | `load` 는 같은 이름의 `.script` 를 고름(`.urp` 미지원). `play`·`brake release` 는 원격(REMOTE) 모드에서만 — 실제 UR 의 원격 제어와 같음 |
 | **Doosan** DRL 소켓 (프로그램이 지정한 포트) | PC·비전과 TCP 문자열 통신 | DRL 의 `server_socket_open` / `client_socket_open` | 별도 상시 서버는 없음. 상태·I/O 는 공통 Modbus TCP·OPC UA 로 확인 |
 
 각 프로토콜 파일(`server/protocols/*.js`) 상단 주석에 지원 명령과 실제 컨트롤러와 다른 점이 정리되어 있습니다.
