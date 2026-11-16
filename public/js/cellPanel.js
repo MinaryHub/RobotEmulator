@@ -24,7 +24,7 @@ const LBL = {
 const FIELDS = {
   table: ['name', 'x', 'y', 'z', 'w', 'd'],
   workpiece: ['x', 'y', 'z', 'size', 'color'],
-  obstacle: ['name', 'x', 'y', 'z', 'w', 'd', 'h', 'yaw', 'color', 'collide'],
+  obstacle: ['name', 'x', 'y', 'z', 'w', 'd', 'h', 'yaw', 'color', 'opacity', 'collide'],
   conveyor: ['name', 'x0', 'y0', 'x1', 'y1', 'z', 'width', 'speed', 'runDO', 'reverseDO', 'stopper'],
   feeder: ['name', 'x', 'y', 'z', 'size', 'color', 'mode', 'triggerDO', 'interval', 'max', 'prefix'],
   sensor: ['name', 'x', 'y', 'z', 'w', 'd', 'h', 'yaw', 'di', 'invert'],
@@ -174,7 +174,7 @@ function fieldHtml(it, f) {
     return `<label>${lb}<select data-f="unit">${opts.map(([u, n]) => `<option value="${u}" ${u === it.unit ? 'selected' : ''}>${n}</option>`).join('')}</select></label>`;
   }
   if (f === 'up') return `<label>${lb}<select data-f="up">${UPS.map(([u, n]) => `<option value="${u}" ${u === it.up ? 'selected' : ''}>${n}</option>`).join('')}</select></label>`;
-  if (f === 'opacity') return `<label>${lb}<input type="number" step="0.05" min="0.05" max="1" data-f="opacity" value="${it.opacity}"></label>`;
+  if (f === 'opacity') return `<label>${lb}<input type="number" step="0.05" min="0.05" max="1" data-f="opacity" value="${it.opacity ?? (it.collide === false ? 0.5 : 1)}"></label>`;
   if (f === 'mode') return `<label>${lb}<select data-f="mode"><option value="auto" ${it.mode === 'auto' ? 'selected' : ''}>자동(비면 배출)</option><option value="edge" ${it.mode === 'edge' ? 'selected' : ''}>DO 상승 에지</option></select></label>`;
   if (f === 'size') return [0, 1, 2].map((i) => `<label>${['크기 X', '크기 Y', '크기 Z'][i]}<input type="number" step="any" data-f="size${i}" value="${r1(it.size[i])}"></label>`).join('');
   if (TEXT.has(f)) return `<label>${lb}<input type="text" data-f="${f}" value="${String(it[f] ?? '').replace(/"/g, '&quot;')}"></label>`;

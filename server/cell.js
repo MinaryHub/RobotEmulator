@@ -16,10 +16,10 @@
 //
 // 레이아웃 스키마 (단위 mm, 각도 deg, 좌표 = 로봇 베이스 기준, z 위쪽)
 // {
-//   version: 1, name: '표시 이름', preset: 'default' | 'conveyor' | null,
+//   version: 1, name: '표시 이름', preset: PRESETS 의 id ('default' | 'conveyor' | 'machine' | 'dual' | 'outfeed' | 'fenced') | null,
 //   tables:     [{ id, name, x, y, z(상판 윗면), w(X 폭), d(Y 깊이) }]            // 1개 이상. tables[0] = ctrl.scene.table
 //   workpieces: [{ id, x, y, z(바닥면), size:[sx,sy,sz], color, yaw? }]            // 초기 공작물 (리셋 시 이 위치로)
-//   obstacles:  [{ id, name, x, y, z(바닥면), w, d, h, color, yaw?, collide? }]     // 고정구/장애물 박스 (간섭 체크)
+//   obstacles:  [{ id, name, x, y, z(바닥면), w, d, h, color, yaw?, collide?, opacity? }] // 고정구/장애물 박스 (간섭 체크)
 //   devices: [
 //     { type:'conveyor', id, name, x0, y0, x1, y1, z(벨트 윗면), width, speed(mm/s), runDO(0=항상 운전),
 //       reverseDO(0=없음), stopper(true=끝단 스토퍼), color }
@@ -36,7 +36,8 @@
 //              bbox:[[lo],[hi]](파일 단위, 자산 메타 사본), color(null=원본 색), opacity, collide, tool(툴도 검사), support(공작물 지지면) }]
 //     사용자 3D 모델 (장비·지그·펜스 등). 간섭은 삼각형 단위 정밀 검사 (shared/meshcol.js)
 // }
-// 기본 신호 규약(프리셋): DO9 = 컨베이어 운전, DO10 = 피더 배출 요청(edge 모드), DI9 = 스토퍼 도착 센서
+// 기본 신호 규약(프리셋): DO9 = 컨베이어 운전, DO10 = 피더 배출 요청(edge 모드), DI9 = 스토퍼 도착/컨베이어 끝 센서,
+//   DO11 = CNC 도어 열기(DI11 열림·DI12 닫힘), DI10 = 배출구 계수 펄스, DI13 = 반입구 센서
 //   (그리퍼 DO1/DO2, DI1..3 과 겹치지 않도록 9번부터 사용)
 
 import { Rz, DEG, mulv, T3, sub } from '../shared/math.js';
@@ -50,7 +51,15 @@ const DEVICE_TYPES = ['conveyor', 'feeder', 'sensor', 'cylinder', 'sink', 'palle
 export const PRESETS = [
   { id: 'default', name: '기본 (테이블 + 공작물 4개)' },
   { id: 'conveyor', name: '컨베이어 픽 앤 플레이스' },
+  { id: 'machine', name: '머신 텐딩 (CNC 공작기계)' },
+  { id: 'dual', name: '2테이블 이송 (공급 → 배출)' },
+  { id: 'outfeed', name: '출하 컨베이어 (테이블 → 컨베이어 → 배출구)' },
+  { id: 'fenced', name: '안전펜스 셀 (펜스 + 반입 센서)' },
 ];
+const presetName = (id) => PRESETS.find((p) => p.id === id).name;
+
+// 바닥 높이 (로봇 베이스 = 받침대 위 z 0). _buildScene 과 프리셋이 같은 값을 쓴다
+export const floorZOf = (R) => -Math.round(R * 0.45 / 50) * 50;
 
 // ------------------------------------------------------------------ 프리셋
 // 공작물 크기: 도달거리에 비례 (상한 140 mm — 3 m 이상 대형 로봇도 기본 그리퍼(TCP 150 mm)로 공작물 중심을 집을 때
@@ -62,7 +71,7 @@ export function presetLayout(id, robot) {
   const s = partSize(R);
   if (id === 'default') {
     return {
-      version: 1, name: PRESETS[0].name, preset: 'default',
+      version: 1, name: presetName('default'), preset: 'default',
       tables: [{ id: 'T1', name: '작업 테이블', x: R * 0.6, y: 0, z: 0, w: R * 0.55, d: R * 1.1 }],
       workpieces: [-0.3, -0.1, 0.1, 0.3].map((f, i) => ({ id: `W${i + 1}`, x: R * 0.55, y: R * f, z: 0, size: [s, s, s], color: COLORS[i] })),
       obstacles: [],
@@ -72,7 +81,7 @@ export function presetLayout(id, robot) {
   if (id === 'conveyor') {
     const g = conveyorGeometry(R);
     return {
-      version: 1, name: PRESETS[1].name, preset: 'conveyor',
+      version: 1, name: presetName('conveyor'), preset: 'conveyor',
       tables: [{ id: 'T1', name: '적재 테이블', x: R * 0.6, y: R * 0.12, z: 0, w: R * 0.45, d: R * 0.6 }],
       workpieces: [{ id: 'W1', x: g.pick[0], y: g.pick[1], z: 0, size: [s, s, s], color: COLORS[0] }],
       obstacles: [],
@@ -81,6 +90,81 @@ export function presetLayout(id, robot) {
         { type: 'feeder', id: 'F1', name: '부품 피더', x: g.x, y: g.yStart + s * 0.75, z: 0, size: [s, s, s], color: COLORS[1], yaw: 0, mode: 'auto', triggerDO: 10, interval: 2, max: 12, prefix: 'P' },
         { type: 'sensor', id: 'S1', name: '스토퍼 도착 센서', x: g.pick[0], y: g.pick[1], z: s * 0.4, w: g.width, d: s * 0.5, h: s * 0.8, yaw: 0, di: 9, invert: false },
         { type: 'pallet', id: 'PL1', name: '적재 위치 (2×3)', x: R * 0.5, y: 0, z: 0, rows: 3, cols: 2, pitchX: R * 0.15, pitchY: R * 0.15 },
+      ],
+    };
+  }
+  // ---- 추가 프리셋: 모두 공작물(W*)을 Z=0 테이블에 두고, 기본 예제(Y 대칭 위치로 이송)가 그대로 동작하도록 배치
+  const fz = floorZOf(R);
+  const base = (pid) => ({ version: 1, name: presetName(pid), preset: pid, obstacles: [], devices: [] });
+  // 바닥에 선 박스 (윗면 높이 top)
+  const floorBox = (id, name, x, y, w, d, top, color, extra = {}) => ({ id, name, x, y, z: fz, w, d, h: top - fz, color, ...extra });
+  if (id === 'machine') {
+    // 소재 테이블(기본과 동일) + 로봇 왼쪽(-Y) CNC 공작기계 본체·조작반, 도어 실린더(DO11 → DI11 열림 / DI12 닫힘)
+    const cy = -R * 1.15, front = cy + R * 0.3;
+    return {
+      ...base('machine'),
+      tables: [{ id: 'T1', name: '소재 테이블', x: R * 0.6, y: 0, z: 0, w: R * 0.55, d: R * 1.1 }],
+      workpieces: [-0.3, -0.1, 0.1, 0.3].map((f, i) => ({ id: `W${i + 1}`, x: R * 0.55, y: R * f, z: 0, size: [s, s, s], color: COLORS[i] })),
+      obstacles: [
+        floorBox('O1', 'CNC 본체', R * 0.05, cy, R * 0.9, R * 0.6, R * 0.75, 0xc9ccd1),
+        floorBox('O2', 'CNC 조작반', R * 0.62, front - R * 0.06, R * 0.16, R * 0.12, R * 0.55, 0x3a3f47),
+      ],
+      devices: [
+        { type: 'cylinder', id: 'CY1', name: 'CNC 도어 실린더', x: -R * 0.38, y: front + R * 0.04, z: R * 0.45, yaw: 0, length: s * 3, bore: s * 0.8, stroke: R * 0.35, time: 1.0, extendDO: 11, extDI: 11, retDI: 12 },
+      ],
+    };
+  }
+  if (id === 'dual') {
+    // 왼쪽 공급 테이블의 공작물을 오른쪽 배출 테이블로 (Y 대칭)
+    const ys = [-0.28, -0.40, -0.52, -0.64];
+    return {
+      ...base('dual'),
+      tables: [
+        { id: 'T1', name: '공급 테이블', x: R * 0.55, y: -R * 0.46, z: 0, w: R * 0.5, d: R * 0.5 },
+        { id: 'T2', name: '배출 테이블', x: R * 0.55, y: R * 0.46, z: 0, w: R * 0.5, d: R * 0.5 },
+      ],
+      workpieces: ys.map((f, i) => ({ id: `W${i + 1}`, x: R * 0.5, y: R * f, z: 0, size: [s, s, s], color: COLORS[i] })),
+      obstacles: [
+        { id: 'O1', name: '공급 지그 스토퍼', x: R * 0.5 + s * 1.5, y: -R * 0.46, z: 0, w: s * 0.4, d: R * 0.44, h: s * 0.6, color: 0x8a8f99 },
+      ],
+    };
+  }
+  if (id === 'outfeed') {
+    // 공작물을 오른쪽(+Y) 컨베이어에 올리면 DO9 로 운전 → 끝에서 바닥 배출구로 떨어져 계수 (DI10 펄스)
+    const ys = [-0.2, -0.32, -0.44, -0.56];
+    const cx = R * 0.42, cw = Math.round(R * 0.22), y0 = R * 0.05, y1 = R * 1.25;
+    return {
+      ...base('outfeed'),
+      tables: [{ id: 'T1', name: '공급 테이블', x: R * 0.55, y: -R * 0.4, z: 0, w: R * 0.5, d: R * 0.6 }],
+      workpieces: ys.map((f, i) => ({ id: `W${i + 1}`, x: R * 0.55, y: R * f, z: 0, size: [s, s, s], color: COLORS[i] })),
+      devices: [
+        { type: 'conveyor', id: 'CV1', name: '출하 컨베이어', x0: cx, y0, x1: cx, y1, z: 0, width: cw, speed: Math.round(Math.max(100, R * 0.25) / 10) * 10, runDO: 9, reverseDO: 0, stopper: false, color: 0x2b2f35 },
+        { type: 'sensor', id: 'S1', name: '컨베이어 끝 센서', x: cx, y: y1 - s, z: s * 0.4, w: cw, d: s * 0.5, h: s * 0.8, yaw: 0, di: 9, invert: false },
+        { type: 'sink', id: 'SK1', name: '배출구', x: cx, y: y1 + R * 0.12, z: fz, w: cw * 1.4, d: R * 0.24, h: -fz + 20, pulseDI: 10 },
+      ],
+    };
+  }
+  if (id === 'fenced') {
+    // 기본 테이블 + 둘레 안전펜스(도달거리 1.5배), 앞쪽 반입구에 반입 테이블과 감지 센서(DI13)
+    const F = R * 1.5, t = Math.max(30, Math.round(R * 0.03)), top = R * 0.9, gap = R * 0.5, col = 0xe0b021;
+    const mesh = { opacity: 0.3 };      // 철망 펜스: 안이 보이도록 반투명
+    const side = (F * 2 - gap) / 2;      // 앞면을 반입구 양옆 두 장으로
+    return {
+      ...base('fenced'),
+      tables: [
+        { id: 'T1', name: '작업 테이블', x: R * 0.6, y: 0, z: 0, w: R * 0.55, d: R * 1.1 },
+        { id: 'T2', name: '반입 테이블', x: F + R * 0.05, y: 0, z: 0, w: R * 0.3, d: gap * 0.9 },
+      ],
+      workpieces: [-0.3, -0.1, 0.1, 0.3].map((f, i) => ({ id: `W${i + 1}`, x: R * 0.55, y: R * f, z: 0, size: [s, s, s], color: COLORS[i] })),
+      obstacles: [
+        floorBox('FN1', '안전펜스 (앞-좌)', F, -F + side / 2, t, side, top, col, mesh),
+        floorBox('FN2', '안전펜스 (앞-우)', F, F - side / 2, t, side, top, col, mesh),
+        floorBox('FN3', '안전펜스 (뒤)', -F, 0, t, F * 2, top, col, mesh),
+        floorBox('FN4', '안전펜스 (좌)', 0, -F, F * 2, t, top, col, mesh),
+        floorBox('FN5', '안전펜스 (우)', 0, F, F * 2, t, top, col, mesh),
+      ],
+      devices: [
+        { type: 'sensor', id: 'S1', name: '반입구 센서', x: F + R * 0.05, y: 0, z: s * 0.5, w: R * 0.3, d: gap * 0.9, h: s, yaw: 0, di: 13, invert: false },
       ],
     };
   }
@@ -152,6 +236,8 @@ export function normalizeLayout(src) {
   (src.obstacles || []).forEach((o, i) => {
     const w = `장애물 ${o.id ?? i + 1}`;
     const q = { id: uid(o.id, `OB${i + 1}`, w), name: String(o.name ?? `장애물 ${i + 1}`), x: num(o.x, undefined, 'x', w), y: num(o.y, undefined, 'y', w), z: num(o.z, 0, 'z', w), w: pos(o.w, undefined, 'w', w), d: pos(o.d, undefined, 'd', w), h: pos(o.h, undefined, 'h', w), color: color(o.color, 0x7a828c), yaw: num(o.yaw, 0, 'yaw', w), collide: o.collide !== false };
+    // 불투명도 (선택, 0.05~1). 없으면 간섭 대상 1 / 비대상 0.5 로 표시
+    if (o.opacity !== undefined && o.opacity !== null && o.opacity !== '') q.opacity = Math.min(1, Math.max(0.05, num(o.opacity, 1, 'opacity', w)));
     L.obstacles.push(q);
   });
   (src.devices || []).forEach((d, i) => {
@@ -289,7 +375,7 @@ export class Cell {
 
   _buildScene() {
     const c = this.ctrl, R = c.robot.reach;
-    const floorZ = -Math.round(R * 0.45 / 50) * 50;
+    const floorZ = floorZOf(R);
     const t = this.layout.tables[0];
     c.scene = { floorZ, table: { x: t.x, y: t.y, z: t.z, w: t.w, d: t.d }, pedestal: { d: Math.max(200, R * 0.3), h: -floorZ } };
     this._static = this._staticObstacles();
