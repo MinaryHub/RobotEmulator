@@ -211,6 +211,17 @@ const server = http.createServer(async (req, res) => {
         out = ctrl.assets.save(body);
         ctrl.cell.refreshModels?.(out.id);
       }
+      // 프로젝트 파일 1개로 내보내기/가져오기 (3D 모델 묶음 포함 — 크기가 커서 WebSocket 대신 HTTP)
+      else if (url.pathname === '/api/project/export' && req.method === 'GET') {
+        out = projects.serialize(url.searchParams.get('name') || undefined, { bundle: url.searchParams.get('bundle') !== '0' });
+      }
+      else if (url.pathname === '/api/project/import' && req.method === 'POST') {
+        const body = await readBody(req, MAX_UPLOAD * 2);
+        let p;
+        try { p = JSON.parse(body.toString('utf8')); } catch { throw new Error('프로젝트 파일이 JSON 형식이 아닙니다'); }
+        projects.apply(p);
+        out = { files: filesMsg(), current: projects.current, models: Object.keys(p.assets || {}).length };
+      }
       else if (url.pathname === '/api/cmd' && req.method === 'POST') {
         const body = await new Promise((r) => { let s = ''; req.on('data', (c) => (s += c)); req.on('end', () => r(s)); });
         out = (await handleCmd(JSON.parse(body || '{}'))) ?? { ok: true };

@@ -299,6 +299,7 @@ export class Cell {
   refreshModels(assetId) {
     if (!this.layout?.models?.some((m) => m.asset === assetId)) return;
     this._missing.delete(assetId);
+    this.rev++;                       // 화면도 다시 구성 (파일 없어 상자로 표시되던 모델을 다시 불러오도록)
     this._static = this._staticObstacles();
     this.ctrl.checkCollisionNow?.();
   }

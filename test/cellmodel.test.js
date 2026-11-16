@@ -129,6 +129,47 @@ ps.load('withmodel');
 const back = ctrl.cell.getLayout().models;
 check(back.length === 2 && back[0].asset === meta.id && back[0].up === 'y' && back[0].unit === 1000, '프로젝트 불러오기 → 모델 복원');
 
+console.log('[모델 묶음 내보내기/가져오기]');
+{
+  // 파일이 있는 모델만, 간섭 켠 상태로 (앞 단계의 M9 는 일부러 파일 없는 모델)
+  const L2 = ctrl.cell.getLayout();
+  L2.models = L2.models.filter((m) => ctrl.assets.has(m.asset)).map((m) => ({ ...m, collide: true }));
+  ctrl.cell.setLayout(L2);
+  const kept = ctrl.cell.getLayout().models;
+  const bundle = JSON.parse(JSON.stringify(ps.serialize('bundled', { bundle: true })));
+  const ids = [...new Set(kept.map((m) => m.asset))];
+  check(ids.length > 0 && ids.every((id) => typeof bundle.assets?.[id]?.glb === 'string' && bundle.assets[id].col), '묶음 내보내기 → 참조 모델 파일 포함');
+  check(!ps.serialize('plain').assets, '일반 저장은 모델 id 만 (파일 미포함)');
+  // 다른 PC 흉내: 빈 자산 저장소의 새 컨트롤러로 가져오기
+  const c2 = new Controller(); clearInterval(c2._timer);
+  const logs2 = []; c2.on('log', (e) => logs2.push(e.msg));
+  c2.assets = new AssetStore(path.join(tmp, 'assets2'), (s, m) => c2.log(s, m));
+  const ps2 = new ProjectStore(c2, path.join(tmp, 'projects2'));
+  ps2.apply(bundle);
+  check(ids.every((id) => c2.assets.has(id) && c2.assets.collider(id)), '가져오기 → 모델 파일·간섭 메시 복원');
+  check(c2.cell.getLayout().models.length === kept.length && !logs2.some((s) => s.includes('3D 모델 파일 없음')), '가져오기 → 레이아웃 모델 그대로, 파일 없음 경고 없음');
+  check(c2.cell.obstacles().some((x) => x.id === kept[0].id), '가져온 모델이 간섭 장애물로 동작');
+  // 손상된 묶음 → 거부, 기존 상태 유지
+  const c3 = new Controller(); clearInterval(c3._timer);
+  c3.assets = new AssetStore(path.join(tmp, 'assets3'));
+  const ps3 = new ProjectStore(c3, path.join(tmp, 'projects3'));
+  const bad = JSON.parse(JSON.stringify(bundle));
+  const id0 = ids[0];
+  bad.assets[id0].col = Buffer.from(Buffer.from(bad.assets[id0].col, 'base64').map((x, i) => (i === 40 ? x ^ 1 : x))).toString('base64');
+  const robotBefore = c3.robot.id;
+  let err = null; try { ps3.apply(bad); } catch (e) { err = e; }
+  check(err && /손상/.test(err.message) && !c3.assets.has(id0) && c3.robot.id === robotBefore, '손상된 묶음 모델 → 거부, 프로젝트 적용 안 함');
+  clearInterval(c2._timer); clearInterval(c3._timer);
+}
+
+console.log('[업로드 상한]');
+{
+  const n = 200001, pos = new Float32Array(n * 9), idx = new Uint32Array(n * 3);
+  for (let i = 0; i < n; i++) { pos.set([i, 0, 0, i + 1, 0, 0, i, 1, 0], i * 9); idx.set([i * 3, i * 3 + 1, i * 3 + 2], i * 3); }
+  let err = null; try { ctrl.assets.save(uploadBody('huge', 'stl', { positions: pos, indices: idx })); } catch (e) { err = e; }
+  check(err && /너무 많/.test(err.message), '간섭 메시 20만 삼각형 초과 → 거부');
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(fails ? `\n${fails}건 실패` : '\n모두 통과');
 process.exit(fails ? 1 : 0);

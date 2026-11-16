@@ -9,7 +9,8 @@ const DEG = Math.PI / 180;
 // 사용자 3D 모델(GLB) 캐시: 자산 id → Promise<THREE.Object3D | null(파일 없음)>
 const glbCache = new Map();
 function loadAsset(id) {
-  if (!glbCache.has(id)) glbCache.set(id, new GLTFLoader().loadAsync(`/assets/models/${id}.glb`).then((g) => g.scene).catch(() => null));
+  // 실패(파일 없음)는 캐시하지 않음 → 프로젝트 가져오기 등으로 파일이 생기면 다음 build 에서 다시 시도
+  if (!glbCache.has(id)) glbCache.set(id, new GLTFLoader().loadAsync(`/assets/models/${id}.glb`).then((g) => g.scene).catch(() => { glbCache.delete(id); return null; }));
   return glbCache.get(id);
 }
 // 위쪽 축 보정 (shared/meshcol.js upMatrix 와 같은 회전)

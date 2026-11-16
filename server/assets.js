@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { decodeCol, buildBVH } from '../shared/meshcol.js';
+import { decodeCol, buildBVH, COL_MAX_TRIS } from '../shared/meshcol.js';
 
 export const MAX_UPLOAD = 256 * 1024 * 1024;
 const ID = /^[0-9a-f]{16}$/;
@@ -54,6 +54,7 @@ export class AssetStore {
     if (glb.toString('latin1', 0, 4) !== 'glTF') throw new Error('표시용 모델이 GLB 형식이 아닙니다');
     const mesh = decodeCol(col);                  // 형식·인덱스 검증 (오류 시 throw)
     if (!mesh.indices.length) throw new Error('간섭 메시에 삼각형이 없습니다');
+    if (mesh.indices.length / 3 > COL_MAX_TRIS) throw new Error(`간섭 메시 삼각형이 너무 많습니다 (${mesh.indices.length / 3} > ${COL_MAX_TRIS})`);
     const bvh = buildBVH(mesh.positions, mesh.indices);
     const id = crypto.createHash('sha256').update(glb).update(col).digest('hex').slice(0, 16);
     const meta = {
@@ -91,6 +92,29 @@ export class AssetStore {
       this.log('alarm', `3D 모델 간섭 메시 읽기 실패 (${id}): ${e.message}`);
       return null;
     }
+  }
+
+  // 프로젝트 묶음 내보내기용: { name, format, srcTris, glb(base64), col(base64) }. 파일 없으면 null
+  pack(id) {
+    const meta = this.meta(id);
+    if (!meta) return null;
+    return {
+      name: meta.name, format: meta.format, srcTris: meta.srcTris,
+      glb: fs.readFileSync(this.file(id, 'glb')).toString('base64'),
+      col: fs.readFileSync(this.file(id, 'col')).toString('base64'),
+    };
+  }
+
+  // pack() 결과 → save() 와 같은 검증을 거쳐 저장. 내용 해시가 id 와 다르면 오류
+  unpack(id, rec) {
+    if (!isAssetId(id)) throw new Error(`잘못된 모델 id: ${id}`);
+    if (typeof rec?.glb !== 'string' || typeof rec?.col !== 'string') throw new Error(`묶인 모델 데이터가 없습니다: ${id}`);
+    const glb = Buffer.from(rec.glb, 'base64'), col = Buffer.from(rec.col, 'base64');
+    const hash = crypto.createHash('sha256').update(glb).update(col).digest('hex').slice(0, 16);
+    if (hash !== id) throw new Error(`묶인 모델 내용이 손상되었습니다: ${rec.name ?? id}`);
+    const head = Buffer.from(JSON.stringify({ name: rec.name, format: rec.format, srcTris: rec.srcTris, glbBytes: glb.length, colBytes: col.length }), 'utf8');
+    const len = Buffer.alloc(4); len.writeUInt32LE(head.length, 0);
+    return this.save(Buffer.concat([len, head, glb, col]));
   }
 
   _trim() { while (this._bvh.size > 32) this._bvh.delete(this._bvh.keys().next().value); }
