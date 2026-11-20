@@ -79,6 +79,7 @@ aside { background: var(--panel); min-height: 0; display: flex; flex-direction: 
 .tabs { display: flex; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
 .tabs::-webkit-scrollbar { display: none; }
 .tabs button { flex: 1 1 auto; border: none; border-radius: 0; background: transparent; padding: 9px 2px; color: var(--dim); border-bottom: 2px solid transparent; white-space: nowrap; font-size: 12.5px; }
+html[lang="en"] .tabs button { font-size: 11.5px; letter-spacing: -0.2px; }   /* 영어 탭 이름이 길어 한 줄에 맞춤 */
 .tabs button.active { color: var(--fg); border-bottom-color: var(--acc); background: transparent; }
 .tab { display: none; padding: 10px 12px 20px; overflow-y: auto; flex: 1; }
 .tab.active { display: block; }
@@ -291,6 +292,7 @@ footer .fpanel.active { display: flex; flex-direction: column; }
 .abver { font-family: var(--mono); font-size: 13px; color: var(--acc); font-weight: 400; margin-left: 6px; text-transform: none; letter-spacing: 0; }
 .aboutdlg h3 { justify-content: flex-start; }
 .abupd { font-size: 12.5px; }
+.ablang { align-items: center; } .ablang label { color: var(--dim); }
 .abupd .new { color: var(--ok); font-weight: 600; }
 .abupd .err { color: #ff8a8d; }
 .abnotes { max-height: 180px; overflow: auto; margin: 0; padding: 8px; background: #0f1215; border-radius: 6px; font-size: 11.5px; white-space: pre-wrap; font-family: var(--mono); }

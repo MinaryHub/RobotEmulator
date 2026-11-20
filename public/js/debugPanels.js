@@ -1,5 +1,6 @@
 // 하단 패널: 신호 타임라인(로직 애널라이저) + 변수 감시
 import { ioLabelMap } from './ioLabels.js';
+import { t } from './i18n.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -108,7 +109,7 @@ export function initDebugPanels({ cmd }) {
     sigs.forEach((s, i) => {
       const y = top + i * rowH, hi = y + 3, lo = y + rowH - 3;
       ctx.fillStyle = '#8c96a3';
-      ctx.fillText(names[i], 6, y + rowH / 2 + 3, L - 10);
+      ctx.fillText(t(names[i]), 6, y + rowH / 2 + 3, L - 10);
       const col = s.startsWith('DO') ? '#f0a020' : s.startsWith('DI') ? '#2fbf71' : s === 'ALARM' || s === 'COLLISION' ? '#e5484d' : '#3d8bfd';
       ctx.strokeStyle = col; ctx.fillStyle = col + '33'; ctx.lineWidth = 1.5;
       let v = valueAt(s, t0, bySig);

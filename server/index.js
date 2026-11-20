@@ -198,6 +198,15 @@ async function handleCmd(m) {
     case 'ioLabel': ctrl.setIoLabel(m.type, m.n, { name: m.name, desc: m.desc }); return;
     case 'ioLabels': if (m.labels) ctrl.setIoLabels(m.labels); return { labels: ctrl.ioLabels };
     case 'state': return { state: ctrl.snapshot() };
+    // 화면 언어 → 예제 프로그램 주석 언어. 손대지 않은 예제는 그 언어로 다시 생성
+    case 'uiLang': {
+      const l = m.lang === 'en' ? 'en' : 'ko';
+      if (ctrl.uiLang === l) return;
+      const untouched = ctrl.isExampleUntouched();
+      ctrl.uiLang = l;
+      if (untouched && !['running', 'paused'].includes(ctrl.vm?.status)) { ctrl.loadExample(); return { files: filesMsg() }; }
+      return;
+    }
     // 버전·업데이트 (정보 창)
     case 'about': return { about: updater.info() };
     case 'updateCheck': await updater.check(); return { about: updater.info() };
@@ -359,13 +368,15 @@ wss.on('connection', (ws) => {
       } catch (e) { send(ws, { type: 'chat', ev: 'error', msg: `채팅을 시작할 수 없습니다: ${e.message}` }); }
       return;
     }
+    // 요청 번호: rid (권장). 예전 형식 id 도 받지만, setRobot·cell 등은 인자 이름도 id 라 겹치므로 rid 를 쓰십시오
+    const reqId = m.rid !== undefined ? m.rid : m.id;
     try {
       const r = await handleCmd(m);
       if (r?.files) { broadcast({ type: 'files', ...r.files }); lastFilesSig = filesSig(); }   // 아래 폴러가 같은 내용을 다시 보내지 않게
-      if (m.id !== undefined) send(ws, { type: 'reply', id: m.id, ok: true, ...r });
+      if (reqId !== undefined) send(ws, { type: 'reply', id: reqId, ok: true, ...r });
     } catch (e) {
       ctrl.log('system', `명령 오류(${m.cmd}): ${e.message}`);
-      if (m.id !== undefined) send(ws, { type: 'reply', id: m.id, ok: false, error: e.message });
+      if (reqId !== undefined) send(ws, { type: 'reply', id: reqId, ok: false, error: e.message });
     }
   });
 });

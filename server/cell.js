@@ -44,6 +44,7 @@ import { Rz, DEG, mulv, T3, sub } from '../shared/math.js';
 import { TABLE_THICKNESS } from '../shared/collision.js';
 import { meshObstacle, meshObstacleTopZ, upMatrix } from '../shared/meshcol.js';
 import { isAssetId } from './assets.js';
+import { localizeLayout, localizeName } from './lang/examples-en.js';
 
 const COLORS = [0x3fa34d, 0xd9822b, 0x2f7ed8, 0xc03a3a];
 const DEVICE_TYPES = ['conveyor', 'feeder', 'sensor', 'cylinder', 'sink', 'pallet'];
@@ -346,7 +347,7 @@ export class Cell {
   }
 
   applyPreset(id) {
-    const L = presetLayout(id, this.ctrl.robot);
+    const L = localizeLayout(presetLayout(id, this.ctrl.robot), this.ctrl.uiLang);   // 화면 언어가 English 면 장치 이름도 영어로
     this._apply(normalizeLayout(L));
     this.ctrl.log('system', `셀 프리셋: ${L.name}`);
     return this.getLayout();
@@ -366,7 +367,7 @@ export class Cell {
   // ctrl.resetScene() 에서 호출: 프리셋 레이아웃이면 현재 로봇에 맞게 재생성
   resetScene() {
     if (!this.layout || this.layout.preset) {
-      const L = normalizeLayout(presetLayout(this.layout?.preset || 'default', this.ctrl.robot));
+      const L = normalizeLayout(localizeLayout(presetLayout(this.layout?.preset || 'default', this.ctrl.robot), this.ctrl.uiLang));
       if (JSON.stringify(L) !== JSON.stringify(this.layout)) { this._releaseSignals(); this.layout = L; this.rev++; }
     }
     this._buildScene();
@@ -697,6 +698,7 @@ export class Cell {
       case 'add': {
         const L = this.getLayout();
         const { list, item } = this.newItem(m.kind);
+        item.name = localizeName(item.name, this.ctrl.uiLang);
         L[list].push(item);
         L.preset = null;
         return { layout: this.setLayout(L), itemId: item.id };

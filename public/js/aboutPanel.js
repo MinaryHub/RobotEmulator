@@ -1,23 +1,27 @@
 // 정보 창: 버전 · 업데이트 확인/적용 · 문의하기(GitHub 이슈) · 후원하기
 //  서버 상태는 init/about 메시지의 about 객체 (server/updater.js info())
 import { escHtml } from './ioLabels.js';
+import { lang, setLang } from './i18n.js';
 
 const $ = (s) => document.querySelector(s);
 let about = null;
 let loaded = null;          // 이 페이지를 처음 불러왔을 때의 서버 빌드 (버전+커밋)
 let ctx = null;             // { cmd, run, getState, isDirty, showToast }
 
-const fmtDate = (t) => (t ? new Date(t).toLocaleString() : '');
+const fmtDate = (t) => (t ? new Date(t).toLocaleString(lang === 'en' ? 'en-US' : 'ko-KR') : '');
 
 // 환경 정보 (이슈 본문에 미리 채움 — 개인 정보 없음)
 function envText() {
   const st = ctx.getState();
+  const L = lang === 'en'
+    ? { v: 'Version', i: 'Install', s: 'Server', b: 'Browser', r: 'Robot', m: 'mode', zip: 'archive' }
+    : { v: '버전', i: '설치', s: '서버', b: '브라우저', r: '로봇', m: '모드', zip: '압축 파일' };
   return [
-    `- 버전: v${about?.version ?? '?'}${about?.commit ? ` (${about.commit}${about.branch ? `, ${about.branch}` : ''})` : ''}`,
-    `- 설치: ${about?.install === 'git' ? 'git clone' : '압축 파일'}`,
-    `- 서버: ${about?.platform ?? '?'}, Node.js ${about?.node ?? '?'}`,
-    `- 브라우저: ${navigator.userAgent}`,
-    st ? `- 로봇: ${st.robotId} (${st.vendor}), 모드 ${st.mode}` : null,
+    `- ${L.v}: v${about?.version ?? '?'}${about?.commit ? ` (${about.commit}${about.branch ? `, ${about.branch}` : ''})` : ''}`,
+    `- ${L.i}: ${about?.install === 'git' ? 'git clone' : L.zip}`,
+    `- ${L.s}: ${about?.platform ?? '?'}, Node.js ${about?.node ?? '?'}`,
+    `- ${L.b}: ${navigator.userAgent}`,
+    st ? `- ${L.r}: ${st.robotId} (${st.vendor}), ${L.m} ${st.mode}` : null,
   ].filter(Boolean).join('\n');
 }
 function issueUrl(template, title) {
@@ -52,8 +56,8 @@ function render() {
   setLink($('#abRelease'), u.latest?.url || L.releases);
   setLink($('#abChangelog'), L.changelog);
   setLink($('#abIssues'), L.issues);
-  setLink($('#abBug'), issueUrl('bug_report.yml', '[버그] '));
-  setLink($('#abIdea'), issueUrl('feature_request.yml', '[제안] '));
+  setLink($('#abBug'), issueUrl('bug_report.yml', lang === 'en' ? '[Bug] ' : '[버그] '));
+  setLink($('#abIdea'), issueUrl('feature_request.yml', lang === 'en' ? '[Feature] ' : '[제안] '));
   $('#abSponsorSec').hidden = !L.sponsor;
   setLink($('#abSponsor'), L.sponsor);
   const b = $('#btnUpdate');
@@ -66,6 +70,9 @@ export function initAboutPanel(c) {
   const dlg = $('#aboutDlg');
   const open = () => { render(); dlg.showModal(); };
   $('#btnAbout').onclick = open;
+  const sel = $('#abLang');
+  sel.value = lang;
+  sel.onchange = () => { if (!ctx.isDirty() || confirm('저장하지 않은 편집 내용이 있습니다. 불러오면 사라집니다. 계속할까요?')) setLang(sel.value); else sel.value = lang; };
   $('#btnUpdate').onclick = open;
   $('#abCheck').onclick = async () => {
     $('#abCheck').disabled = true;

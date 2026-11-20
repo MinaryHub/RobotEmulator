@@ -7,6 +7,18 @@
 
 **문서**: [사용자 매뉴얼](docs/MANUAL.md) · [SI 현장 대상 개선 로드맵](docs/ROADMAP-SI.md) · [개발 규약](docs/DEV_CONTRACT.md)
 
+## 스크린샷
+
+화면은 한국어와 영어를 지원합니다. 브라우저 언어에 따라 자동으로 고르며, 정보(ⓘ) 창에서 바꿀 수 있습니다. 아래는 영어 화면입니다.
+
+![KUKA KR 6 R900 running a KRL pick & place program with the signal timeline](screenshots/main.png)
+
+| | |
+|---|---|
+| ![Conveyor cell preset with an ABB IRB 1200 running RAPID](screenshots/cell-conveyor.png) **Cell layout** — conveyor, feeder and sensor preset (ABB RAPID) | ![System I/O: a PLC-style external start of a Yaskawa INFORM job in REMOTE mode](screenshots/system-io.png) **System I/O** — PLC handshake signals, external start in REMOTE (Yaskawa INFORM) |
+| ![Direct teach gizmo on a UR5e](screenshots/direct-teach.png) **Direct teach** — drag the TCP or a link (Universal Robots) | ![Flange-mounted depth camera and a fixed monitoring camera with live previews](screenshots/vision-camera.png) **Vision cameras** — flange and fixed cameras with live previews |
+| ![Claude chat panel next to a Doosan DRL program](screenshots/claude-chat.png) **Claude chat** — write, compile and test-run programs (Doosan DRL) | ![About dialog with version, update check, issue links and sponsor link](screenshots/about.png) **About** — version, one-click update, contact, sponsor |
+
 ## 실행
 
 ```bash
@@ -83,8 +95,8 @@ npm test           # 기구학 · 5개 언어 · 5개 통신 프로토콜 · 필
 
 ## 문의 · 후원
 
-- **문의하기:** 정보 창의 **🐞 버그 신고**·**💡 기능 제안**을 누르면 GitHub 이슈가 열립니다. 버전·OS·로봇 모델이 미리 채워지며, GitHub 계정이 필요합니다. [이슈 목록](https://github.com/knoxxr/RobotEmulator/issues)에서 직접 열 수도 있습니다.
-- **후원하기:** 이 프로젝트가 도움이 되었다면 [GitHub Sponsors](https://github.com/sponsors/knoxxr)로 개발을 응원해 주세요.
+- **문의하기:** 정보 창의 **🐞 버그 신고**·**💡 기능 제안**을 누르면 GitHub 이슈가 열립니다. 버전·OS·로봇 모델이 미리 채워지며, GitHub 계정이 필요합니다. [이슈 목록](https://github.com/MinaryHub/RobotEmulator/issues)에서 직접 열 수도 있습니다.
+- **후원하기:** 이 프로젝트가 도움이 되었다면 [GitHub Sponsors](https://github.com/sponsors/MinaryHub)로 개발을 응원해 주세요.
 
 ## 주요 기능
 
