@@ -1,4 +1,5 @@
 // 웹 UI 메인: 서버(WebSocket)와 상태 동기화, 3D 뷰/에디터/패널 구동
+import { lang as uiLang } from './i18n.js';   // 가장 먼저: 화면 언어 (English 면 DOM 문구를 번역)
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { RobotView } from './robotView.js';
 import { DirectTeach, SNAPS } from './directTeach.js';
@@ -32,7 +33,7 @@ let ws, reqId = 0;
 const pending = new Map();
 function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
-  ws.onopen = () => setPill($('#stConn'), '연결됨', 'on');
+  ws.onopen = () => { setPill($('#stConn'), '연결됨', 'on'); ws.send(JSON.stringify({ cmd: 'uiLang', lang: uiLang })); };   // 예제 프로그램 주석 언어
   ws.onclose = () => {
     setPill($('#stConn'), '연결 끊김', 'off');
     // 응답을 기다리던 명령은 실패로 끝냄 (그대로 두면 저장·시작 버튼이 영원히 대기)
@@ -71,7 +72,7 @@ function cmd(name, args = {}) {
     const id = ++reqId;
     const timer = setTimeout(() => { if (pending.delete(id)) rej(new Error(`응답 시간 초과 (${name})`)); }, CMD_TIMEOUT_MS);
     pending.set(id, { res: (v) => { clearTimeout(timer); res(v); }, rej: (e) => { clearTimeout(timer); rej(e); }, timer });
-    ws.send(JSON.stringify({ cmd: name, id, ...args }));
+    ws.send(JSON.stringify({ ...args, cmd: name, rid: id }));   // rid: 요청 번호 (args.id 는 로봇·프리셋 id)
   }).catch((e) => {
     addLog({ t: Date.now(), src: 'alarm', msg: e.message });
     showToast(`<b>명령 실패 (${escHtml(name)})</b> — ${escHtml(e.message)}`);
@@ -353,7 +354,7 @@ function renderSpec(m) {
     <span>최대 도달</span><span>${m.reach} mm</span>
     <span>반복정밀도</span><span>±${m.repeatability ?? '-'} mm</span>
     ${m.dh ? `<span>DH (mm)</span><span style="font-family:var(--mono);font-size:11px">d1 ${m.dh.d1} a2 ${m.dh.a2} a3 ${m.dh.a3}<br>d4 ${m.dh.d4} d5 ${m.dh.d5} d6 ${m.dh.d6}</span>` : `<span>OPW (mm)</span><span style="font-family:var(--mono);font-size:11px">a1 ${m.opw.a1} a2 ${m.opw.a2} c1 ${m.opw.c1}<br>c2 ${m.opw.c2} c3 ${m.opw.c3} c4 ${m.opw.c4}</span>`}
-    <span>출처</span><span style="font-size:11px;color:var(--dim)">${m.source ?? '-'}</span>
+    ${uiLang === 'ko' ? `<span>출처</span><span style="font-size:11px;color:var(--dim)">${m.source ?? '-'}</span>` : ''}
     <table><tr><th style="text-align:left">축</th><th>-한계°</th><th>+한계°</th><th>속도°/s</th></tr>${rows}</table>`;
 }
 

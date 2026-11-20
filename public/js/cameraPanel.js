@@ -1,5 +1,6 @@
 // 카메라 탭: 라이브러리에서 카메라 추가, 장착 위치(플랜지/전완/고정)·오프셋·렌더 모드 편집
 // 서버 명령: { cmd:'cameras', list:[…] } — 전체 목록을 보내 교체 (server/controller.js setCameras)
+import { t } from './i18n.js';   // 새 카메라 이름은 화면 언어로
 import { CAMERAS, CAMERA_MOUNTS, CAMERA_MODES, MAX_CAMERAS, getCamera, defaultMount } from '/shared/cameras.js';
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -56,7 +57,7 @@ function add(typeId) {
   let n = 1;
   while (list.some((c) => c.id === `cam${n}`)) n++;
   const m = defaultMount(def, mount, st?.scene, ctx.getModel());
-  send([...list, { id: `cam${n}`, type: typeId, name: `CAM${n} ${def.name.split(' (')[0]}`, mount, ...m, mode: def.modes[0], view: true, frustum: $('#camFrAll').checked }]);
+  send([...list, { id: `cam${n}`, type: typeId, name: `CAM${n} ${t(def.name).split(' (')[0]}`, mount, ...m, mode: def.modes[0], view: true, frustum: $('#camFrAll').checked }]);
 }
 
 export function renderCameraPanel(st) {

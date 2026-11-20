@@ -57,7 +57,7 @@ Yaskawa · Kawasaki · Hyundai · ABB · KUKA · Doosan · Universal Robots 로�
 ### 2.2 설치
 
 ```bash
-git clone https://github.com/knoxxr/RobotEmulator
+git clone https://github.com/MinaryHub/RobotEmulator
 cd RobotEmulator
 npm install
 ```
@@ -641,6 +641,8 @@ PLC 를 Modbus TCP **클라이언트(마스터)**로 설정하고 에뮬레이�
 
 ### 버전·업데이트·문의
 
+- **화면 언어:** 한국어 / English. 처음에는 브라우저 언어를 따르고, 정보 창의 **언어**나 주소 뒤 `?lang=en` · `?lang=ko` 로 바꿉니다. 영어 화면에서는 새로 만드는 예제 프로그램의 주석과 셀 프리셋 장치 이름도 영어입니다. 서버 로그·알람 메시지는 한국어로 남습니다.
+
 - **정보 창:** 머리글의 **ⓘ** 를 누르면 다음을 볼 수 있습니다.
   - 버전·커밋과 업데이트 상태
   - 문의하기(GitHub 이슈)와 후원하기
@@ -660,7 +662,7 @@ PLC 를 Modbus TCP **클라이언트(마스터)**로 설정하고 에뮬레이�
 - `GET /api/robots` — 로봇·그리퍼·제조사 목록
 - `GET /api/comms` — 통신 인터페이스와 실제 포트
 - `POST /api/cmd` — JSON `{ "cmd": "...", ... }` (`Content-Type: application/json` 필수. 다른 웹사이트에서 보낸 브라우저 요청은 403). 이 API 는 **펜던트(화면)와 같은 출처**로 취급되어 모드 인터록이 그대로 적용됩니다 (예: REMOTE 에서 `start` 거부).
-- `ws://<host>:3000/ws` — 같은 명령을 `{ "cmd": "...", "id": 1 }` 로 보내면 `{ type: "reply", id: 1, ok }` 응답. 상태(`state`, 최대 30 Hz)·로그·타임라인 이벤트가 푸시됨. `state` 에서 `sysio`·`cell`·`scene`·`safety`·`ioLabels`·`gripperIO`·`cameras` 는 직전 전송과 같으면 생략되므로 이전 값을 유지해 쓰십시오 (전체 상태는 접속 시 `init` 또는 `{"cmd":"state"}`). 로그는 100 ms 단위로 묶여 `log`(1개) 또는 `logs`(`entries` 배열)로 옵니다
+- `ws://<host>:3000/ws` — 같은 명령을 `{ "cmd": "...", "rid": 1 }` 로 보내면 `{ type: "reply", id: 1, ok }` 응답 (`rid` 대신 `id` 도 받지만 `setRobot`·`setGripper`·`cell` 처럼 인자 이름이 `id` 인 명령과 겹치므로 `rid` 를 쓰십시오). 상태(`state`, 최대 30 Hz)·로그·타임라인 이벤트가 푸시됨. `state` 에서 `sysio`·`cell`·`scene`·`safety`·`ioLabels`·`gripperIO`·`cameras` 는 직전 전송과 같으면 생략되므로 이전 값을 유지해 쓰십시오 (전체 상태는 접속 시 `init` 또는 `{"cmd":"state"}`). 로그는 100 ms 단위로 묶여 `log`(1개) 또는 `logs`(`entries` 배열)로 옵니다
 
 | cmd | 인자 | 동작 |
 |---|---|---|

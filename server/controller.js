@@ -13,6 +13,7 @@ import { VM } from './vm.js';
 import { checkCollision } from '../shared/collision.js';
 import { LANGS } from './lang/index.js';
 import { Cell } from './cell.js';
+import { localizeFiles } from './lang/examples-en.js';
 
 const NIO = 512;
 const TICK_MS = 8;
@@ -845,8 +846,9 @@ export class Controller extends EventEmitter {
   }
 
   // ------------------------------------------------------------ 프로그램
+  // uiLang: 화면 언어 ('en' 이면 예제 주석·메시지를 영어로 — server/lang/examples-en.js)
   loadExample() {
-    const files = this.lang.defaultFiles(this);
+    const files = localizeFiles(this.lang.defaultFiles(this), this.uiLang);
     this.loadFiles(files, true);
     this._exampleSig = JSON.stringify(Object.entries(files));
   }
