@@ -18,7 +18,6 @@ button.active { background: var(--acc); border-color: var(--acc); color: #fff; }
 select, input[type=number], input[type=text] { background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; }
 input[type=range] { width: 100%; accent-color: var(--acc); }
 code { font-family: var(--mono); background: #0f1215; padding: 1px 4px; border-radius: 3px; color: #9cdcfe; }
-.hidden { display: none !important; }
 
 header { display: flex; align-items: center; gap: 12px; padding: 0 12px; background: #101317; border-bottom: 1px solid var(--line); min-width: 0; overflow: hidden; }
 .brand { font-weight: 600; font-size: 15px; white-space: nowrap; flex: none; }
@@ -284,6 +283,23 @@ footer .fpanel.active { display: flex; flex-direction: column; }
 .plist .pi .nm { font-weight: 600; flex: 1; }
 .plist .pi .mt { color: var(--dim); font-size: 11px; font-family: var(--mono); }
 .plist .empty { padding: 10px; color: var(--dim); }
+/* 정보 · 업데이트 · 문의 · 후원 */
+#aboutDlg { background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 0; width: 560px; max-width: calc(100vw - 32px); }
+#aboutDlg::backdrop { background: rgba(0,0,0,.5); }
+.aboutdlg section { border-top: 1px solid var(--line); padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.aboutdlg h4 { margin: 0; font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .6px; }
+.abver { font-family: var(--mono); font-size: 13px; color: var(--acc); font-weight: 400; margin-left: 6px; text-transform: none; letter-spacing: 0; }
+.aboutdlg h3 { justify-content: flex-start; }
+.abupd { font-size: 12.5px; }
+.abupd .new { color: var(--ok); font-weight: 600; }
+.abupd .err { color: #ff8a8d; }
+.abnotes { max-height: 180px; overflow: auto; margin: 0; padding: 8px; background: #0f1215; border-radius: 6px; font-size: 11.5px; white-space: pre-wrap; font-family: var(--mono); }
+.prow { flex-wrap: wrap; }
+a.btnlink { display: inline-block; text-decoration: none; color: var(--fg); background: var(--panel2); border: 1px solid var(--line); border-radius: 5px; padding: 5px 10px; }
+a.btnlink:hover { border-color: #56606d; background: #2d333c; }
+a.btnlink.sponsor { color: #f5a3c7; border-color: #7a3557; }
+.updbtn { background: #1d5b3a; border-color: #2fbf71; animation: blink 2s 3; }
+.hidden { display: none !important; }
 
 /* 비전 카메라: 탭 + 3D 뷰 PiP (public/js/cameraView.js, cameraPanel.js) */
 .cam-item { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin-bottom: 6px; }

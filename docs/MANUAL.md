@@ -636,6 +636,19 @@ PLC 를 Modbus TCP **클라이언트(마스터)**로 설정하고 에뮬레이�
 | `protocols.<키>.enabled` | `false` 면 해당 인터페이스 끔 |
 | `protocols.<키>.port` / `fallbackPort` | 포트 / 바인딩 실패 시 대체 포트 |
 | `protocols.<키>.host` | 해당 인터페이스만 다른 바인딩 주소 |
+| `update.enabled` / `intervalHours` / `allowApply` | 새 버전 자동 확인 / 확인 주기(시간) / 화면에서 업데이트 적용 허용. 자세한 내용은 아래 **버전·업데이트·문의** |
+| `update.repo` / `sponsorUrl` | 릴리스를 확인할 GitHub 저장소 / 후원 링크 |
+
+### 버전·업데이트·문의
+
+- **정보 창:** 머리글의 **ⓘ** 를 누르면 다음을 볼 수 있습니다.
+  - 버전·커밋과 업데이트 상태
+  - 문의하기(GitHub 이슈)와 후원하기
+- **새 버전 알림:** 서버가 GitHub 릴리스를 확인해 새 버전이 있으면 머리글에 **⬆ vX.Y.Z** 가 나타납니다.
+- **업데이트 및 재시작:** git clone 으로 설치하고 `npm start` 로 실행했다면 이 버튼으로 내려받기, 의존성 설치, 재시작까지 끝납니다. 작업 내용은 자동 저장되었다가 복원됩니다.
+  - 프로그램 실행 중이거나 커밋하지 않은 소스 변경이 있으면 거부하고 이유를 알려 줍니다.
+  - 진행 중에 실패하면 이전 버전으로 되돌립니다.
+- **문의하기:** 🐞 버그 신고 / 💡 기능 제안을 누르면 버전·OS·로봇 모델이 채워진 GitHub 이슈 작성 화면이 열립니다. 보내기 전에 내용을 확인·수정할 수 있습니다.
 
 ---
 
@@ -673,6 +686,8 @@ PLC 를 Modbus TCP **클라이언트(마스터)**로 설정하고 에뮬레이�
 | `cell` | `op`, … | 셀 레이아웃 (`get`/`set`/`preset`/`resetObjects`/`add`/`remove`/`update`) |
 | `projectSave` / `projectLoad` / `projectExport` / `projectImport` | `name` / `project` | 프로젝트 |
 | `state` | | 상태 스냅샷 |
+| `about` / `updateCheck` | | 버전·업데이트 상태 / 지금 새 버전 확인 → `{ about }` |
+| `updateApply` | | 새 릴리스로 업데이트 후 재시작 (진행 상황은 `about` 브로드캐스트·로그) |
 
 예 (PowerShell 에서는 `curl.exe`):
 

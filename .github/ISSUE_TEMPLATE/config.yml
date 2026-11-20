@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 변경 기록 (CHANGELOG)
+    url: https://github.com/knoxxr/RobotEmulator/blob/main/CHANGELOG.md
+    about: 이미 고쳐졌거나 추가된 기능인지 먼저 확인하세요
