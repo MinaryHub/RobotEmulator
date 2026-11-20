@@ -16,7 +16,8 @@ import { changelogSection } from '../server/updater.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const yes = process.argv.includes('--yes');
-const sh = (cmd, args, opt = {}) => execFileSync(cmd, args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opt }).trim();
+// stdio: 'inherit' 이면 execFileSync 가 null 을 돌려주므로 빈 문자열로
+const sh = (cmd, args, opt = {}) => String(execFileSync(cmd, args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opt }) ?? '').trim();
 const fail = (msg) => { console.error(`✘ ${msg}`); process.exit(1); };
 
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
