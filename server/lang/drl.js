@@ -896,7 +896,7 @@ const sockOf = (s) => { if (!s?.$sock) throw err(`소켓이 아닙니다 (${pyTy
 function track(vm, st) { vm.drl.socks.add(st); return { $sock: st, id: st.id }; }
 function attach(vm, st, sock) {
   st.sock = sock; st.closed = false;
-  sock.on('data', (d) => { st.buf = Buffer.concat([st.buf, d]); });
+  sock.on('data', (d) => { st.buf = Buffer.concat([st.buf, d]); if (st.buf.length > 1048576) st.buf = st.buf.subarray(-1048576); });
   sock.on('close', () => { st.closed = true; });
   sock.on('error', () => { st.closed = true; });
 }

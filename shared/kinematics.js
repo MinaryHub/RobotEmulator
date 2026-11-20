@@ -7,7 +7,10 @@
 // 제조사 관절각(deg) q_ctrl → OPW 내부각(rad) q = q_ctrl*sign - offset
 // 플랜지 좌표계: Z축이 플랜지 면에서 바깥 방향
 
+// Universal Robots 처럼 손목 축이 한 점에서 만나지 않는 협동로봇은 model.kin === 'ur' (표준 DH, model.dh) — 아래 UR 절 참고
 import { DEG, RAD, mul3, mulv, add, sub, scale, wrapPi, T3, poseMul, poseInv, rotAngle, norm } from './math.js';
+
+const isUR = (model) => model.kin === 'ur';
 
 export function toOpw(model, jdeg) {
   return jdeg.map((v, i) => v * DEG * model.signs[i] - model.offsets[i] * DEG);
@@ -18,6 +21,7 @@ export function fromOpw(model, q) {
 
 // 순기구학: 제조사 관절각(deg) → 플랜지 pose (로봇 베이스 기준)
 export function fkFlange(model, jdeg) {
+  if (isUR(model)) return urChain(model, jdeg)[6];
   const k = model.opw;
   const q = toOpw(model, jdeg);
   const psi3 = Math.atan2(k.a2, k.c3);
@@ -47,6 +51,7 @@ export function fkFlange(model, jdeg) {
 
 // 시각화용 관절 원점 위치 (베이스 기준, mm) - 링크 그리기에 사용
 export function jointFrames(model, jdeg) {
+  if (isUR(model)) return urFrames(model, jdeg);
   // 각 관절의 4x4 누적 변환을 OPW 구조에 맞춰 단계적으로 계산
   const k = model.opw;
   const q = toOpw(model, jdeg);
@@ -74,8 +79,9 @@ export function jointFrames(model, jdeg) {
 }
 
 // 역기구학: 플랜지 pose → 최대 8개 해 (제조사 관절각 deg 배열). 관절 한계 밖 해는 제외 옵션
-// ref(제조사 관절각, 선택): 손목 특이점(J5≈0)에서 J4 를 기준값으로 유지하는 해도 함께 낸다
+// ref(제조사 관절각, 선택): 손목 특이점(J5≈0)에서 J4 를 기준값으로 유지하는 해도 함께 낸다 (OPW 계열)
 export function ikFlangeAll(model, target, ref) {
+  if (isUR(model)) return urIkAll(model, target).map((q) => fromOpw(model, q.map(wrapPi)).map((v) => wrapDeg(v)));
   const t4ref = ref ? toOpw(model, ref)[3] : null;
   const k = model.opw;
   const R = target.R;
@@ -236,6 +242,78 @@ export function tcpToFlange(tcp, tool, base) {
 
 // 손목 중심 위치 (특이점/형태 판별용)
 export function wristCenter(model, jdeg) {
+  if (isUR(model)) return urChain(model, jdeg)[5].p;
   const f = fkFlange(model, jdeg);
   return sub(f.p, scale([f.R[0][2], f.R[1][2], f.R[2][2]], model.opw.c4));
 }
+
+// ------------------------------------------------------------------ UR (표준 DH, 비구형 손목)
+// 참고: K. P. Hawkins, "Analytic Inverse Kinematics for the Universal Robots UR-5/UR-10 Arms" (2013)
+// DH (mm): d1, a2, a3, d4, d5, d6 — alpha = [π/2, 0, 0, π/2, -π/2, 0], 나머지 a·d 는 0.
+// UR 공식 DH 표와 같은 값이며 베이스·플랜지 프레임은 PolyScope 의 Base·Tool flange 와 같다 (관절 0 = 팔 수평 펼침).
+const UR_ALPHA = [Math.PI / 2, 0, 0, Math.PI / 2, -Math.PI / 2, 0];
+const urD = (k) => [k.d1, 0, 0, k.d4, k.d5, k.d6];
+const urA = (k) => [0, k.a2, k.a3, 0, 0, 0];
+// 표준 DH 변환 Rz(θ)·Tz(d)·Tx(a)·Rx(α)
+function dhT(th, d, a, al) {
+  const ct = Math.cos(th), st = Math.sin(th), ca = Math.cos(al), sa = Math.sin(al);
+  return { R: [[ct, -st * ca, st * sa], [st, ct * ca, -ct * sa], [0, sa, ca]], p: [a * ct, a * st, d] };
+}
+// DH 프레임 D0(베이스)..D6(플랜지)
+function urChain(model, jdeg) {
+  const k = model.dh, q = toOpw(model, jdeg), d = urD(k), a = urA(k);
+  const out = [{ R: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], p: [0, 0, 0] }];
+  for (let i = 0; i < 6; i++) out.push(poseMul(out[i], dhT(q[i], d[i], a[i], UR_ALPHA[i])));
+  return out;
+}
+// 화면·직접교시·캡슐용 관절 프레임: OPW 와 같은 규약 (관절 1·4·6 축 = 로컬 Z, 2·3·5 축 = 로컬 Y)
+//  F_k 원점 = 관절 k 축 위의 DH 원점, 자세 = 링크 k 몸체 (D_{k-1}·Rz(θk), Y 축 관절은 Rx(π/2) 로 돌려 축을 Y 에)
+//  F6 = 플랜지 (DH D6)
+const RX90 = [[1, 0, 0], [0, 0, -1], [0, 1, 0]];
+const rzM = (t) => { const c = Math.cos(t), s = Math.sin(t); return [[c, -s, 0], [s, c, 0], [0, 0, 1]]; };
+function urFrames(model, jdeg) {
+  const D = urChain(model, jdeg), q = toOpw(model, jdeg);
+  const F = [D[0]];
+  for (let k = 1; k <= 5; k++) {
+    let R = mul3(D[k - 1].R, rzM(q[k - 1]));
+    if (k === 2 || k === 3 || k === 5) R = mul3(R, RX90);
+    F.push({ R, p: [...D[k - 1].p] });
+  }
+  F.push(D[6]);
+  return F;
+}
+// 역기구학: 최대 8개 해 (내부각 rad)
+function urIkAll(model, target) {
+  const k = model.dh, R = target.R, p6 = target.p;
+  const { d1, a2, a3, d4, d5, d6 } = k;
+  const p5 = [p6[0] - d6 * R[0][2], p6[1] - d6 * R[1][2], p6[2] - d6 * R[2][2]];
+  const r = Math.hypot(p5[0], p5[1]);
+  if (r < Math.abs(d4) - 1e-9) return [];
+  const psi = Math.atan2(p5[1], p5[0]), phi = Math.acos(Math.max(-1, Math.min(1, d4 / r)));
+  const sols = [];
+  const T06 = { R, p: p6 };
+  for (const t1 of [psi + phi + Math.PI / 2, psi - phi + Math.PI / 2]) {
+    const s1 = Math.sin(t1), c1 = Math.cos(t1);
+    const c5 = (p6[0] * s1 - p6[1] * c1 - d4) / d6;
+    if (Math.abs(c5) > 1 + 1e-9) continue;
+    const a5 = Math.acos(Math.max(-1, Math.min(1, c5)));
+    for (const t5 of [a5, -a5]) {
+      const s5 = Math.sin(t5);
+      const t6 = Math.abs(s5) < 1e-9 ? 0 : Math.atan2((-R[0][1] * s1 + R[1][1] * c1) / s5, (R[0][0] * s1 - R[1][0] * c1) / s5);
+      const T01 = dhT(t1, d1, 0, UR_ALPHA[0]);
+      const T46 = poseMul(dhT(t5, d5, 0, UR_ALPHA[4]), dhT(t6, d6, 0, UR_ALPHA[5]));
+      const T14 = poseMul(poseMul(poseInv(T01), T06), poseInv(T46));
+      const px = T14.p[0], py = T14.p[1];
+      const c3 = (px * px + py * py - a2 * a2 - a3 * a3) / (2 * a2 * a3);
+      if (Math.abs(c3) > 1 + 1e-9) continue;
+      const a3c = Math.acos(Math.max(-1, Math.min(1, c3)));
+      for (const t3 of [a3c, -a3c]) {
+        const t2 = Math.atan2(py, px) - Math.atan2(a3 * Math.sin(t3), a2 + a3 * Math.cos(t3));
+        const t4 = Math.atan2(T14.R[1][0], T14.R[0][0]) - t2 - t3;
+        sols.push([t1, t2, t3, t4, t5, t6]);
+      }
+    }
+  }
+  return sols;
+}
+export const urFramesForTest = urChain;

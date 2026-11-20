@@ -235,6 +235,36 @@ export const PRESETS = {
       { kind: 'moving', name: '로봇 이동 중' },
     ],
   },
+  ur: {
+    name: 'Universal Robots 구성 가능 I/O (근사)',
+    note: '설치(Installation) → I/O 설정에서 구성 가능 입출력에 할당하는 동작(프로그램 시작·정지·일시정지, 보호 정지 해제, 원격 제어)과 상태 출력의 근사. UR 은 프로그램 번호 입력이 없고 보통 Dashboard Server 의 load 명령으로 프로그램을 고르므로, 번호 선택은 8비트 이진수 + 스트로브로 모사.',
+    pgno: { bits: 8, type: 'binary', parity: 'none' },
+    inputs: [
+      { kind: 'servoOn', name: '전원 켜기·브레이크 해제' },
+      { kind: 'start', name: '프로그램 시작' },
+      { kind: 'hold', name: '프로그램 일시정지' },
+      { kind: 'stop', name: '프로그램 정지' },
+      { kind: 'alarmReset', name: '보호 정지 해제' },
+      { kind: 'estop', name: '비상정지 입력 (NC)', activeLow: true },
+      { kind: 'fence', name: '안전 정지 입력 (NC)', activeLow: true },
+      { kind: 'pgnoStrobe', name: '프로그램 선택 스트로브' },
+      ...pgnoBits(8, (i) => `프로그램 번호 비트${i}`),
+    ],
+    outputs: [
+      { kind: 'ready', name: '원격 제어 준비' },
+      { kind: 'servoOn', name: '로봇 전원 켜짐' },
+      { kind: 'running', name: '프로그램 실행 중' },
+      { kind: 'held', name: '프로그램 일시정지' },
+      { kind: 'alarm', name: '보호 정지' },
+      { kind: 'remote', name: '원격 제어 모드' },
+      { kind: 'home', name: '홈 위치' },
+      { kind: 'done', name: '프로그램 완료' },
+      { kind: 'pgnoAck', name: '프로그램 선택 확인' },
+      { kind: 'pgnoErr', name: '프로그램 선택 오류' },
+      { kind: 'estopOk', name: '비상정지 정상' },
+      { kind: 'moving', name: '로봇 이동 중' },
+    ],
+  },
 };
 
 const LEVEL_IN = new Set(['servoOff', 'hold', 'estop', 'fence', 'enable']);

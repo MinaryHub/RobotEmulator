@@ -16,10 +16,10 @@
 //
 // 레이아웃 스키마 (단위 mm, 각도 deg, 좌표 = 로봇 베이스 기준, z 위쪽)
 // {
-//   version: 1, name: '표시 이름', preset: 'default' | 'conveyor' | null,
+//   version: 1, name: '표시 이름', preset: PRESETS 의 id ('default' | 'conveyor' | 'machine' | 'dual' | 'outfeed' | 'fenced') | null,
 //   tables:     [{ id, name, x, y, z(상판 윗면), w(X 폭), d(Y 깊이) }]            // 1개 이상. tables[0] = ctrl.scene.table
 //   workpieces: [{ id, x, y, z(바닥면), size:[sx,sy,sz], color, yaw? }]            // 초기 공작물 (리셋 시 이 위치로)
-//   obstacles:  [{ id, name, x, y, z(바닥면), w, d, h, color, yaw?, collide? }]     // 고정구/장애물 박스 (간섭 체크)
+//   obstacles:  [{ id, name, x, y, z(바닥면), w, d, h, color, yaw?, collide?, opacity? }] // 고정구/장애물 박스 (간섭 체크)
 //   devices: [
 //     { type:'conveyor', id, name, x0, y0, x1, y1, z(벨트 윗면), width, speed(mm/s), runDO(0=항상 운전),
 //       reverseDO(0=없음), stopper(true=끝단 스토퍼), color }
@@ -31,12 +31,19 @@
 //     { type:'sink', id, name, x, y, z(바닥면), w, d, h, pulseDI(0=없음) }            // 영역에 놓인 공작물 제거·계수
 //     { type:'pallet', id, name, x, y, z, rows, cols, pitchX, pitchY }                // 표시 전용 적재 격자 (슬롯 좌표 제공)
 //   ]
+//   models: [{ id, name, asset(server/assets.js id), x, y, z, rx, ry, rz(deg, Rz·Ry·Rx), scale, unit(mm/파일 단위),
+//              up('z'|'y'|'x' 파일의 위쪽 축), offset:[mm](원점 보정, 기본 = 바닥 중심이 x,y,z 에 오도록),
+//              bbox:[[lo],[hi]](파일 단위, 자산 메타 사본), color(null=원본 색), opacity, collide, tool(툴도 검사), support(공작물 지지면) }]
+//     사용자 3D 모델 (장비·지그·펜스 등). 간섭은 삼각형 단위 정밀 검사 (shared/meshcol.js)
 // }
-// 기본 신호 규약(프리셋): DO9 = 컨베이어 운전, DO10 = 피더 배출 요청(edge 모드), DI9 = 스토퍼 도착 센서
+// 기본 신호 규약(프리셋): DO9 = 컨베이어 운전, DO10 = 피더 배출 요청(edge 모드), DI9 = 스토퍼 도착/컨베이어 끝 센서,
+//   DO11 = CNC 도어 열기(DI11 열림·DI12 닫힘), DI10 = 배출구 계수 펄스, DI13 = 반입구 센서
 //   (그리퍼 DO1/DO2, DI1..3 과 겹치지 않도록 9번부터 사용)
 
 import { Rz, DEG, mulv, T3, sub } from '../shared/math.js';
 import { TABLE_THICKNESS } from '../shared/collision.js';
+import { meshObstacle, meshObstacleTopZ, upMatrix } from '../shared/meshcol.js';
+import { isAssetId } from './assets.js';
 
 const COLORS = [0x3fa34d, 0xd9822b, 0x2f7ed8, 0xc03a3a];
 const DEVICE_TYPES = ['conveyor', 'feeder', 'sensor', 'cylinder', 'sink', 'pallet'];
@@ -44,7 +51,15 @@ const DEVICE_TYPES = ['conveyor', 'feeder', 'sensor', 'cylinder', 'sink', 'palle
 export const PRESETS = [
   { id: 'default', name: '기본 (테이블 + 공작물 4개)' },
   { id: 'conveyor', name: '컨베이어 픽 앤 플레이스' },
+  { id: 'machine', name: '머신 텐딩 (CNC 공작기계)' },
+  { id: 'dual', name: '2테이블 이송 (공급 → 배출)' },
+  { id: 'outfeed', name: '출하 컨베이어 (테이블 → 컨베이어 → 배출구)' },
+  { id: 'fenced', name: '안전펜스 셀 (펜스 + 반입 센서)' },
 ];
+const presetName = (id) => PRESETS.find((p) => p.id === id).name;
+
+// 바닥 높이 (로봇 베이스 = 받침대 위 z 0). _buildScene 과 프리셋이 같은 값을 쓴다
+export const floorZOf = (R) => -Math.round(R * 0.45 / 50) * 50;
 
 // ------------------------------------------------------------------ 프리셋
 // 공작물 크기: 도달거리에 비례 (상한 140 mm — 3 m 이상 대형 로봇도 기본 그리퍼(TCP 150 mm)로 공작물 중심을 집을 때
@@ -56,7 +71,7 @@ export function presetLayout(id, robot) {
   const s = partSize(R);
   if (id === 'default') {
     return {
-      version: 1, name: PRESETS[0].name, preset: 'default',
+      version: 1, name: presetName('default'), preset: 'default',
       tables: [{ id: 'T1', name: '작업 테이블', x: R * 0.6, y: 0, z: 0, w: R * 0.55, d: R * 1.1 }],
       workpieces: [-0.3, -0.1, 0.1, 0.3].map((f, i) => ({ id: `W${i + 1}`, x: R * 0.55, y: R * f, z: 0, size: [s, s, s], color: COLORS[i] })),
       obstacles: [],
@@ -66,7 +81,7 @@ export function presetLayout(id, robot) {
   if (id === 'conveyor') {
     const g = conveyorGeometry(R);
     return {
-      version: 1, name: PRESETS[1].name, preset: 'conveyor',
+      version: 1, name: presetName('conveyor'), preset: 'conveyor',
       tables: [{ id: 'T1', name: '적재 테이블', x: R * 0.6, y: R * 0.12, z: 0, w: R * 0.45, d: R * 0.6 }],
       workpieces: [{ id: 'W1', x: g.pick[0], y: g.pick[1], z: 0, size: [s, s, s], color: COLORS[0] }],
       obstacles: [],
@@ -75,6 +90,81 @@ export function presetLayout(id, robot) {
         { type: 'feeder', id: 'F1', name: '부품 피더', x: g.x, y: g.yStart + s * 0.75, z: 0, size: [s, s, s], color: COLORS[1], yaw: 0, mode: 'auto', triggerDO: 10, interval: 2, max: 12, prefix: 'P' },
         { type: 'sensor', id: 'S1', name: '스토퍼 도착 센서', x: g.pick[0], y: g.pick[1], z: s * 0.4, w: g.width, d: s * 0.5, h: s * 0.8, yaw: 0, di: 9, invert: false },
         { type: 'pallet', id: 'PL1', name: '적재 위치 (2×3)', x: R * 0.5, y: 0, z: 0, rows: 3, cols: 2, pitchX: R * 0.15, pitchY: R * 0.15 },
+      ],
+    };
+  }
+  // ---- 추가 프리셋: 모두 공작물(W*)을 Z=0 테이블에 두고, 기본 예제(Y 대칭 위치로 이송)가 그대로 동작하도록 배치
+  const fz = floorZOf(R);
+  const base = (pid) => ({ version: 1, name: presetName(pid), preset: pid, obstacles: [], devices: [] });
+  // 바닥에 선 박스 (윗면 높이 top)
+  const floorBox = (id, name, x, y, w, d, top, color, extra = {}) => ({ id, name, x, y, z: fz, w, d, h: top - fz, color, ...extra });
+  if (id === 'machine') {
+    // 소재 테이블(기본과 동일) + 로봇 왼쪽(-Y) CNC 공작기계 본체·조작반, 도어 실린더(DO11 → DI11 열림 / DI12 닫힘)
+    const cy = -R * 1.15, front = cy + R * 0.3;
+    return {
+      ...base('machine'),
+      tables: [{ id: 'T1', name: '소재 테이블', x: R * 0.6, y: 0, z: 0, w: R * 0.55, d: R * 1.1 }],
+      workpieces: [-0.3, -0.1, 0.1, 0.3].map((f, i) => ({ id: `W${i + 1}`, x: R * 0.55, y: R * f, z: 0, size: [s, s, s], color: COLORS[i] })),
+      obstacles: [
+        floorBox('O1', 'CNC 본체', R * 0.05, cy, R * 0.9, R * 0.6, R * 0.75, 0xc9ccd1),
+        floorBox('O2', 'CNC 조작반', R * 0.62, front - R * 0.06, R * 0.16, R * 0.12, R * 0.55, 0x3a3f47),
+      ],
+      devices: [
+        { type: 'cylinder', id: 'CY1', name: 'CNC 도어 실린더', x: -R * 0.38, y: front + R * 0.04, z: R * 0.45, yaw: 0, length: s * 3, bore: s * 0.8, stroke: R * 0.35, time: 1.0, extendDO: 11, extDI: 11, retDI: 12 },
+      ],
+    };
+  }
+  if (id === 'dual') {
+    // 왼쪽 공급 테이블의 공작물을 오른쪽 배출 테이블로 (Y 대칭)
+    const ys = [-0.28, -0.40, -0.52, -0.64];
+    return {
+      ...base('dual'),
+      tables: [
+        { id: 'T1', name: '공급 테이블', x: R * 0.55, y: -R * 0.46, z: 0, w: R * 0.5, d: R * 0.5 },
+        { id: 'T2', name: '배출 테이블', x: R * 0.55, y: R * 0.46, z: 0, w: R * 0.5, d: R * 0.5 },
+      ],
+      workpieces: ys.map((f, i) => ({ id: `W${i + 1}`, x: R * 0.5, y: R * f, z: 0, size: [s, s, s], color: COLORS[i] })),
+      obstacles: [
+        { id: 'O1', name: '공급 지그 스토퍼', x: R * 0.5 + s * 1.5, y: -R * 0.46, z: 0, w: s * 0.4, d: R * 0.44, h: s * 0.6, color: 0x8a8f99 },
+      ],
+    };
+  }
+  if (id === 'outfeed') {
+    // 공작물을 오른쪽(+Y) 컨베이어에 올리면 DO9 로 운전 → 끝에서 바닥 배출구로 떨어져 계수 (DI10 펄스)
+    const ys = [-0.2, -0.32, -0.44, -0.56];
+    const cx = R * 0.42, cw = Math.round(R * 0.22), y0 = R * 0.05, y1 = R * 1.25;
+    return {
+      ...base('outfeed'),
+      tables: [{ id: 'T1', name: '공급 테이블', x: R * 0.55, y: -R * 0.4, z: 0, w: R * 0.5, d: R * 0.6 }],
+      workpieces: ys.map((f, i) => ({ id: `W${i + 1}`, x: R * 0.55, y: R * f, z: 0, size: [s, s, s], color: COLORS[i] })),
+      devices: [
+        { type: 'conveyor', id: 'CV1', name: '출하 컨베이어', x0: cx, y0, x1: cx, y1, z: 0, width: cw, speed: Math.round(Math.max(100, R * 0.25) / 10) * 10, runDO: 9, reverseDO: 0, stopper: false, color: 0x2b2f35 },
+        { type: 'sensor', id: 'S1', name: '컨베이어 끝 센서', x: cx, y: y1 - s, z: s * 0.4, w: cw, d: s * 0.5, h: s * 0.8, yaw: 0, di: 9, invert: false },
+        { type: 'sink', id: 'SK1', name: '배출구', x: cx, y: y1 + R * 0.12, z: fz, w: cw * 1.4, d: R * 0.24, h: -fz + 20, pulseDI: 10 },
+      ],
+    };
+  }
+  if (id === 'fenced') {
+    // 기본 테이블 + 둘레 안전펜스(도달거리 1.5배), 앞쪽 반입구에 반입 테이블과 감지 센서(DI13)
+    const F = R * 1.5, t = Math.max(30, Math.round(R * 0.03)), top = R * 0.9, gap = R * 0.5, col = 0xe0b021;
+    const mesh = { opacity: 0.3 };      // 철망 펜스: 안이 보이도록 반투명
+    const side = (F * 2 - gap) / 2;      // 앞면을 반입구 양옆 두 장으로
+    return {
+      ...base('fenced'),
+      tables: [
+        { id: 'T1', name: '작업 테이블', x: R * 0.6, y: 0, z: 0, w: R * 0.55, d: R * 1.1 },
+        { id: 'T2', name: '반입 테이블', x: F + R * 0.05, y: 0, z: 0, w: R * 0.3, d: gap * 0.9 },
+      ],
+      workpieces: [-0.3, -0.1, 0.1, 0.3].map((f, i) => ({ id: `W${i + 1}`, x: R * 0.55, y: R * f, z: 0, size: [s, s, s], color: COLORS[i] })),
+      obstacles: [
+        floorBox('FN1', '안전펜스 (앞-좌)', F, -F + side / 2, t, side, top, col, mesh),
+        floorBox('FN2', '안전펜스 (앞-우)', F, F - side / 2, t, side, top, col, mesh),
+        floorBox('FN3', '안전펜스 (뒤)', -F, 0, t, F * 2, top, col, mesh),
+        floorBox('FN4', '안전펜스 (좌)', 0, -F, F * 2, t, top, col, mesh),
+        floorBox('FN5', '안전펜스 (우)', 0, F, F * 2, t, top, col, mesh),
+      ],
+      devices: [
+        { type: 'sensor', id: 'S1', name: '반입구 센서', x: F + R * 0.05, y: 0, z: s * 0.5, w: R * 0.3, d: gap * 0.9, h: s, yaw: 0, di: 13, invert: false },
       ],
     };
   }
@@ -129,7 +219,7 @@ export function normalizeLayout(src) {
     version: 1,
     name: String(src.name ?? '사용자 레이아웃'),
     preset: PRESETS.some((p) => p.id === src.preset) ? src.preset : null,
-    tables: [], workpieces: [], obstacles: [], devices: [],
+    tables: [], workpieces: [], obstacles: [], devices: [], models: [],
   };
   const tables = Array.isArray(src.tables) ? src.tables : src.table ? [src.table] : [];
   if (!tables.length) throw new Error('테이블은 최소 1개 필요합니다');
@@ -146,6 +236,8 @@ export function normalizeLayout(src) {
   (src.obstacles || []).forEach((o, i) => {
     const w = `장애물 ${o.id ?? i + 1}`;
     const q = { id: uid(o.id, `OB${i + 1}`, w), name: String(o.name ?? `장애물 ${i + 1}`), x: num(o.x, undefined, 'x', w), y: num(o.y, undefined, 'y', w), z: num(o.z, 0, 'z', w), w: pos(o.w, undefined, 'w', w), d: pos(o.d, undefined, 'd', w), h: pos(o.h, undefined, 'h', w), color: color(o.color, 0x7a828c), yaw: num(o.yaw, 0, 'yaw', w), collide: o.collide !== false };
+    // 불투명도 (선택, 0.05~1). 없으면 간섭 대상 1 / 비대상 0.5 로 표시
+    if (o.opacity !== undefined && o.opacity !== null && o.opacity !== '') q.opacity = Math.min(1, Math.max(0.05, num(o.opacity, 1, 'opacity', w)));
     L.obstacles.push(q);
   });
   (src.devices || []).forEach((d, i) => {
@@ -178,8 +270,41 @@ export function normalizeLayout(src) {
     }
     L.devices.push(q);
   });
+  (src.models || []).forEach((m, i) => {
+    const w = `3D 모델 ${m.id ?? i + 1}`;
+    if (!isAssetId(m.asset)) throw new Error(`${w}: asset(모델 파일 id)이 잘못되었습니다`);
+    const vec3 = (v, def, name) => {
+      if (v === undefined || v === null) return def;
+      if (!Array.isArray(v) || v.length !== 3) throw new Error(`${w}: ${name} 는 [x,y,z] 배열이어야 합니다`);
+      return v.map((x, k) => num(x, undefined, `${name}${k}`, w));
+    };
+    const q = {
+      id: uid(m.id, `M${i + 1}`, w), name: String(m.name ?? `모델 ${i + 1}`), asset: m.asset,
+      x: num(m.x, 0, 'x', w), y: num(m.y, 0, 'y', w), z: num(m.z, 0, 'z', w),
+      rx: num(m.rx, 0, 'rx', w), ry: num(m.ry, 0, 'ry', w), rz: num(m.rz, 0, 'rz', w),
+      scale: pos(m.scale, 1, 'scale', w), unit: pos(m.unit, 1, 'unit', w),
+      up: ['z', 'y', 'x'].includes(m.up) ? m.up : 'z',
+      offset: vec3(m.offset, [0, 0, 0], 'offset'),
+      color: m.color === undefined || m.color === null || m.color === '' ? null : color(m.color, null),
+      opacity: Math.min(1, Math.max(0.05, num(m.opacity, 1, 'opacity', w))),
+      collide: m.collide !== false, tool: m.tool !== false, support: m.support !== false,
+    };
+    if (Array.isArray(m.bbox) && m.bbox.length === 2) q.bbox = [vec3(m.bbox[0], [0, 0, 0], 'bbox'), vec3(m.bbox[1], [0, 0, 0], 'bbox')];
+    L.models.push(q);
+  });
   return L;
 }
+
+// 모델 바닥 중심이 (x,y,z) 에 오도록 하는 offset (mm, 위쪽 축·단위 보정 후 좌표계)
+export function modelBaseOffset(bbox, up, unit) {
+  const U = upMatrix(up);
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (const x of [bbox[0][0], bbox[1][0]]) for (const y of [bbox[0][1], bbox[1][1]]) for (const z of [bbox[0][2], bbox[1][2]]) {
+    for (let k = 0; k < 3; k++) { const v = (U[k][0] * x + U[k][1] * y + U[k][2] * z) * unit; if (v < lo[k]) lo[k] = v; if (v > hi[k]) hi[k] = v; }
+  }
+  return { offset: [-(lo[0] + hi[0]) / 2, -(lo[1] + hi[1]) / 2, -lo[2]].map((v) => +v.toFixed(3) + 0), size: [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]] };
+}
+const LISTS = ['tables', 'workpieces', 'obstacles', 'devices', 'models'];
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
 // 박스 로컬 좌표 (yaw 회전만)
@@ -203,6 +328,8 @@ export class Cell {
     this.rev = 0;           // 레이아웃 변경 카운터 (UI 재구성 판단)
     this.rt = {};           // 장치별 런타임 상태
     this._static = [];      // 정적 간섭 박스 캐시
+    this._meshObs = [];     // 3D 모델 메시 객체 (간섭·지지면)
+    this._missing = new Set();  // 파일 없음 경고를 이미 낸 자산 id
     this._diLast = {};      // DI 번호 → 마지막으로 쓴 값 (변화 시에만 기록)
   }
 
@@ -232,6 +359,8 @@ export class Cell {
     if (changed) this.rev++;
     this._buildScene();
     this.resetObjects();
+    // 정지해 있는 로봇에 장애물·모델을 겹쳐 놓아도 바로 표시되도록 (기존에는 다음 이동 때 검사)
+    this.ctrl.checkCollisionNow?.();
   }
 
   // ctrl.resetScene() 에서 호출: 프리셋 레이아웃이면 현재 로봇에 맞게 재생성
@@ -246,10 +375,19 @@ export class Cell {
 
   _buildScene() {
     const c = this.ctrl, R = c.robot.reach;
-    const floorZ = -Math.round(R * 0.45 / 50) * 50;
+    const floorZ = floorZOf(R);
     const t = this.layout.tables[0];
     c.scene = { floorZ, table: { x: t.x, y: t.y, z: t.z, w: t.w, d: t.d }, pedestal: { d: Math.max(200, R * 0.3), h: -floorZ } };
     this._static = this._staticObstacles();
+  }
+
+  // 자산이 새로 올라오면(파일 없던 모델 복구 등) 간섭·지지면 메시 다시 구성
+  refreshModels(assetId) {
+    if (!this.layout?.models?.some((m) => m.asset === assetId)) return;
+    this._missing.delete(assetId);
+    this.rev++;                       // 화면도 다시 구성 (파일 없어 상자로 표시되던 모델을 다시 불러오도록)
+    this._static = this._staticObstacles();
+    this.ctrl.checkCollisionNow?.();
   }
 
   // 공작물 초기 배치 + 장치 런타임 상태 초기화
@@ -307,6 +445,8 @@ export class Cell {
       const a = (x - d.x0) * g.u[0] + (y - d.y0) * g.u[1], b = (x - d.x0) * g.n[0] + (y - d.y0) * g.n[1];
       if (a >= 0 && a <= g.L && Math.abs(b) <= d.width / 2) take(d.z);
     }
+    // 3D 모델 윗면 (수직 반직선)
+    for (const ob of this._meshObs) if (ob.support) { const z = meshObstacleTopZ(ob, x, y, zMax); if (z > -Infinity) take(z); }
     if (best === -Infinity && includeMain) best = this.ctrl.scene?.floorZ ?? 0;
     return best;
   }
@@ -335,6 +475,19 @@ export class Cell {
         const yaw = d.yaw * DEG, u = [Math.cos(yaw), Math.sin(yaw)];
         out.push({ id: d.id, c: [d.x + u[0] * d.length / 2, d.y + u[1] * d.length / 2, d.z], h: [d.length / 2, d.bore / 2, d.bore / 2], R: Rz(yaw) });
       }
+    }
+    // 3D 모델: 간섭(collide) 과 지지면(support) 에 쓰는 메시 객체
+    this._meshObs = [];
+    for (const m of L.models || []) {
+      const bvh = this.ctrl.assets?.collider(m.asset);
+      if (!bvh) {
+        if (!this._missing.has(m.asset)) { this._missing.add(m.asset); this.ctrl.log('alarm', `3D 모델 파일 없음: ${m.name} (${m.asset}) — 간섭·지지면 없이 표시만 합니다`); }
+        continue;
+      }
+      if (!m.collide && !m.support) continue;
+      const ob = meshObstacle(m.id, bvh, m, { tool: m.tool, support: m.support });
+      this._meshObs.push(ob);
+      if (m.collide) out.push(ob);
     }
     return out;
   }
@@ -518,7 +671,7 @@ export class Cell {
   newItem(kind) {
     const R = this.ctrl.robot.reach, s = partSize(R);
     const L = this.layout;
-    const all = new Set([...L.tables, ...L.workpieces, ...L.obstacles, ...L.devices].map((x) => x.id));
+    const all = new Set(LISTS.flatMap((k) => L[k].map((x) => x.id)));
     const id = (p) => { let i = 1; while (all.has(p + i)) i++; return p + i; };
     switch (kind) {
       case 'table': return { list: 'tables', item: { id: id('T'), name: '추가 테이블', x: R * 0.2, y: R * 0.7, z: 0, w: R * 0.4, d: R * 0.3 } };
@@ -548,9 +701,33 @@ export class Cell {
         L.preset = null;
         return { layout: this.setLayout(L), itemId: item.id };
       }
+      case 'addModel': {
+        // 업로드된 3D 모델 배치: { asset, name?, unit?, up?, x?, y?, z? } — 기본 위치는 로봇 정면 도달거리 바깥 바닥
+        const meta = this.ctrl.assets?.meta(m.asset);
+        if (!meta) throw new Error(`3D 모델 파일이 없습니다: ${m.asset}`);
+        const L = this.getLayout();
+        const fmt = meta.format;
+        const up = ['z', 'y', 'x'].includes(m.up) ? m.up : ['glb', 'gltf', 'obj'].includes(fmt) ? 'y' : 'z';
+        const unit = Number(m.unit) > 0 ? Number(m.unit) : ['glb', 'gltf'].includes(fmt) ? 1000 : 1;
+        const { offset, size } = modelBaseOffset(meta.bbox, up, unit);
+        const all = new Set(LISTS.flatMap((k) => L[k].map((x) => x.id)));
+        let i = 1; while (all.has('M' + i)) i++;
+        const R = this.ctrl.robot.reach;
+        const item = {
+          id: 'M' + i, name: String(m.name || meta.name).replace(/\.[^.]+$/, ''), asset: meta.id,
+          x: m.x ?? Math.round(R + size[0] / 2 + 100), y: m.y ?? 0, z: m.z ?? this.ctrl.scene.floorZ,
+          rx: 0, ry: 0, rz: 0, scale: 1, unit, up, offset, bbox: meta.bbox,
+          color: null, opacity: 1, collide: true, tool: true, support: true,
+        };
+        L.models.push(item);
+        L.preset = null;
+        const out = this.setLayout(L, { quiet: true });
+        this.ctrl.log('system', `3D 모델 배치: ${item.id} ${item.name} (${size.map((v) => Math.round(v)).join('×')} mm)`);
+        return { layout: out, itemId: item.id, size };
+      }
       case 'remove': {
         const L = this.getLayout();
-        for (const k of ['tables', 'workpieces', 'obstacles', 'devices']) L[k] = L[k].filter((x) => x.id !== m.id);
+        for (const k of LISTS) L[k] = L[k].filter((x) => x.id !== m.id);
         L.preset = null;
         return { layout: this.setLayout(L) };
       }
@@ -558,9 +735,15 @@ export class Cell {
         // 단일 항목 일부 필드 변경: { id, patch:{...} }
         const L = this.getLayout();
         let found = false;
-        for (const k of ['tables', 'workpieces', 'obstacles', 'devices']) {
+        for (const k of LISTS) {
           const it = L[k].find((x) => x.id === m.id);
-          if (it) { Object.assign(it, m.patch || {}); found = true; break; }
+          if (!it) continue;
+          const patch = { ...(m.patch || {}) };
+          // 모델의 위쪽 축·단위를 바꾸면 바닥 중심 기준 원점 보정도 다시 계산 (offset 을 직접 준 경우 제외)
+          if (k === 'models' && it.bbox && ('up' in patch || 'unit' in patch) && !('offset' in patch)) {
+            patch.offset = modelBaseOffset(it.bbox, patch.up ?? it.up, Number(patch.unit ?? it.unit) || 1).offset;
+          }
+          Object.assign(it, patch); found = true; break;
         }
         if (!found) throw new Error(`항목 없음: ${m.id}`);
         L.preset = null;

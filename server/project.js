@@ -19,7 +19,23 @@ export class ProjectStore {
   }
 
   // ---------------------------------------------------------------- 직렬화
-  serialize(name) {
+  // bundle=true: 셀 레이아웃이 참조하는 3D 모델 파일을 assets 에 base64 로 함께 넣는다 (다른 PC 로 옮길 때)
+  serialize(name, { bundle = false } = {}) {
+    const p = this._serialize(name);
+    if (bundle) {
+      const assets = {}, missing = [];
+      for (const m of p.cell?.models || []) {
+        if (assets[m.asset] || missing.includes(m.asset)) continue;
+        const rec = this.ctrl.assets?.pack(m.asset);
+        if (rec) assets[m.asset] = rec; else missing.push(m.asset);
+      }
+      if (Object.keys(assets).length) p.assets = assets;
+      if (missing.length) this.ctrl.log('alarm', `내보내기: 서버에 파일이 없는 3D 모델 ${missing.length}개는 묶지 못했습니다 (${missing.join(', ')})`);
+    }
+    return p;
+  }
+
+  _serialize(name) {
     const c = this.ctrl;
     const vendors = { ...(c.vendorStore || {}) };
     vendors[c.vendor] = { files: Object.fromEntries(c.files), main: c.main, regs: [...c.regs], ioNames: c.ioNames, exampleSig: c._exampleSig };
@@ -41,6 +57,13 @@ export class ProjectStore {
   apply(p) {
     if (p?.format !== 'robot-emulator-project') throw new Error('프로젝트 파일 형식이 아닙니다');
     const c = this.ctrl;
+    // 묶인 3D 모델을 먼저 저장 (레이아웃 적용 시 간섭 메시를 바로 읽도록). 손상된 모델이 있으면 프로젝트는 적용하지 않음
+    const bundled = Object.entries(p.assets || {}), fresh = [];
+    if (bundled.length) {
+      if (!c.assets) throw new Error('이 서버는 3D 모델 저장소가 없어 묶인 모델을 가져올 수 없습니다');
+      for (const [id, rec] of bundled) { if (!c.assets.has(id)) { c.assets.unpack(id, rec); fresh.push(id); } c.cell?._missing?.delete(id); }
+      c.log('system', `프로젝트에 묶인 3D 모델 ${bundled.length}개 확인`);
+    }
     c.stopProgram();
     // 다른 제조사 저장분을 먼저 넣고, 대상 로봇의 제조사는 setRobot 이 복원
     c.vendorStore = {};
@@ -76,6 +99,7 @@ export class ProjectStore {
     if (st.autoResetScene !== undefined) c.autoResetScene = !!st.autoResetScene;
     c.breakpoints = new Set(p.breakpoints || []);
     if (p.cell && c.cell?.setLayout) c.cell.setLayout(p.cell);
+    for (const id of fresh) c.cell?.refreshModels?.(id);   // 레이아웃이 같아도 새로 생긴 모델 파일을 화면·간섭에 반영
     c.setCameras(p.cameras || []);
     this.current = p.name ?? null;
     c.log('system', `프로젝트 불러옴: ${p.name ?? '(이름 없음)'}`);

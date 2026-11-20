@@ -279,7 +279,8 @@ function renderPose(st, model) {
   const jn = vd.jointNames;
   const pn = vd.poseNames;
   const jointsTxt = st.joints.map((v, i) => `${jn[i].padEnd(5)} ${f2(v, 3).padStart(9)}°`).join('\n');
-  const poseTxt = st.tcp.map((v, i) => `${pn[i].padEnd(3)} ${f2(v, i < 3 ? 2 : (pn.length === 7 ? 5 : 3)).padStart(10)}${i < 3 ? 'mm' : pn.length === 7 ? '' : '°'}`).join('\n');
+  const rad = vd.rotUnit === 'rad';   // UR: 회전 벡터 (rad)
+  const poseTxt = st.tcp.map((v, i) => `${pn[i].padEnd(3)} ${f2(v, i < 3 ? 2 : (pn.length === 7 || rad ? 5 : 3)).padStart(10)}${i < 3 ? 'mm' : pn.length === 7 ? '' : rad ? 'r' : '°'}`).join('\n');
   $('#ovPose').textContent = `${vd.name} ${model.name}\n${jointsTxt}\n────────────────\n${poseTxt}\n그리퍼 ${(st.grip.pos * 100).toFixed(0)}% ${st.grip.holding ? '· ' + st.grip.holding : ''}`;
   $('#posView').textContent = `${jointsTxt}\n\n${poseTxt}`;
   st.joints.forEach((v, i) => {
@@ -347,7 +348,7 @@ function renderSpec(m) {
     <span>가반하중</span><span>${m.ratedPayload ? `최대 ${m.payload} kg (정격 ${m.ratedPayload} kg)` : `${m.payload} kg`}</span>
     <span>최대 도달</span><span>${m.reach} mm</span>
     <span>반복정밀도</span><span>±${m.repeatability ?? '-'} mm</span>
-    <span>OPW (mm)</span><span style="font-family:var(--mono);font-size:11px">a1 ${m.opw.a1} a2 ${m.opw.a2} c1 ${m.opw.c1}<br>c2 ${m.opw.c2} c3 ${m.opw.c3} c4 ${m.opw.c4}</span>
+    ${m.dh ? `<span>DH (mm)</span><span style="font-family:var(--mono);font-size:11px">d1 ${m.dh.d1} a2 ${m.dh.a2} a3 ${m.dh.a3}<br>d4 ${m.dh.d4} d5 ${m.dh.d5} d6 ${m.dh.d6}</span>` : `<span>OPW (mm)</span><span style="font-family:var(--mono);font-size:11px">a1 ${m.opw.a1} a2 ${m.opw.a2} c1 ${m.opw.c1}<br>c2 ${m.opw.c2} c3 ${m.opw.c3} c4 ${m.opw.c4}</span>`}
     <span>출처</span><span style="font-size:11px;color:var(--dim)">${m.source ?? '-'}</span>
     <table><tr><th style="text-align:left">축</th><th>-한계°</th><th>+한계°</th><th>속도°/s</th></tr>${rows}</table>`;
 }
@@ -584,7 +585,7 @@ document.addEventListener('keydown', (e) => {
 // 저장하지 않은 변경이 있으면 창 닫기·새로고침 전에 확인
 window.addEventListener('beforeunload', (e) => { if (app.dirty.size) { e.preventDefault(); e.returnValue = ''; } });
 $('#btnNew').onclick = () => {
-  const ext = { yaskawa: '.JBI', kawasaki: '.as', hyundai: '.job', abb: '.mod', kuka: '.src', doosan: '.drl' }[app.st.vendor];
+  const ext = { yaskawa: '.JBI', kawasaki: '.as', hyundai: '.job', abb: '.mod', kuka: '.src', doosan: '.drl', ur: '.script' }[app.st.vendor];
   const name = prompt('새 파일 이름', `NEW${ext}`);
   if (!name) return;
   app.buffers[name] = ''; app.dirty.add(name); openFile(name);
@@ -765,6 +766,7 @@ $('#btnTeach').onclick = () => {
       break;
     }
     case 'doosan': editor.insertAtCursor(`movel(posx(${t.join(', ')}), vel=250, acc=1000)`); break;
+    case 'ur': editor.insertAtCursor(`movel(p[${st.tcp.map((v, i) => (i < 3 ? +(v / 1000).toFixed(5) : +v.toFixed(5))).join(', ')}], a=1.2, v=0.25)`); break;
     case 'kuka': editor.insertAtCursor(`LIN {X ${t[0]}, Y ${t[1]}, Z ${t[2]}, A ${t[3]}, B ${t[4]}, C ${t[5]}}`); break;
   }
   addLog({ t: Date.now(), src: 'system', msg: `현재 위치 삽입 (관절: ${j.join(', ')})` });
@@ -822,11 +824,22 @@ $('#projSave').onclick = async () => {
 };
 $('#projExport').onclick = async () => {
   await saveAll();
-  const r = await cmd('projectExport', { name: $('#projName').value.trim() || undefined });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([JSON.stringify(r.project, null, 1)], { type: 'application/json' }));
-  a.download = `${r.project.name || 'project'}.json`;
-  a.click();
+  // 셀에 배치한 3D 모델 파일까지 묶은 JSON 1개 → 다른 PC 에서 그대로 가져오기 가능
+  const n = $('#projName').value.trim();
+  try {
+    const res = await fetch(`/api/project/export${n ? `?name=${encodeURIComponent(n)}` : ''}`);
+    const r = await res.json();
+    if (!res.ok) throw new Error(r.error || res.statusText);
+    const blob = new Blob([JSON.stringify(r)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${r.name || 'project'}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    const k = Object.keys(r.assets || {}).length;
+    const size = blob.size >= 1048576 ? `${(blob.size / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(blob.size / 1024))} KB`;
+    showToast(k ? `내보냄: 3D 모델 ${k}개 포함 (${size})` : `내보냄 (${size})`, 'ok');
+  } catch (err) { alert(`내보내기 실패: ${err.message}`); }
 };
 $('#projImport').onclick = () => $('#projFile').click();
 $('#projFile').onchange = async (e) => {
@@ -835,7 +848,10 @@ $('#projFile').onchange = async (e) => {
   if (!f) return;
   try {
     app.dirty.clear(); app.buffers = {};
-    await cmd('projectImport', { project: JSON.parse(await f.text()) });
+    const res = await fetch('/api/project/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: f });
+    const r = await res.json();
+    if (!res.ok) throw new Error(r.error || res.statusText);
+    showToast(r.models ? `가져옴: 3D 모델 ${r.models}개 포함` : '가져옴', 'ok');
     dlg.close();
   } catch (err) { alert(`가져오기 실패: ${err.message}`); }
 };

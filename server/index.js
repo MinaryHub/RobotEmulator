@@ -15,12 +15,16 @@ import { ProjectStore } from './project.js';
 import { listVars, Timeline } from './inspect.js';
 import { handleMcp } from './ai/mcp.js';
 import { configureNetGuard, requestRejected } from './netguard.js';
+import { AssetStore, MAX_UPLOAD } from './assets.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const config = loadConfig();
 configureNetGuard(config);
 const ctrl = new Controller();
 ctrl.netHost = config.host;   // DRL 소켓(server_socket_open) 바인딩 주소 — 통신 모듈과 같은 규칙 (null = 모든 인터페이스)
+// 사용자 3D 모델 자산 (셀 레이아웃 models[] 가 참조). 프로젝트 복원 전에 연결해야 간섭 메시를 읽을 수 있음
+const ASSET_DIR = path.join(ROOT, 'assets', 'models');
+ctrl.assets = new AssetStore(ASSET_DIR, (src, msg) => ctrl.log(src, msg));
 if (config.robot) try { ctrl.setRobot(config.robot); } catch (e) { console.error(e.message); }
 if (config.gripper) ctrl.setGripper(config.gripper);
 // 프로젝트 저장소: 직전 세션 자동 복원 (config.restoreSession=false 또는 robot 지정 시 생략)
@@ -48,6 +52,7 @@ function loadConfig() {
       hyundai: { port: 8888 },
       abbRws: { port: 8080 },
       kukaVarProxy: { port: 7000 },
+      urDashboard: { port: 29999 },
       modbus: { port: 502, fallbackPort: 1502 },
       opcua: { port: 4840 },
     },
@@ -78,9 +83,11 @@ function loadConfig() {
 }
 
 // ---------------------------------------------------------------- 정적 파일
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.wasm': 'application/wasm', '.glb': 'model/gltf-binary' };
 const STATIC = [
   ['/vendor/three/', path.join(ROOT, 'node_modules/three/')],
+  ['/vendor/occt/', path.join(ROOT, 'node_modules/occt-import-js/dist/')],   // STEP/IGES 변환 (브라우저 WASM)
+  ['/assets/models/', ASSET_DIR + path.sep],
   ['/shared/', path.join(ROOT, 'shared/')],
   ['/examples/', path.join(ROOT, 'examples/')],
   ['/', path.join(ROOT, 'public/')],
@@ -188,18 +195,22 @@ async function handleCmd(m) {
 
 const filesMsg = () => ({ main: ctrl.main, files: Object.fromEntries(ctrl.files) });
 
-// ---------------------------------------------------------------- HTTP 서버
-// 요청 본문 읽기 (크기 제한)
-function readBody(req, limit = 16e6) {
+// 바이너리 본문 읽기 (상한 초과 시 오류)
+function readBody(req, max) {
   return new Promise((resolve, reject) => {
-    let s = '', n = 0;
-    req.setEncoding('utf8');
-    req.on('data', (c) => { n += c.length; if (n > limit) { reject(Object.assign(new Error('요청 본문이 너무 큽니다'), { status: 413 })); req.destroy(); } else s += c; });
-    req.on('end', () => resolve(s));
+    const chunks = [];
+    let n = 0;
+    req.on('data', (c) => {
+      n += c.length;
+      if (n > max) { reject(Object.assign(new Error(`업로드 크기 상한(${Math.round(max / 1048576)} MB) 초과`), { status: 413 })); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
 }
 
+// ---------------------------------------------------------------- HTTP 서버
 const server = http.createServer((req, res) => {
   handleHttp(req, res).catch((e) => {
     console.error('HTTP 처리 오류:', e);
@@ -226,12 +237,30 @@ async function handleHttp(req, res) {
       if (url.pathname === '/api/state') out = ctrl.snapshot();
       else if (url.pathname === '/api/robots') out = { robots: ROBOTS, grippers: GRIPPERS, vendors: VENDORS, cameras: CAMERAS };
       else if (url.pathname === '/api/comms') out = comms.map(({ name, proto, port }) => ({ name, proto, port }));
+      else if (url.pathname === '/api/assets' && req.method === 'GET') out = { models: ctrl.assets.list() };
+      else if (url.pathname === '/api/assets' && req.method === 'POST') {
+        // 3D 모델 업로드 (server/assets.js 형식) → 메타. 같은 자산을 참조하던 모델이 있으면 간섭 메시 갱신
+        const body = await readBody(req, MAX_UPLOAD);
+        out = ctrl.assets.save(body);
+        ctrl.cell.refreshModels?.(out.id);
+      }
+      // 프로젝트 파일 1개로 내보내기/가져오기 (3D 모델 묶음 포함 — 크기가 커서 WebSocket 대신 HTTP)
+      else if (url.pathname === '/api/project/export' && req.method === 'GET') {
+        out = projects.serialize(url.searchParams.get('name') || undefined, { bundle: url.searchParams.get('bundle') !== '0' });
+      }
+      else if (url.pathname === '/api/project/import' && req.method === 'POST') {
+        const body = await readBody(req, MAX_UPLOAD * 2);
+        let p;
+        try { p = JSON.parse(body.toString('utf8')); } catch { throw new Error('프로젝트 파일이 JSON 형식이 아닙니다'); }
+        projects.apply(p);
+        out = { files: filesMsg(), current: projects.current, models: Object.keys(p.assets || {}).length };
+      }
       else if (url.pathname === '/api/cmd' && req.method === 'POST') {
         if (!/^application\/json\b/i.test(req.headers['content-type'] || '')) {
           res.writeHead(415, { 'Content-Type': 'application/json' });
           return res.end(JSON.stringify({ error: 'Content-Type: application/json 이 필요합니다' }));
         }
-        const body = await readBody(req);
+        const body = (await readBody(req, 16e6)).toString('utf8');
         let m;
         try { m = JSON.parse(body || '{}'); } catch { throw new Error('JSON 형식 오류'); }
         out = (await handleCmd(m)) ?? { ok: true };

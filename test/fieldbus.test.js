@@ -23,7 +23,7 @@ const ctrl = new Controller();
 ctrl.setMode('REMOTE');   // 모드 인터록: 외부 명령(서보 ON·시작·이동)은 REMOTE 모드에서만 허용
 ctrl.on('log', (e) => { if (e.src === 'comm' && /바인딩|실패|대기/.test(e.msg)) console.log('  [log]', e.msg); });
 const handles = await startAll(ctrl, {
-  yaskawaHse: { enabled: false }, kawasakiAs: { enabled: false }, hyundai: { enabled: false }, abbRws: { enabled: false }, kukaVarProxy: { enabled: false },
+  yaskawaHse: { enabled: false }, kawasakiAs: { enabled: false }, hyundai: { enabled: false }, abbRws: { enabled: false }, kukaVarProxy: { enabled: false }, urDashboard: { enabled: false },
   modbus: { port: MB_PORT, fallbackPort: MB_PORT + 1, host: '127.0.0.1' },
   opcua: { port: UA_PORT },
 });

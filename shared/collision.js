@@ -23,6 +23,8 @@
 //     [{id, c:[x,y,z], h:[hx,hy,hz], R?:3x3(열 = 박스 축), tool?:false}]
 //     로봇 링크는 항상, 툴은 tool !== false 일 때 검사 (툴 캡슐은 테이블과 동일하게 TCP 5mm 앞에서 잘림
 //     → 컨베이어 위 공작물을 파지할 때 벨트 면은 검출되지 않음). pairs.b = 장애물 id
+//     mesh 가 있으면(사용자 3D 모델, shared/meshcol.js meshObstacle) c/h/R 은 경계 OBB 이고
+//     OBB 근처에서는 삼각형 단위 정밀 거리로 판정
 //
 // 거리 계산
 //  - 선분↔선분: 정확한 최근접점 (Ericson, Real-Time Collision Detection 5.1.9)
@@ -31,7 +33,8 @@
 //  - 선분↔평면: 양 끝점 높이의 최소값 (정확)
 
 import { getGripper } from './grippers.js';
-import { toOpw } from './kinematics.js';
+import { toOpw, jointFrames } from './kinematics.js';
+import { meshObstacleDist } from './meshcol.js';
 
 export const TABLE_THICKNESS = 30;   // robotView.buildCell 과 동일
 export const TOOL_TIP_CLEAR = 5;     // 툴 캡슐을 TCP 보다 짧게 끝내는 여유 (mm)
@@ -155,6 +158,7 @@ function toolLocalCapsules(g) {
 // 반환: [{id, a:[x,y,z], b:[x,y,z], r}] — 로봇 베이스 좌표 (mm)
 export function robotCapsules(model, jointsDeg, gripper) {
   const g = typeof gripper === 'string' ? getGripper(gripper) : gripper;
+  if (model.kin === 'ur') return urCapsules(model, jointsDeg, g);
   const k = model.opw;
   const r = linkRadius(model);
   const q = toOpw(model, jointsDeg);
@@ -201,6 +205,32 @@ export function robotCapsules(model, jointsDeg, gripper) {
   for (const c of toolLocalCapsules(g)) {
     caps.push({ id: 'tool', a: loc(R6, p6, c.a[0], c.a[1], c.a[2]), b: loc(R6, p6, c.b[0], c.b[1], c.b[2]), r: c.r });
   }
+  return caps;
+}
+
+// UR (비구형 손목): 링크가 관절 축 방향으로 옆으로 비켜 있는 구조. public/js/urMesh.js 형상과 같은 배치
+//  lat = 어깨·팔꿈치·손목1 축 방향(평행). 상완은 lat 쪽으로 su, 전완은 sf 만큼 비켜 있고 손목1→손목2 사이가 나머지(d4)를 잇는다
+export const UR_OFFSETS = (k) => ({ su: k.d4 * 1.25, sf: k.d4 * 0.15 });
+export const urRadii = (model) => { const r = linkRadius(model); return { rj: r * 1.0, rt: r * 0.72 }; };
+function urCapsules(model, jointsDeg, g) {
+  const k = model.dh, F = jointFrames(model, jointsDeg);
+  const { su, sf } = UR_OFFSETS(k), { rj, rt } = urRadii(model);
+  const lat = [F[2].R[0][1], F[2].R[1][1], F[2].R[2][1]];
+  const off = (p, s) => [p[0] + lat[0] * s, p[1] + lat[1] * s, p[2] + lat[2] * s];
+  const D1 = F[2].p, D2 = F[3].p, D3 = F[4].p, D4 = F[5].p, R6 = F[6].R, p6 = F[6].p;
+  const D5 = [p6[0] - R6[0][2] * k.d6, p6[1] - R6[1][2] * k.d6, p6[2] - R6[2][2] * k.d6];
+  const caps = [
+    { id: 'turret', a: [0, 0, k.d1 * 0.35], b: D1, r: rj * SHRINK },
+    { id: 'turret', a: D1, b: off(D1, su), r: rj * SHRINK },
+    { id: 'upperArm', a: off(D1, su), b: off(D2, su), r: rt * SHRINK },
+    { id: 'elbow', a: off(D2, su), b: off(D2, sf), r: rj * 0.85 * SHRINK },
+    { id: 'forearm', a: off(D2, sf), b: off(D3, sf), r: rt * 0.85 * SHRINK },
+    { id: 'wrist', a: off(D3, sf), b: D4, r: rj * 0.7 * SHRINK },
+    { id: 'wrist', a: D4, b: D5, r: rj * 0.7 * SHRINK },
+    { id: 'wrist', a: D5, b: p6, r: rj * 0.68 * SHRINK },
+  ];
+  const loc = (x, y, z) => [p6[0] + R6[0][0] * x + R6[0][1] * y + R6[0][2] * z, p6[1] + R6[1][0] * x + R6[1][1] * y + R6[1][2] * z, p6[2] + R6[2][0] * x + R6[2][1] * y + R6[2][2] * z];
+  for (const c of toolLocalCapsules(g)) caps.push({ id: 'tool', a: loc(...c.a), b: loc(...c.b), r: c.r });
   return caps;
 }
 
@@ -368,13 +398,17 @@ export function checkCollision(model, jointsDeg, gripper, scene, objects, opts =
       const p = env.pedestal;
       report(c.id, 'pedestal', segCylDist(c.a, c.b, 0, 0, p.r, p.z0, p.z1) - rr, 'env');
     }
-    // 셀 장애물 (OBB). 외접구로 빠른 배제
+    // 셀 장애물 (OBB / 메시). 외접구 → OBB 순으로 빠른 배제
     if (obstacles) {
       for (const ob of obstacles) {
         if (isTool && ob.tool === false) continue;
         const br = Math.hypot(ob.h[0], ob.h[1], ob.h[2]);
         const dc = pointSegDist(ob.c, c.a, c.b) - br;
-        report(c.id, ob.id, dc > rr + 1 ? dc - rr : segBoxDist(c.a, c.b, ob) - rr, 'env');
+        if (dc > rr + 1) { report(c.id, ob.id, dc - rr, 'env'); continue; }
+        const db = segBoxDist(c.a, c.b, ob);
+        if (!ob.mesh || db > rr + 1) { report(c.id, ob.id, db - rr, 'env'); continue; }
+        // 사용자 3D 모델: 삼각형 단위 정밀 거리 (반경 + 50mm 밖은 탐색 생략)
+        report(c.id, ob.id, meshObstacleDist(c.a, c.b, ob, rr + 50) - rr, 'env');
       }
     }
     // 공작물 (링크만)

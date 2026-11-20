@@ -5,7 +5,7 @@ import { Controller } from '../server/controller.js';
 import { TOOLS, callTool } from '../server/ai/tools.js';
 import { handleMcp } from '../server/ai/mcp.js';
 import { ChatSession } from '../server/ai/chat.js';
-import { ClaudeCodeSession } from '../server/ai/chat-cli.js';
+import { ClaudeCodeSession, spawnArgs } from '../server/ai/chat-cli.js';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 
@@ -201,11 +201,11 @@ ok(chat.messages.length === before && events.at(-1).ev === 'error' && !chat.busy
   const runs = [];
   let script = null;
   const spawnFn = (cmd, args, opts) => {
+    const child = new EventEmitter();
     const run = { cmd, args, env: opts.env, stdin: '' };
     runs.push(run);
-    const child = new EventEmitter();
-    child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.stdin = new PassThrough();
-    child.stdin.on('data', (d) => (run.stdin += d));
+    child.stdin = new PassThrough(); child.stdin.on('data', (d) => (run.stdin += d));
+    child.stdout = new PassThrough(); child.stderr = new PassThrough();
     child.kill = () => { child.stdout.end(); setImmediate(() => child.emit('close', null)); };
     setImmediate(() => script(child));
     return child;
@@ -224,8 +224,8 @@ ok(chat.messages.length === before && events.at(-1).ev === 'error' && !chat.busy
   const cc = new ClaudeCodeSession({ ctrl, config: { effort: 'high' }, mcpUrl: 'http://127.0.0.1:1/mcp', send: (e) => ev.push(e), spawnFn });
   await cc.ask('홈으로');
   const a0 = runs[0].args;
-  ok(a0.includes('--session-id') && a0.includes('--strict-mcp-config') && a0[a0.indexOf('--tools') + 1] === '' && JSON.parse(fs.readFileSync(a0[a0.indexOf('--mcp-config') + 1], 'utf8')).mcpServers.robot.url === 'http://127.0.0.1:1/mcp', 'CLI: MCP 전용·내장 도구 없음·새 세션');
-  ok(runs[0].stdin === '홈으로' && !a0.includes('홈으로') && fs.existsSync(a0[a0.indexOf('--system-prompt-file') + 1]), 'CLI: 사용자 입력은 stdin, 시스템 프롬프트는 파일 (명령줄 주입 방지)');
+  ok(a0.includes('--session-id') && a0.includes('--strict-mcp-config') && a0[a0.indexOf('--tools') + 1] === '' && JSON.parse(a0[a0.indexOf('--mcp-config') + 1]).mcpServers.robot.url === 'http://127.0.0.1:1/mcp', 'CLI: MCP 전용·내장 도구 없음·새 세션');
+  ok(runs[0].stdin === '홈으로' && !a0.includes('홈으로'), 'CLI: 요청 내용은 인자가 아닌 stdin 으로 전달');
   ok(!('ANTHROPIC_API_KEY' in runs[0].env), 'CLI: API 키 환경변수 제거 (구독 로그인 사용)');
   ok(ev.some((e) => e.ev === 'tool_start' && e.name === 'move_robot') && ev.some((e) => e.ev === 'tool_end' && e.name === 'move_robot' && e.ok) && ev.some((e) => e.ev === 'text') && ev.at(-1).ev === 'done', 'CLI: 도구·텍스트 이벤트 변환');
   await cc.ask('다시');
@@ -238,6 +238,14 @@ ok(chat.messages.length === before && events.at(-1).ev === 'error' && !chat.busy
   ok(ev.at(-1).ev === 'error' && /중단/.test(ev.at(-1).msg), 'CLI: 중단');
   cc.reset();
   ok(!cc.started && cc.sessionId !== runs[0].args[runs[0].args.indexOf('--session-id') + 1], 'CLI: 새 대화 = 새 세션');
+  // Windows: shell:true 로 인자를 이어 붙이면 --mcp-config JSON 의 따옴표가 사라짐 → 셸 없이 / 직접 인용
+  const json = '{"mcpServers":{"robot":{"url":"http://x/mcp"}}}';
+  const [c1, a1, o1] = spawnArgs('C:\\bin\\claude.exe', ['--mcp-config', json], {}, 'win32');
+  ok(c1 === 'C:\\bin\\claude.exe' && a1[1] === json && !o1.shell, 'CLI(Windows): .exe 는 셸 없이 인자 그대로');
+  const [c2, a2, o2] = spawnArgs('C:\\bin\\claude.cmd', ['--mcp-config', json, 'a b'], {}, 'win32');
+  ok(/cmd/i.test(c2) && o2.windowsVerbatimArguments && a2.at(-1).includes('^^^"{\\^^^"mcpServers\\^^^"') && a2.at(-1).includes('^^^"a^^^ b^^^"'), 'CLI(Windows): .cmd 는 cmd.exe 인자 이중 인용');
+  const [, a3] = spawnArgs('C:\\bin\\claude.cmd', ['" & calc & "', '%PATH%'], {}, 'win32');
+  ok(!/[^^]&/.test(a3.at(-1)) && !/[^^]%/.test(a3.at(-1)), 'CLI(Windows): & · % 는 모두 이스케이프');
 }
 function sleep0() { return new Promise((r) => setTimeout(r, 20)); }
 

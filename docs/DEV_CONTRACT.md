@@ -1,7 +1,9 @@
 # 내부 개발 계약 (언어 모듈 / 통신 모듈)
 
-프로젝트: Node.js 20+(ESM, 의존성 `ws`, `three`, `node-opcua`. 모두 순수 JS, OS 무관) 기반 다제조사 산업용 로봇 에뮬레이터.
-단위: 위치 mm, 각도 deg. 좌표계: 로봇 베이스 원점, Z 위쪽. 플랜지/툴 Z축 = 툴 진행 방향.
+프로젝트: Node.js 20+(ESM, 의존성 `ws`, `three`, `node-opcua`, `@anthropic-ai/sdk`, `occt-import-js`(브라우저 전용 WASM). 모두 순수 JS/WASM, OS 무관) 기반 다제조사 산업용 로봇 에뮬레이터.
+사용자 3D 모델: 서버는 CAD 형식을 해석하지 않는다 — 브라우저가 GLB(표시) + `.col`(간섭 메시, `shared/meshcol.js`)로 변환해 `POST /api/assets` 로 올린다 (`server/assets.js`).
+기구학: OPW(구형 손목) 해석해가 기본. UR 처럼 손목 축이 어긋난 로봇은 `kin: 'ur'` + 표준 DH(`dh`)로 `shared/kinematics.js` 의 UR 절을 쓴다 (`fkFlange`/`jointFrames`/`ikFlangeAll` 이 분기). 관절 프레임은 두 방식 모두 같은 축 규약(관절 1·4·6 = 로컬 Z, 2·3·5 = 로컬 Y)을 지킨다.
+단위: 위치 mm, 각도 deg (URScript 는 언어 모듈 안에서 m·rad 로 변환). 좌표계: 로봇 베이스 원점, Z 위쪽. 플랜지/툴 Z축 = 툴 진행 방향.
 
 ## 핵심 파일 (반드시 먼저 읽을 것)
 - `shared/math.js`, `shared/kinematics.js`, `shared/robots.js`, `shared/poseformat.js`, `shared/grippers.js`

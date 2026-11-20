@@ -8,8 +8,8 @@ import { VENDORS } from '../../shared/robots.js';
 import { fromVendorPose } from '../../shared/poseformat.js';
 import { mulv } from '../../shared/math.js';
 
-const LANG_FILE = { yaskawa: 'inform.js', kawasaki: 'as.js', hyundai: 'hrscript.js', abb: 'rapid.js', kuka: 'krl.js', doosan: 'drl.js' };
-const EXT_RE = { yaskawa: /\.jbi$/i, kawasaki: /\.(as|pg)$/i, hyundai: /\.job$/i, abb: /\.(mod|modx|prg|sys|sysx)$/i, kuka: /\.(src|dat)$/i, doosan: /\.(drl|py)$/i };
+const LANG_FILE = { yaskawa: 'inform.js', kawasaki: 'as.js', hyundai: 'hrscript.js', abb: 'rapid.js', kuka: 'krl.js', doosan: 'drl.js', ur: 'urscript.js' };
+const EXT_RE = { yaskawa: /\.jbi$/i, kawasaki: /\.(as|pg)$/i, hyundai: /\.job$/i, abb: /\.(mod|modx|prg|sys|sysx)$/i, kuka: /\.(src|dat)$/i, doosan: /\.(drl|py)$/i, ur: /\.(script|urscript)$/i };
 const NAME_RE = /^[\w$\-. ]{1,64}$/;
 const r2 = (v) => Math.round(v * 100) / 100;
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
@@ -114,7 +114,7 @@ export const TOOLS = [
         robot: { id: r.id, vendor: r.vendor, vendorName: v.name, model: r.name, controller: v.controller, payload_kg: r.payload, ratedPayload_kg: r.ratedPayload ?? null, reach_mm: r.reach, jointLimits_deg: r.limits, maxSpeed_degps: r.maxSpeed, jointNames: v.jointNames, poseNames: v.poseNames },
         language: { name: v.language, ext: v.ext },
         gripper: { id: ctrl.gripper.id, name: ctrl.gripper.name, kind: ctrl.gripper.kind, tcp_xyzrpy: ctrl.gripper.tcp, stroke_mm: ctrl.gripper.stroke ?? null, io: st.gripperIO, ioNote: 'close/open = 그리퍼 닫기/열기 DO 번호, fbClosed/fbOpen/fbPart = 닫힘/열림/공작물 감지 DI 번호' },
-        pose: { joints_deg: st.joints.map(r2), tcp_vendor: st.tcp.map(r2), tcpNote: '제조사 표기 (yaskawa/hyundai: X,Y,Z,Rx,Ry,Rz / kuka: X,Y,Z,A,B,C / kawasaki: X,Y,Z,O,A,T / abb: x,y,z,q1..q4 / doosan: X,Y,Z,A,B,C ZYZ)' },
+        pose: { joints_deg: st.joints.map(r2), tcp_vendor: st.tcp.map(r2), tcpNote: '제조사 표기 (yaskawa/hyundai: X,Y,Z,Rx,Ry,Rz / kuka: X,Y,Z,A,B,C / kawasaki: X,Y,Z,O,A,T / abb: x,y,z,q1..q4 / doosan: X,Y,Z,A,B,C ZYZ / ur: X,Y,Z mm + RX,RY,RZ 회전 벡터 rad)' },
         scene: { table: st.scene.table, floorZ: st.scene.floorZ, pedestal: st.scene.pedestal },
         cell: ctrl.cell?.getLayout ? ctrl.cell.getLayout() : null,
         objects: st.objects.map((o) => ({ id: o.id, size_mm: o.size, p: o.p.map(r2) })),
@@ -239,7 +239,7 @@ export const TOOLS = [
         home: { type: 'boolean', description: 'true 면 홈 자세로 관절 이동' },
         joints: { type: 'array', items: { type: 'number' }, description: '목표 관절각 deg [J1..J6]' },
         joint_offsets: { type: 'array', items: { type: 'number' }, description: '현재 관절각에 더할 값 deg [dJ1..dJ6]' },
-        pose: { type: 'array', items: { type: 'number' }, description: 'TCP 목표 (제조사 표기: yaskawa/hyundai X,Y,Z,Rx,Ry,Rz / kuka X,Y,Z,A,B,C / kawasaki X,Y,Z,O,A,T / abb x,y,z,q1..q4 / doosan X,Y,Z,A,B,C(ZYZ))' },
+        pose: { type: 'array', items: { type: 'number' }, description: 'TCP 목표 (제조사 표기: yaskawa/hyundai X,Y,Z,Rx,Ry,Rz / kuka X,Y,Z,A,B,C / kawasaki X,Y,Z,O,A,T / abb x,y,z,q1..q4 / doosan X,Y,Z,A,B,C(ZYZ) / ur X,Y,Z mm + RX,RY,RZ 회전 벡터 rad)' },
         offset_mm: { type: 'array', items: { type: 'number' }, description: '현재 TCP 에서 상대 이동 [dx,dy,dz] mm' },
         frame: { type: 'string', enum: ['base', 'tool'], description: 'offset_mm 의 좌표계 (기본 base)' },
         motion: { type: 'string', enum: ['joint', 'linear'], description: '보간 방식 (기본 joint)' },

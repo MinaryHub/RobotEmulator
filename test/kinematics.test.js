@@ -31,6 +31,13 @@ function lowerArmMaxSin(m) {
 }
 console.log('\n도달거리 검산 (공개값 / 치수계산 / 차이)');
 for (const m of ROBOTS) {
+  if (m.kin === 'ur') {
+    // UR: 공개 도달거리 ≈ 어깨 중심~플랜지 (|a2| + |a3| + d5). UR3e·UR5e·UR16e 는 공개값이 더 보수적이라 넓게 허용
+    const k = m.dh, calc = Math.abs(k.a2) + Math.abs(k.a3) + k.d5, d = calc - m.reach;
+    console.log(m.id.padEnd(20), String(m.reach).padStart(6), calc.toFixed(1).padStart(8), d.toFixed(1).padStart(7), Math.abs(d) > 25 ? ' ← 공개값 기준 차이 (UR)' : '');
+    if (d < -40 || d > 80) fail++;
+    continue;
+  }
   const k = m.opw, calc = k.a1 + k.c2 * lowerArmMaxSin(m) + Math.hypot(k.c3, k.a2) + (m.reachRef === 'flange' ? k.c4 : 0), d = calc - m.reach;
   console.log(m.id.padEnd(20), String(m.reach).padStart(6), calc.toFixed(1).padStart(8), d.toFixed(1).padStart(7), Math.abs(d) > 25 ? ' ← 확인 필요' : '');
   if (Math.abs(d) > 40) fail++;

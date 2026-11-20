@@ -6,7 +6,8 @@
 // limits: 관절 소프트 리밋(deg), maxSpeed: 관절 최대속도(deg/s), maxAccelTime: 최고속 도달 시간(s)
 // 2026-11 데이터시트 재대조: 아래 각 모델 source 에 확인 범위와 남은 불일치 기록
 // a2 부호: 0점 자세에서 손목 중심 높이 = c1 - a2 → 손목이 J3 축보다 위면 음수, 아래면 양수 (KUKA KR 16-2·QUANTEC extra/ultra 는 양수)
-// reachRef: 'flange' — 공개 도달거리가 손목 중심이 아니라 플랜지 면까지 (두산). 생략 시 손목 중심 기준
+// reachRef: 'flange' — 공개 도달거리가 손목 중심이 아니라 플랜지 면까지 (두산·UR). 생략 시 손목 중심 기준
+// kin: 'ur' — 손목 축이 한 점에서 만나지 않는 구조 (Universal Robots). opw 대신 표준 DH(dh: d1,a2,a3,d4,d5,d6 mm)
 // tcpMaxSpeed: 직선보간 최대 속도(mm/s) — 제조사 미공개, 컨트롤러 관례값(추정)
 
 export const VENDORS = {
@@ -40,6 +41,12 @@ export const VENDORS = {
     jointNames: ['J1', 'J2', 'J3', 'J4', 'J5', 'J6'], poseNames: ['X', 'Y', 'Z', 'A', 'B', 'C'],
     color: 0xf3f4f5, accent: 0x2b6cb0,
   },
+  // UR: 자세 = X,Y,Z (mm) + 회전 벡터 RX,RY,RZ (rad) — PolyScope 표시와 같음. URScript 안에서는 m·rad
+  ur: {
+    name: 'Universal Robots', controller: 'e-Series / UR Series (PolyScope)', language: 'URScript', ext: '.script',
+    jointNames: ['Base', 'Shoulder', 'Elbow', 'Wrist1', 'Wrist2', 'Wrist3'], poseNames: ['X', 'Y', 'Z', 'RX', 'RY', 'RZ'], rotUnit: 'rad',
+    color: 0xd7dbdf, accent: 0x5f8fb4,
+  },
 };
 
 // 제조사별 관절 부호/영점 (q_opw = q*sign - offset)
@@ -55,6 +62,12 @@ const HY = { offsets: [0, -90, -90, 0, 0, 0], signs: [1, -1, -1, 1, -1, 1] };
 const AB = { offsets: [0, 0, -90, 0, 0, 0], signs: [1, 1, 1, 1, 1, 1] };
 const KU = { offsets: [0, -90, 0, 0, 0, 0], signs: [-1, 1, 1, -1, 1, -1] };
 const DS = { offsets: [0, 0, 0, 0, 0, 0], signs: [1, 1, 1, 1, 1, 1] };
+//  UR      : 표준 DH 관절각 그대로 (0 = 팔 수평 펼침). kin: 'ur' + dh (opw 없음, shared/kinematics.js UR 절)
+const URK = { kin: 'ur', offsets: [0, 0, 0, 0, 0, 0], signs: [1, 1, 1, 1, 1, 1], reachRef: 'flange' };
+// UR 홈: 상완 수직·전완 수평, 툴 아래 방향, 베이스 180° (에뮬레이터 셀의 +X 앞쪽을 향하도록)
+const UR_HOME = [180, -90, 90, -90, -90, 0];
+const UR_LIM = [[-360, 360], [-360, 360], [-360, 360], [-360, 360], [-360, 360], [-360, 360]];
+const UR_DH_SRC = 'DH: UR 공식 "DH parameters for calculations of kinematics and dynamics" 표';
 
 export const ROBOTS = [
   // ---------- Yaskawa ----------
@@ -678,6 +691,56 @@ export const ROBOTS = [
     limits: [[-360, 360], [-360, 360], [-160, 160], [-360, 360], [-360, 360], [-360, 360]],
     maxSpeed: [180, 180, 180, 360, 360, 360], home: [0, 0, 90, 0, 90, 0], tcpMaxSpeed: 1000,
     source: 'doosan-robot2 URDF(a0912) — 치수. 관절 범위·속도는 매뉴얼 3.5.0 A 시리즈 사양표. 가반하중·반복정밀도는 사양표 열 정렬이 불분명해 모델명 기준(확인 필요)',
+  },
+
+  // ---------- Universal Robots (협동로봇, 비구형 손목 — 표준 DH) ----------
+  {
+    id: 'ur-ur3e', vendor: 'ur', name: 'UR3e', payload: 3, reach: 500, repeatability: 0.03, ...URK,
+    dh: { d1: 151.85, a2: -243.55, a3: -213.2, d4: 131.05, d5: 85.35, d6: 92.1 },
+    limits: UR_LIM, maxSpeed: [180, 180, 180, 360, 360, 360], home: UR_HOME, tcpMaxSpeed: 3000,
+    source: `${UR_DH_SRC}. 사양: UR3e 데이터시트(2026-10) — 3 kg, 500 mm, ±0.03 mm, 손목3 무한 회전(에뮬레이터는 ±360°)`,
+  },
+  {
+    id: 'ur-ur5e', vendor: 'ur', name: 'UR5e', payload: 5, reach: 850, repeatability: 0.03, ...URK,
+    dh: { d1: 162.5, a2: -425, a3: -392.2, d4: 133.3, d5: 99.7, d6: 99.6 },
+    limits: UR_LIM, maxSpeed: [180, 180, 180, 180, 180, 180], home: UR_HOME, tcpMaxSpeed: 4000,
+    source: `${UR_DH_SRC} (UR5e/UR7e 공용). 사양: UR5e 공개 사양 5 kg, 850 mm, ±0.03 mm. 관절 속도·TCP 속도는 같은 팔인 UR7e 데이터시트(2026-10) 값(추정)`,
+  },
+  {
+    id: 'ur-ur7e', vendor: 'ur', name: 'UR7e', payload: 7.5, reach: 850, repeatability: 0.03, ...URK,
+    dh: { d1: 162.5, a2: -425, a3: -392.2, d4: 133.3, d5: 99.7, d6: 99.6 },
+    limits: UR_LIM, maxSpeed: [180, 180, 180, 180, 180, 180], home: UR_HOME, tcpMaxSpeed: 4000,
+    source: `${UR_DH_SRC} (UR5e/UR7e 공용). 사양: UR7e 데이터시트(2026-10) — 7.5 kg, 850 mm, ±0.03 mm, 전 관절 ±360° 180°/s, TCP 4 m/s`,
+  },
+  {
+    id: 'ur-ur10e', vendor: 'ur', name: 'UR10e', payload: 12.5, reach: 1300, repeatability: 0.05, ...URK,
+    dh: { d1: 180.7, a2: -612.7, a3: -571.55, d4: 174.15, d5: 119.85, d6: 116.55 },
+    limits: UR_LIM, maxSpeed: [120, 120, 180, 180, 180, 180], home: UR_HOME, tcpMaxSpeed: 4000,
+    source: `${UR_DH_SRC} (UR10e/UR12e 공용). 사양: UR10e 공개 사양 1300 mm, ±0.05 mm, 가반하중 12.5 kg(초기 사양 10 kg). 관절·TCP 속도는 같은 팔인 UR12e 데이터시트 값(추정)`,
+  },
+  {
+    id: 'ur-ur12e', vendor: 'ur', name: 'UR12e', payload: 12.5, reach: 1300, repeatability: 0.05, ...URK,
+    dh: { d1: 180.7, a2: -612.7, a3: -571.55, d4: 174.15, d5: 119.85, d6: 116.55 },
+    limits: UR_LIM, maxSpeed: [120, 120, 180, 180, 180, 180], home: UR_HOME, tcpMaxSpeed: 4000,
+    source: `${UR_DH_SRC} (UR10e/UR12e 공용). 사양: UR12e 데이터시트(2026-10) — 12.5 kg, 1300 mm, ±0.05 mm, 관절 120/120/180/180/180/180°/s, TCP 4 m/s`,
+  },
+  {
+    id: 'ur-ur16e', vendor: 'ur', name: 'UR16e', payload: 16, reach: 900, repeatability: 0.05, ...URK,
+    dh: { d1: 180.7, a2: -478.4, a3: -360, d4: 174.15, d5: 119.85, d6: 116.55 },
+    limits: UR_LIM, maxSpeed: [120, 120, 180, 180, 180, 180], home: UR_HOME, tcpMaxSpeed: 4000,
+    source: `${UR_DH_SRC}. 사양: UR16e 공개 사양 16 kg, 900 mm, ±0.05 mm. 관절·TCP 속도는 같은 관절 크기인 UR12e 값(추정)`,
+  },
+  {
+    id: 'ur-ur20', vendor: 'ur', name: 'UR20', payload: 20, reach: 1750, repeatability: 0.1, ...URK,
+    dh: { d1: 236.3, a2: -862, a3: -728.7, d4: 201, d5: 159.3, d6: 154.3 },
+    limits: UR_LIM, maxSpeed: [120, 120, 150, 210, 210, 210], home: UR_HOME, tcpMaxSpeed: 5000,
+    source: `${UR_DH_SRC}. 사양: UR20 데이터시트(2026-10) — 20 kg(조건부 25 kg), 1750 mm, ±0.1 mm, 관절 120/120/150/210/210/210°/s, TCP 5 m/s`,
+  },
+  {
+    id: 'ur-ur30', vendor: 'ur', name: 'UR30', payload: 30, reach: 1300, repeatability: 0.1, ...URK,
+    dh: { d1: 236.3, a2: -637, a3: -503.7, d4: 201, d5: 159.3, d6: 154.3 },
+    limits: UR_LIM, maxSpeed: [120, 120, 150, 210, 210, 210], home: UR_HOME, tcpMaxSpeed: 4000,
+    source: `${UR_DH_SRC}. 사양: UR30 데이터시트(2026-10) — 30 kg(조건부 35 kg), 1300 mm, ±0.1 mm, 관절 120/120/150/210/210/210°/s, TCP 4 m/s`,
   },
 ];
 
