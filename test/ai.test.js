@@ -1,5 +1,6 @@
 // AI 연동: 도구(tools.js), MCP HTTP 서버(mcp.js), Claude 채팅 루프(chat.js — 가짜 클라이언트로 검증, 네트워크 없음)
 import http from 'node:http';
+import fs from 'node:fs';
 import { Controller } from '../server/controller.js';
 import { TOOLS, callTool } from '../server/ai/tools.js';
 import { handleMcp } from '../server/ai/mcp.js';
@@ -154,6 +155,10 @@ body = await (await rpc({ jsonrpc: '2.0', id: 5, method: 'nope' })).json();
 ok(body.error?.code === -32601, 'MCP 모르는 메서드 → -32601');
 res = await rpc({ jsonrpc: '2.0', id: 6, method: 'ping' }, { Origin: 'http://evil.example' });
 ok(res.status === 403, 'MCP 외부 Origin 거부');
+res = await rpc({ jsonrpc: '2.0', id: 7, method: 'ping' }, { Origin: 'http://evil.example:3000', Host: 'evil.example:3000' });
+ok(res.status === 403, 'MCP DNS 리바인딩(Origin=Host=외부 도메인) 거부');
+res = await rpc({ jsonrpc: '2.0', id: 8, method: 'ping' }, { Origin: `http://127.0.0.1:${srv.address().port}` });
+ok(res.status === 200, 'MCP 같은 출처 Origin 허용');
 res = await post('{bad');
 ok(res.status === 400 && (await res.json()).error.code === -32700, 'MCP 잘못된 JSON → -32700');
 srv.close();
@@ -196,9 +201,11 @@ ok(chat.messages.length === before && events.at(-1).ev === 'error' && !chat.busy
   const runs = [];
   let script = null;
   const spawnFn = (cmd, args, opts) => {
-    runs.push({ cmd, args, env: opts.env });
+    const run = { cmd, args, env: opts.env, stdin: '' };
+    runs.push(run);
     const child = new EventEmitter();
-    child.stdout = new PassThrough(); child.stderr = new PassThrough();
+    child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.stdin = new PassThrough();
+    child.stdin.on('data', (d) => (run.stdin += d));
     child.kill = () => { child.stdout.end(); setImmediate(() => child.emit('close', null)); };
     setImmediate(() => script(child));
     return child;
@@ -217,7 +224,8 @@ ok(chat.messages.length === before && events.at(-1).ev === 'error' && !chat.busy
   const cc = new ClaudeCodeSession({ ctrl, config: { effort: 'high' }, mcpUrl: 'http://127.0.0.1:1/mcp', send: (e) => ev.push(e), spawnFn });
   await cc.ask('홈으로');
   const a0 = runs[0].args;
-  ok(a0.includes('--session-id') && a0.includes('--strict-mcp-config') && a0[a0.indexOf('--tools') + 1] === '' && JSON.parse(a0[a0.indexOf('--mcp-config') + 1]).mcpServers.robot.url === 'http://127.0.0.1:1/mcp', 'CLI: MCP 전용·내장 도구 없음·새 세션');
+  ok(a0.includes('--session-id') && a0.includes('--strict-mcp-config') && a0[a0.indexOf('--tools') + 1] === '' && JSON.parse(fs.readFileSync(a0[a0.indexOf('--mcp-config') + 1], 'utf8')).mcpServers.robot.url === 'http://127.0.0.1:1/mcp', 'CLI: MCP 전용·내장 도구 없음·새 세션');
+  ok(runs[0].stdin === '홈으로' && !a0.includes('홈으로') && fs.existsSync(a0[a0.indexOf('--system-prompt-file') + 1]), 'CLI: 사용자 입력은 stdin, 시스템 프롬프트는 파일 (명령줄 주입 방지)');
   ok(!('ANTHROPIC_API_KEY' in runs[0].env), 'CLI: API 키 환경변수 제거 (구독 로그인 사용)');
   ok(ev.some((e) => e.ev === 'tool_start' && e.name === 'move_robot') && ev.some((e) => e.ev === 'tool_end' && e.name === 'move_robot' && e.ok) && ev.some((e) => e.ev === 'text') && ev.at(-1).ev === 'done', 'CLI: 도구·텍스트 이벤트 변환');
   await cc.ask('다시');

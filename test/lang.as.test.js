@@ -226,6 +226,24 @@ ok(R(c, 'bv') === 10 && c.getDO(10) && c.getDO(12) && !c.getDO(9), 'BITS');
 ok(R(c, 't') >= 0.25, `SWAIT 대기 시간 ${R(c, 't')?.toFixed(2)}s`);
 ok(R(c, 'p7') === -1 && R(c, 'p7b') === 0, 'PULSE');
 
+// ---------------------------------------------------------------- 4b. 로컬 .b 와 전역 b 구분
+{
+  console.log('[로컬/전역 같은 이름]');
+  const c = makeCtrl('kawasaki-rs007n');
+  const st = await runSnippet(c, `.PROGRAM main()
+  b = 1
+  CALL sub2(5)
+  gout = b
+.END
+.PROGRAM sub2(.p)
+  .b = 7
+  b = 8
+  lout = .b + .p
+.END
+`);
+  ok(st === 'done' && Number(R(c, 'gout')) === 8 && Number(R(c, 'lout')) === 12, `전역 b=8, 로컬 .b+.p=12 (${st}, gout=${R(c, 'gout')}, lout=${R(c, 'lout')})`);
+}
+
 // ---------------------------------------------------------------- 5. 컴파일 오류
 console.log('[컴파일 오류]');
 c.loadFiles({ 'bad.as': '.PROGRAM main()\n  IF x THEN\n  JMOVE p\n.END\n' }, true);

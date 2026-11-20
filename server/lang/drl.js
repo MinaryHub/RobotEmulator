@@ -7,7 +7,8 @@
 //        문자열 '…' "…" b"…" f"…{식}…", True/False/None, 문자열·리스트 메서드 일부 (append, pop, split, strip, format, decode …)
 // 에뮬레이터 구현 방식 (파이썬과 다른 점)
 //  - 사용자 함수와 기다리는 내장 함수(movej·wait·소켓 읽기 등)는 식 안에서 호출해도 되지만, 그 문장의 다른 부분보다 먼저
-//    (왼쪽에서 오른쪽으로) 실행된다. 따라서 `a and f()` 처럼 써도 f() 는 a 와 관계없이 호출된다.
+//    (왼쪽에서 오른쪽으로) 실행된다. 단, and / or / 조건식(x if c else y)의 단락 평가는 지킨다 (`a and f()` 는 a 가 참일 때만 f() 호출).
+//    예: `x + f()` 에서 f() 는 x 보다 먼저 평가된다 (x 가 f() 안에서 바뀌는 경우에만 차이가 남).
 //  - 딕셔너리, 클래스, 예외 처리(try), import 대상 모듈의 함수는 지원하지 않는다 (import / from … import 줄은 무시).
 //  - amove* (비동기 이동) 는 동기 이동과 같게 처리하고 mwait() 은 남은 모션을 기다린다.
 //  - movejx 의 sol(해 공간) 은 무시하고 현재 자세에서 가장 가까운 해를 쓴다. movec 의 angle, 모든 acc/ra 는 무시한다.
@@ -1103,9 +1104,50 @@ function compileBody(prog, proc, body, sc) {
   const parse = (src, line) => { try { return parseExpr(src); } catch (e) { throw new CompileError(`구문 오류: ${e.message}`, file, line); } };
 
   // 식 안의 사용자 함수·대기 함수 호출을 앞선 명령으로 분리 (왼쪽→오른쪽, 안쪽 먼저)
+  // 분리 대상 호출(사용자 함수·대기 함수·sub_program_run)이 들어 있는지
+  const isHoisted = (n) => {
+    if (n.t !== 'call' || n.fn.t !== 'name') return false;
+    const name = n.fn.name;
+    if (sc.locals?.has(name)) return false;
+    return !!(prog.defs.get(name) || ASYNC[name] || name === 'sub_program_run');
+  };
+  const hasHoisted = (n) => {
+    if (!n || typeof n !== 'object') return false;
+    if (Array.isArray(n)) return n.some(hasHoisted);
+    if (n.t && isHoisted(n)) return true;
+    for (const [k, v] of Object.entries(n)) {
+      if (k === 'parts') { if (v.some((p) => typeof p !== 'string' && hasHoisted(p.ast))) return true; }
+      else if (k === 'kw') { if (Object.values(v).some(hasHoisted)) return true; }
+      else if (v && typeof v === 'object' && hasHoisted(v)) return true;
+    }
+    return false;
+  };
+  // and / or / 조건식: 조건부로만 평가되는 쪽에 분리 대상 호출이 있으면 조건 점프로 단락 평가를 지킨다
+  //  (예: `1 if n <= 1 else n * fact(n - 1)`, `len(a) > 0 and first(a) == 1`)
+  const lowerShortCircuit = (n, line) => {
+    const k = `$t${tmpN++}`;
+    const setK = (ast) => { const v = val(ast); emit(line, (vm, f) => { f.locals.set(k, v(vm, f)); }); };
+    if (n.t === 'ifx') {
+      const c = val(lower(n.c, line));
+      const toElse = jump(line, (vm, f) => !truthy(c(vm, f)));
+      setK(lower(n.a, line));
+      const toEnd = jump(line, null);
+      toElse.to = code.length;
+      setK(lower(n.b, line));
+      toEnd.to = code.length;
+    } else {
+      setK(lower(n.a, line));
+      const skip = jump(line, (vm, f) => (n.t === 'and' ? !truthy(f.locals.get(k)) : truthy(f.locals.get(k))));
+      setK(lower(n.b, line));
+      skip.to = code.length;
+    }
+    return { t: 'tmp', k };
+  };
   const lower = (n, line) => {
     if (!n || typeof n !== 'object') return n;
     if (Array.isArray(n)) return n.map((x) => lower(x, line));
+    if ((n.t === 'and' || n.t === 'or') && hasHoisted(n.b)) return lowerShortCircuit(n, line);
+    if (n.t === 'ifx' && (hasHoisted(n.a) || hasHoisted(n.b))) return lowerShortCircuit(n, line);
     const out = {};
     for (const [k, v] of Object.entries(n)) {
       if (k === 'parts') out.parts = v.map((p) => (typeof p === 'string' ? p : { ...p, ast: lower(p.ast, line) }));

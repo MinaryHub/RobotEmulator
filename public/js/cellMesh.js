@@ -2,6 +2,7 @@
 // robotView.updateCell(st) 에서 사용. 좌표 mm (robotView.world 가 m 로 축소)
 import * as THREE from 'three';
 import { box, cylZ } from './gripperMesh.js';
+import { clearGroup } from './dispose.js';
 
 const DEG = Math.PI / 180;
 const std = (color, o = {}) => new THREE.MeshStandardMaterial({ color, metalness: 0.3, roughness: 0.6, ...o });
@@ -72,8 +73,7 @@ export class CellMeshes {
   }
 
   clear() {
-    this.group.traverse((m) => { if (m.isMesh || m.isLineSegments) { m.geometry?.dispose(); } });
-    this.group.clear();
+    clearGroup(this.group);   // 재질·컨베이어 벨트 텍스처까지 해제
     this.dyn = {};
   }
 

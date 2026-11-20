@@ -17,6 +17,7 @@
 //   /rw/elog/0 (알람 이력), /ctrl/identity, /rw/system, /rw/system/robottype
 //   /subscription (POST, DELETE /subscription/{id})
 import http from 'node:http';
+import { hostAllowed } from '../netguard.js';
 import crypto from 'node:crypto';
 import { WebSocketServer } from 'ws';
 import { quatFromR } from '../../shared/math.js';
@@ -61,6 +62,7 @@ export async function start(ctrl, opts = {}) {
   const requireAuth = !!opts.requireAuth;
   const log = makeLogger(ctrl, TAG);
   const cycles = makeCycleRunner(ctrl, log);
+  const MAX_FS_FILES = 512, MAX_FS_BYTES = 64 * 1024 * 1024;   // fileservice 저장소 상한
   const fsStore = new Map(); // fileservice 저장소: '$HOME/경로' 정규화 키(소문자) → {path, data:Buffer, mtime}
   const startTime = new Date();
   const sysId = crypto.randomUUID();
@@ -252,7 +254,8 @@ export async function start(ctrl, opts = {}) {
   }
 
   // ------------------------------------------------------------ 구독
-  const subs = new Map(); // id → {resources:[path], ws:Set, last:Map}
+  const subs = new Map(); // id → {resources:[path], ws:Set, last:Map, idleSince}
+  const MAX_SUBS = 200, SUB_IDLE_MS = 60000;
   let subSeq = 0;
   const eventOf = async (res) => {
     // 반환: {cls, title, href, fields} 또는 null
@@ -282,8 +285,11 @@ export async function start(ctrl, opts = {}) {
     try { await pollOnce(); } finally { polling = false; }
   };
   const pollOnce = async () => {
+    const now = Date.now();
     for (const [id, s] of subs) {
-      if (!s.ws.size) continue;
+      // WebSocket 이 붙지 않은(또는 끊긴) 구독은 일정 시간 후 정리 — 클라이언트가 DELETE 없이 사라져도 쌓이지 않게
+      if (!s.ws.size) { s.idleSince ??= now; if (now - s.idleSince > SUB_IDLE_MS) subs.delete(id); continue; }
+      s.idleSince = null;
       const evs = [];
       for (const r of s.resources) {
         let ev; try { ev = await eventOf(r); } catch { ev = null; }
@@ -478,6 +484,9 @@ export async function start(ctrl, opts = {}) {
       if (M === 'PUT') {
         if (!f.path) throw new RwsError(400, 'File name missing');
         const existed = fsStore.has(f.key);
+        let total = rawBody.length;
+        for (const [k, e] of fsStore) if (k !== f.key) total += e.data.length;
+        if ((!existed && fsStore.size >= MAX_FS_FILES) || total > MAX_FS_BYTES) throw new RwsError(507, 'File storage full');
         fsStore.set(f.key, { path: f.path, data: rawBody, mtime: new Date() });
         // RAPID 모듈 파일은 가상 컨트롤러 프로그램 저장소(ctrl.files)에도 반영
         if (RAPID_EXT.test(f.name) && !f.path.includes('/')) ctrl.loadFiles({ [f.name]: rawBody.toString('utf8') });
@@ -500,8 +509,9 @@ export async function start(ctrl, opts = {}) {
       const idx = form.getAll('resources');
       const resources = idx.map((i) => form.get(i)).filter(Boolean);
       if (!resources.length) throw new RwsError(400, 'No resources to subscribe');
+      if (subs.size >= MAX_SUBS) throw new RwsError(503, 'Too many subscriptions');
       const id = String(++subSeq);
-      subs.set(id, { resources, ws: new Set(), last: new Map() });
+      subs.set(id, { resources, ws: new Set(), last: new Map(), idleSince: Date.now() });
       // 기준값 저장 (이후 변경분만 푸시)
       for (const r of resources) { try { const ev = await eventOf(r); if (ev) subs.get(id).last.set(r, JSON.stringify(ev.fields)); } catch {} }
       const loc = `ws://${ctx.host}/poll/${id}`;
@@ -524,6 +534,7 @@ export async function start(ctrl, opts = {}) {
   const server = http.createServer(async (req, res) => {
     let url;
     try { url = new URL(req.url, 'http://localhost'); } catch { res.writeHead(400); return res.end(); }
+    if (!hostAllowed(req)) { res.writeHead(403); return res.end(); }   // DNS 리바인딩 방어
     const path = url.pathname.replace(/\/+$/, '') || '/';
     const ctx = ctxOf(req, url);
     const headers = {};

@@ -65,7 +65,14 @@ export function initDebugPanels({ cmd }) {
     return v;
   }
 
+  // 그리기는 화면 프레임당 한 번으로 묶음 (상태 수신 30 Hz · 마우스 이동마다 전체를 다시 그리지 않게)
+  let drawQueued = false;
   function draw() {
+    if (drawQueued) return;
+    drawQueued = true;
+    requestAnimationFrame(() => { drawQueued = false; drawNow(); });
+  }
+  function drawNow() {
     if (active !== 'pTl') return;
     const W = cv.clientWidth, H = cv.clientHeight;
     if (!W || !H) return;

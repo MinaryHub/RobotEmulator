@@ -240,6 +240,19 @@ export const PRESETS = {
 const LEVEL_IN = new Set(['servoOff', 'hold', 'estop', 'fence', 'enable']);
 const sigKey = (s) => (s.kind === 'pgnoBit' ? `pgno${s.index}` : s.kind);
 
+
+// 신호 번호 재지정 검사: 정수 1~512 로 변환 (문자열 "450" 도 허용). 범위 밖이면 오류
+//  (검사 없이 저장하면 주기 처리 중 setDO 예외로 서버가 멈춤)
+function sanitizeAssign(m, label) {
+  const out = {};
+  for (const [k, v] of Object.entries(m && typeof m === 'object' ? m : {})) {
+    if (v === null || v === undefined || v === '') continue;
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 1 || n > 512) throw new Error(`시스템 ${label} '${k}' 번호가 올바르지 않습니다: ${v} (1~512)`);
+    out[k] = n;
+  }
+  return out;
+}
 export class SystemIO {
   constructor(ctrl) {
     this.ctrl = ctrl;
@@ -287,7 +300,7 @@ export class SystemIO {
     if (cfg.preset && PRESETS[cfg.preset] && cfg.preset !== this.preset) { this.preset = cfg.preset; this.assign = { in: {}, out: {} }; this.logic = { in: {} }; }
     if (Number.isInteger(cfg.diBase) && cfg.diBase >= 1 && cfg.diBase <= 480) this.diBase = cfg.diBase;
     if (Number.isInteger(cfg.doBase) && cfg.doBase >= 1 && cfg.doBase <= 480) this.doBase = cfg.doBase;
-    if (cfg.assign) this.assign = { in: { ...(cfg.assign.in || {}) }, out: { ...(cfg.assign.out || {}) } };
+    if (cfg.assign) this.assign = { in: sanitizeAssign(cfg.assign.in, '입력'), out: sanitizeAssign(cfg.assign.out, '출력') };
     if (cfg.logic) this.logic = { in: { ...(cfg.logic.in || {}) } };
     if (cfg.programs) {
       const p = {};

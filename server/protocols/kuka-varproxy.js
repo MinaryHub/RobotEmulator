@@ -43,8 +43,11 @@ export function parseFrames(buf) {
   return { msgs, rest: buf.subarray(off) };
 }
 
+// 길이 필드가 16비트라 값 텍스트는 65,529 바이트까지. 넘으면 실패 응답
+export const MAX_VALUE_BYTES = 0xffff - 6;
 export function buildResponse(msgId, mode, value, ok) {
-  const v = Buffer.from(ok ? String(value) : '', 'latin1');
+  let v = Buffer.from(ok ? String(value) : '', 'latin1');
+  if (v.length > MAX_VALUE_BYTES) { v = Buffer.alloc(0); ok = false; }
   const b = Buffer.alloc(4 + 1 + 2 + v.length + 3);
   b.writeUInt16BE(msgId, 0);
   b.writeUInt16BE(1 + 2 + v.length + 3, 2);
@@ -54,6 +57,8 @@ export function buildResponse(msgId, mode, value, ok) {
   b[7 + v.length] = 0; b[8 + v.length] = ok ? 1 : 0; b[9 + v.length] = ok ? 1 : 0;
   return b;
 }
+
+const MAX_REGS = 4096;
 
 export async function start(ctrl, opts = {}) {
   const port = opts.port ?? 7000;
@@ -179,8 +184,10 @@ export async function start(ctrl, opts = {}) {
       try { const v = m.parseValue(String(text)); if (safeWriteVar('kuka', ctrl, name.trim(), v)) { ctrl.emitState(); return true; } } catch {}
     }
     if (nameU.startsWith('$')) return false; // 알 수 없는 시스템 변수는 쓰기 거부
-    // 프로그램에 없는 변수 → 에뮬레이터 레지스터에 KRL 텍스트로 저장
-    ctrl.regs.set(`KRL:${nameU}`, String(text));
+    // 프로그램에 없는 변수 → 에뮬레이터 레지스터에 KRL 텍스트로 저장 (클라이언트가 무한히 늘리지 못하게 개수 제한)
+    const key = `KRL:${nameU}`;
+    if (!ctrl.regs.has(key) && [...ctrl.regs.keys()].filter((k) => k.startsWith('KRL:')).length >= MAX_REGS) return false;
+    ctrl.regs.set(key, String(text));
     ctrl.emitState();
     return true;
   }
@@ -212,7 +219,11 @@ export async function start(ctrl, opts = {}) {
       buf = buf.length ? Buffer.concat([buf, chunk]) : chunk;
       const { msgs, rest } = parseFrames(buf);
       buf = Buffer.from(rest);
-      for (const m of msgs) queue = queue.then(async () => { const r = await handle(m); if (!sock.destroyed) sock.write(r); });
+      for (const m of msgs) {
+        queue = queue
+          .then(async () => { const r = await handle(m); if (!sock.destroyed) sock.write(r); })
+          .catch((e) => { log(`처리 오류: ${e.message}`, true); if (!sock.destroyed) sock.write(buildResponse(m.msgId ?? 0, m.mode ?? 0, '', false)); });
+      }
     });
     sock.on('close', () => { clients.delete(sock); log(`연결 종료: ${peer}`, true); });
     sock.on('error', () => {});

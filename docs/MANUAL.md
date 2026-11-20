@@ -566,7 +566,7 @@ PLC 를 Modbus TCP **클라이언트(마스터)**로 설정하고 에뮬레이�
 ```json
 {
   "httpPort": 3000,
-  "host": null,
+  "host": "127.0.0.1",
   "robot": "kuka-kr6-r900",
   "gripper": "robotiq-2f85",
   "restoreSession": true,
@@ -586,7 +586,8 @@ PLC 를 Modbus TCP **클라이언트(마스터)**로 설정하고 에뮬레이�
 | 키 | 설명 |
 |---|---|
 | `httpPort` | 웹 UI·REST·WebSocket·MCP 포트 (환경변수 `PORT` 가 우선) |
-| `host` | 바인딩 주소. `null` = 모든 인터페이스, `"127.0.0.1"` = 이 PC 만 (환경변수 `HOST` 가 우선). 통신 모듈에도 적용 |
+| `host` | 바인딩 주소. 기본 `"127.0.0.1"` = 이 PC 만, `"0.0.0.0"` = 모든 인터페이스(다른 PC·PLC 접속) (환경변수 `HOST` 가 우선). 통신 모듈에도 적용 |
+| `allowedHosts` | 웹 UI·API 를 IP 가 아닌 호스트 이름으로 접속할 때 허용할 이름 목록 (예: `["robot-pc.local"]`). localhost·IP 주소는 항상 허용 |
 | `robot`, `gripper` | 시작 시 로봇·그리퍼. `robot` 을 지정하면 자동 저장 복원을 하지 않음 |
 | `restoreSession` | `false` 면 직전 세션 복원 안 함 |
 | `protocols.<키>.enabled` | `false` 면 해당 인터페이스 끔 |
@@ -602,8 +603,8 @@ PLC 를 Modbus TCP **클라이언트(마스터)**로 설정하고 에뮬레이�
 - `GET /api/state` — 전체 상태 스냅샷 (관절, TCP, I/O, 프로그램, 알람, 사이클, 배속 …)
 - `GET /api/robots` — 로봇·그리퍼·제조사 목록
 - `GET /api/comms` — 통신 인터페이스와 실제 포트
-- `POST /api/cmd` — JSON `{ "cmd": "...", ... }`. 이 API 는 **펜던트(화면)와 같은 출처**로 취급되어 모드 인터록이 그대로 적용됩니다 (예: REMOTE 에서 `start` 거부).
-- `ws://<host>:3000/ws` — 같은 명령을 `{ "cmd": "...", "id": 1 }` 로 보내면 `{ type: "reply", id: 1, ok }` 응답. 상태(`state`, 최대 30 Hz)·로그·타임라인 이벤트가 푸시됨
+- `POST /api/cmd` — JSON `{ "cmd": "...", ... }` (`Content-Type: application/json` 필수. 다른 웹사이트에서 보낸 브라우저 요청은 403). 이 API 는 **펜던트(화면)와 같은 출처**로 취급되어 모드 인터록이 그대로 적용됩니다 (예: REMOTE 에서 `start` 거부).
+- `ws://<host>:3000/ws` — 같은 명령을 `{ "cmd": "...", "id": 1 }` 로 보내면 `{ type: "reply", id: 1, ok }` 응답. 상태(`state`, 최대 30 Hz)·로그·타임라인 이벤트가 푸시됨. `state` 에서 `sysio`·`cell`·`scene`·`safety`·`ioLabels`·`gripperIO`·`cameras` 는 직전 전송과 같으면 생략되므로 이전 값을 유지해 쓰십시오 (전체 상태는 접속 시 `init` 또는 `{"cmd":"state"}`). 로그는 100 ms 단위로 묶여 `log`(1개) 또는 `logs`(`entries` 배열)로 옵니다
 
 | cmd | 인자 | 동작 |
 |---|---|---|

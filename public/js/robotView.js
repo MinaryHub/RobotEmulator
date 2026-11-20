@@ -6,6 +6,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { buildGripper, cylZ, box } from './gripperMesh.js';
 import { buildRobotLinks } from './robotMesh.js';
 import { CellMeshes } from './cellMesh.js';
+import { disposeTree, clearGroup } from './dispose.js';
 import { CameraRig, HELPER_LAYER } from './cameraView.js';
 
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
@@ -112,7 +113,7 @@ export class RobotView {
 
   // ------------------------------------------------------------------ 셀 (바닥/받침대/테이블)
   buildCell(sc) {
-    this.cell.clear();
+    clearGroup(this.cell);
     const fz = sc.floorZ;
     const floor = new THREE.Mesh(new THREE.PlaneGeometry(20000, 20000), new THREE.MeshStandardMaterial({ color: 0x2a2f36, roughness: 0.95 }));
     floor.position.z = fz;
@@ -150,7 +151,7 @@ export class RobotView {
     this.model = model;
     for (const l of this.links) {
       this.robotGroup.remove(l);
-      l.traverse((m) => { if (m.isMesh) { m.geometry.dispose(); m.material.dispose(); } });
+      disposeTree(l);
     }
     this.links = [];
     // 링크 형상: public/js/robotMesh.js (OPW 파라미터로 치수 산출, 제조사별 색/비례)
@@ -170,7 +171,7 @@ export class RobotView {
   }
 
   setGripper(def, customGeometry) {
-    this.toolGroup.clear();
+    clearGroup(this.toolGroup);
     this.tool = buildGripper(def, customGeometry);
     this.toolGroup.add(this.tool.group);
     this.gripperId = def.id;
@@ -279,7 +280,7 @@ export class RobotView {
       seen.add(o.id);
       let mesh = this.objMeshes.get(o.id);
       if (!mesh || mesh.userData.sizeKey !== o.size.join()) {
-        if (mesh) this.objGroup.remove(mesh);
+        if (mesh) { this.objGroup.remove(mesh); disposeTree(mesh); }
         mesh = new THREE.Mesh(new THREE.BoxGeometry(...o.size), new THREE.MeshStandardMaterial({ color: o.color, roughness: 0.6 }));
         mesh.castShadow = mesh.receiveShadow = true;
         mesh.userData.sizeKey = o.size.join();
@@ -292,7 +293,7 @@ export class RobotView {
       mesh.quaternion.set(o.q[1], o.q[2], o.q[3], o.q[0]);
       mesh.material.emissive?.setHex(st.grip.holding === o.id ? 0x222222 : 0);
     }
-    for (const [id, mesh] of this.objMeshes) if (!seen.has(id)) { this.objGroup.remove(mesh); this.objMeshes.delete(id); }
+    for (const [id, mesh] of this.objMeshes) if (!seen.has(id)) { this.objGroup.remove(mesh); disposeTree(mesh); this.objMeshes.delete(id); }
     if (st.cell) this.updateCell(st);
   }
 
@@ -304,7 +305,7 @@ export class RobotView {
 
   // 작업 영역: 관절 한계 내 무작위 자세의 손목 중심(P점) 분포 — 데이터시트의 동작 범위도와 같은 기준
   showEnvelope(on) {
-    if (this.envelope) { this.world.remove(this.envelope); this.envelope.geometry.dispose(); this.envelope = null; }
+    if (this.envelope) { this.world.remove(this.envelope); disposeTree(this.envelope); this.envelope = null; }
     if (!on || !this.model) return;
     const m = this.model, N = 24000;
     const pos = new Float32Array(N * 3), col = new Float32Array(N * 3);

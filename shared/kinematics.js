@@ -74,7 +74,9 @@ export function jointFrames(model, jdeg) {
 }
 
 // 역기구학: 플랜지 pose → 최대 8개 해 (제조사 관절각 deg 배열). 관절 한계 밖 해는 제외 옵션
-export function ikFlangeAll(model, target) {
+// ref(제조사 관절각, 선택): 손목 특이점(J5≈0)에서 J4 를 기준값으로 유지하는 해도 함께 낸다
+export function ikFlangeAll(model, target, ref) {
+  const t4ref = ref ? toOpw(model, ref)[3] : null;
   const k = model.opw;
   const R = target.R;
   const ez = [R[0][2], R[1][2], R[2][2]];
@@ -125,12 +127,18 @@ export function ikFlangeAll(model, target) {
     const t5 = Math.atan2(Math.sqrt(Math.max(0, 1 - m * m)), m);
     let t4, t6;
     if (Math.abs(Math.sin(t5)) < 1e-9) {
-      // 손목 특이점: t4 = 0 으로 두고 t6 에 회전 몰기
+      // 손목 특이점: J4·J6 의 합(또는 차)만 정해짐 → t4 = 0 으로 두고 t6 에 회전 몰기
       t4 = 0;
       const Rc = r0c(t1, t2, t3);
       const Rce = mul3(T3(Rc), R);
-      t6 = Math.atan2(Rce[1][0], Rce[0][0]) * (m > 0 ? 1 : 1);
+      t6 = Math.atan2(Rce[1][0], Rce[0][0]);
       if (m < 0) t6 = Math.atan2(Rce[1][0], -Rce[0][0]);
+      // 기준 J4 를 유지하는 해 (조그·직선 이동이 특이점에서 J4 를 0 으로 튀게 하지 않도록).
+      //  부호 규약에 따라 t6 = φ − t4 또는 φ + t4 — 둘 다 내고 ikFlangeValid 의 FK 검증이 맞는 쪽만 남긴다
+      if (t4ref !== null && Number.isFinite(t4ref)) {
+        sols.push([t1, t2, t3, t4ref, t5, t6 - t4ref]);
+        sols.push([t1, t2, t3, t4ref, t5, t6 + t4ref]);
+      }
     } else {
       t4 = Math.atan2(R[1][2] * cs1 - R[0][2] * sn1, R[0][2] * c23 * cs1 + R[1][2] * c23 * sn1 - R[2][2] * s23);
       t6 = Math.atan2(
@@ -179,7 +187,7 @@ export function withinLimits(model, j) {
 
 // 한계 내 모든 해 (기준각 ref 근처로 정렬)
 export function ikFlangeValid(model, target, ref) {
-  const raw = ikFlangeAll(model, target);
+  const raw = ikFlangeAll(model, target, ref);
   const res = [];
   for (const s of raw) {
     const a = adjustToLimits(model, s, ref || model.home);

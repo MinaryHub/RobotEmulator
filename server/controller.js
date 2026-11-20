@@ -40,6 +40,8 @@ const SRC_NAME = { internal: '내부', ui: '펜던트', ext: '외부' };
 export const MODES = ['TEACH', 'PLAY', 'REMOTE'];
 export const TIME_SCALE_MIN = 0.1, TIME_SCALE_MAX = 10;
 
+
+const MAX_FILES = 256, MAX_FILE_CHARS = 4 * 1024 * 1024, MAX_FILE_NAME = 128;
 export class Controller extends EventEmitter {
   constructor() {
     super();
@@ -144,6 +146,8 @@ export class Controller extends EventEmitter {
 
   // 사용자 정의(STL) 그리퍼 등록
   setCustomGripper(def) {
+    if (!def || typeof def !== 'object') throw new Error('그리퍼 정의(def)가 필요합니다');
+    if (def.tcp !== undefined && !(Array.isArray(def.tcp) && def.tcp.length === 6 && def.tcp.every(Number.isFinite))) throw new Error('그리퍼 tcp 는 숫자 6개 [x,y,z,rx,ry,rz] 여야 합니다');
     this.gripper = { id: 'custom', kind: def.kind || 'parallel', name: def.name || '사용자 그리퍼', maker: 'User', tcp: def.tcp || [0, 0, 100, 0, 0, 0], mass: def.mass || 1, grip: def.grip ?? 20, stroke: def.stroke || 50, geom: {}, custom: true };
     this.grip = { pos: 0, closed: false, holding: null };
     this.emitState();
@@ -374,7 +378,13 @@ export class Controller extends EventEmitter {
     this.emitState();
     return true;
   }
-  setOverride(v) { this.override = Math.max(1, Math.min(100, Number(v) || 100)); this.emitState(); }
+  // 0 이하는 최저(1%)로 — 0 을 100% 로 해석하면 안 됨. 숫자가 아니면 무시
+  setOverride(v) {
+    const n = Number(v);
+    if (v === null || v === '' || !Number.isFinite(n)) return;
+    this.override = Math.max(1, Math.min(100, n));
+    this.emitState();
+  }
 
   // ------------------------------------------------------------ IO
   setDO(n, v) {
@@ -508,7 +518,12 @@ export class Controller extends EventEmitter {
     const j0 = this.segs.length ? [...this.segs[this.segs.length - 1].end] : [...this.joints];
     let seg;
     const toJoints = (tg) => {
-      if (tg.joints) return tg.joints;
+      if (tg.joints) {
+        const j = Array.isArray(tg.joints) ? tg.joints.map(Number) : [];
+        if (j.length !== 6 || !j.every(Number.isFinite)) throw new MotionError('BAD_TARGET', `관절 목표값이 올바르지 않습니다 (숫자 6개 필요): ${JSON.stringify(tg.joints)?.slice(0, 80)}`);
+        return j;
+      }
+      if (!tg.pose?.p?.every?.(Number.isFinite)) throw new MotionError('BAD_TARGET', '목표 위치가 올바르지 않습니다');
       const fl = tcpToFlange(tg.pose, tool, base);
       const j = ikNearest(this.robot, fl, j0, tg.cfgFilter);
       if (!j) throw new MotionError('UNREACHABLE', `목표 위치에 도달할 수 없습니다 (작업영역/관절한계 밖) [${tg.pose.p.map((v) => v.toFixed(1)).join(', ')}]`);
@@ -517,6 +532,9 @@ export class Controller extends EventEmitter {
     const toPose = (tg) => (tg.pose ? tg.pose : fkTcp(this.robot, tg.joints, tool, base));
     try {
       const sp = cmd.speed || {};
+      for (const k of ['frac', 'tcp', 'rot']) {
+        if (sp[k] !== undefined && !(Number.isFinite(sp[k]) && sp[k] > 0)) throw new MotionError('BAD_SPEED', `속도 값이 올바르지 않습니다 (${k}=${sp[k]})`);
+      }
       if (cmd.kind === 'J') {
         let frac = sp.frac;
         if (frac === undefined) frac = Math.min(1, (sp.tcp ?? 250) / this.robot.tcpMaxSpeed);
@@ -562,7 +580,13 @@ export class Controller extends EventEmitter {
     if (!this.servo) { this.log('system', '조그: 서보 OFF'); return; }
     const r = this.checkCommand('jog', source);
     if (r) { if (this.lastReject?.op !== 'jog' || Date.now() - this.lastReject.t > 2000) this.reject('jog', source, r); return; }
-    if (this.segment || (this.vm && this.vm.status === 'running')) return;
+    if (this.segment || (this.vm && this.vm.status === 'running')) {
+      if (!this._jogBusyLog || Date.now() - this._jogBusyLog > 2000) {
+        this._jogBusyLog = Date.now();
+        this.log('system', this.held ? '조그 불가: 정지로 중단된 이동이 남아 있습니다 (재개하거나 프로그램 리셋)' : '조그 불가: 이동 또는 프로그램 실행 중');
+      }
+      return;
+    }
     this.jog = { ...j, until: performance.now() + 400 };
   }
   stopJog() { this.jog = null; this.emitState(); }
@@ -612,6 +636,7 @@ export class Controller extends EventEmitter {
   teachPose({ p, q, R }, source = 'ui') {
     const g = this._teachGate(source);
     if (g) return g;
+    if (!Array.isArray(p) || p.length !== 3 || (!R && !(Array.isArray(q) && q.length === 4 && q.every(Number.isFinite)))) return { ok: false, reason: '위치 p[3] 와 자세 q[4](쿼터니언)가 필요합니다' };
     const target = { p: p.map(Number), R: R ?? RfromQuat(q) };
     if (!target.p.every(Number.isFinite)) return { ok: false, reason: '잘못된 위치' };
     const j = ikNearest(this.robot, tcpToFlange(target, this.gripperTcp, null), this.joints);
@@ -624,7 +649,7 @@ export class Controller extends EventEmitter {
   teachJoints(joints, source = 'ui') {
     const g = this._teachGate(source);
     if (g) return g;
-    const j = joints.map(Number);
+    const j = Array.isArray(joints) ? joints.map(Number) : [];
     if (j.length !== 6 || !j.every(Number.isFinite)) return { ok: false, reason: '관절값 6개가 필요합니다' };
     return this._teachApply(j);
   }
@@ -643,12 +668,16 @@ export class Controller extends EventEmitter {
 
   // 시뮬레이션 시간 sec 동안 대기 (HOLD 중에는 시계가 멈춤). owner: abort 시 깨울 대상 식별용
   sleep(sec, owner = null) {
-    return new Promise((res) => this._waiters.push({ until: this.simMs + Math.max(0, sec) * 1000, res, owner }));
+    const s = Number(sec);
+    const ms = s === Infinity ? Infinity : Number.isFinite(s) ? Math.max(0, s) * 1000 : 0;   // NaN 은 0 (영원히 멈추지 않게)
+    return new Promise((res) => this._waiters.push({ until: this.simMs + ms, res, owner }));
   }
   // 조건이 참이 될 때까지 대기 → true, 시뮬레이션 시간 timeoutSec 초과 → false
   waitFor(pred, timeoutSec = Infinity, owner = null) {
     if (pred()) return Promise.resolve(true);
-    return new Promise((res) => this._waiters.push({ pred, until: this.simMs + timeoutSec * 1000, res, owner }));
+    const t = Number(timeoutSec);
+    const until = Number.isFinite(t) ? this.simMs + Math.max(0, t) * 1000 : Infinity;   // NaN·생략 = 무한 대기
+    return new Promise((res) => this._waiters.push({ pred, until, res, owner }));
   }
   // 시뮬레이션 시간 sec 후 fn 실행 (펄스 출력 등)
   after(sec, fn) { this._waiters.push({ until: this.simMs + Math.max(0, sec) * 1000, fn }); }
@@ -677,7 +706,20 @@ export class Controller extends EventEmitter {
     }
   }
 
+  // 주기 처리 중 예외가 나도 서버(setInterval)가 죽지 않게 — 알람으로 알리고 계속
+  _tickFault(e) {
+    this._ticking = false;
+    const msg = `내부 오류: ${e?.message ?? e}`;
+    if (this._lastFault !== msg || Date.now() - (this._lastFaultAt ?? 0) > 5000) {
+      this._lastFault = msg; this._lastFaultAt = Date.now();
+      console.error('[tick]', e);
+      try { this.alarm('INTERNAL', msg); } catch {}
+    }
+  }
   tick() {
+    try { this._tick(); } catch (e) { this._tickFault(e); }
+  }
+  _tick() {
     if (this._ticking) return;            // 이전 틱의 서브스텝이 아직 진행 중
     const now = performance.now();
     const dt = Math.min(0.1, (now - this._last) / 1000);
@@ -697,9 +739,11 @@ export class Controller extends EventEmitter {
     this._ticking = true;
     let i = 0;
     const run = () => {
-      if (this._step(simDt / n)) moved = true;
-      if (++i < n) setImmediate(run);
-      else { this._ticking = false; finish(); }
+      try {
+        if (this._step(simDt / n)) moved = true;
+        if (++i < n) setImmediate(run);
+        else { this._ticking = false; finish(); }
+      } catch (e) { this._tickFault(e); }
     };
     run();
   }
@@ -810,9 +854,18 @@ export class Controller extends EventEmitter {
     return !this.files.size || (this._exampleSig && this._exampleSig === JSON.stringify([...this.files]));
   }
 
+  // 프로그램 파일 저장 (UI · 통신 모듈 · 프로젝트 공용). 이름·크기·개수 검사 — 외부 클라이언트가 메모리를 무한히 쓰지 못하게
   loadFiles(files, replace = false) {
+    if (!files || typeof files !== 'object') throw new Error('파일 목록이 올바르지 않습니다');
+    const entries = Object.entries(files);
+    for (const [name, text] of entries) {
+      if (!name || name === 'undefined' || name.length > MAX_FILE_NAME || /[\x00-\x1f\\/]/.test(name)) throw new Error(`파일 이름이 올바르지 않습니다: ${JSON.stringify(String(name).slice(0, 40))}`);
+      if (String(text ?? '').length > MAX_FILE_CHARS) throw new Error(`파일이 너무 큽니다: ${name} (최대 ${MAX_FILE_CHARS / 1024 / 1024} MB)`);
+    }
+    const base = replace ? 0 : this.files.size;
+    if (base + entries.filter(([n]) => replace || !this.files.has(n)).length > MAX_FILES) throw new Error(`파일이 너무 많습니다 (최대 ${MAX_FILES}개)`);
     if (replace) this.files = new Map();
-    for (const [name, text] of Object.entries(files)) this.files.set(name, String(text).replace(/\r\n/g, '\n'));
+    for (const [name, text] of entries) this.files.set(name, String(text ?? '').replace(/\r\n/g, '\n'));
     if (!this.main || !this.files.has(this.main)) this.main = this.lang.pickMain([...this.files.keys()], this.files);
     this.compile(true);
     this.emitState();
@@ -835,6 +888,13 @@ export class Controller extends EventEmitter {
       this.program.init?.(this.vm);
       this.vm.reset();
       if (!quiet) this.log('system', `컴파일 완료: ${this.main}`);
+      // 에뮬레이터가 실행하지 않는 문장 경고 (내용이 바뀌었을 때만 한 번)
+      const w = this.program.warnings || [];
+      const sig = w.map((x) => `${x.file}:${x.line}:${x.msg}`).join('|');
+      if (sig !== this._warnSig) {
+        this._warnSig = sig;
+        if (w.length) this.log('system', `⚠ 에뮬레이터가 실행하지 않는 문장 ${w.length}개 (무시됨): ${w.slice(0, 6).map((x) => `${x.msg} (${x.file}:${x.line})`).join(', ')}${w.length > 6 ? ' …' : ''}`);
+      }
     } catch (e) {
       this.compileError = { msg: e.message, file: e.file ?? null, line: e.line ?? null };
       this.log('alarm', `컴파일 오류 ${e.file ?? ''}${e.line ? ':' + e.line : ''} ${e.message}`);
@@ -850,6 +910,10 @@ export class Controller extends EventEmitter {
     if (this.vm && this.vm.status === 'running' && this.held) { this.resume(); return true; }
     if (this.vm && this.vm.status === 'paused') { this.vm.stepResume(step); return true; }
     if (this.vm?.status === 'running') return true;
+    // 직전 실행이 아직 마지막 모션(블렌딩 꼬리)을 기다리는 중이면 분리 — 새 실행의 모션을 자기 것으로 세지 않게
+    if (['done', 'error', 'aborted'].includes(this.vm?.status)) this.vm.detach?.();
+    // 정지(E-stop·펜스·서보 OFF)로 동결된 이전 이동은 버림 — 새 프로그램 시작 시 옛 수동 이동이 이어서 실행되지 않게
+    if (this.held && this.segment) { this.cancelMotion(); this.log('system', '정지로 중단된 이전 이동을 취소했습니다'); }
     if (!this.vm || ['done', 'error', 'aborted'].includes(this.vm.status)) this.compile(true);
     if (!this.vm) return false;
     if (this.vm.status !== 'idle') this.vm.reset();

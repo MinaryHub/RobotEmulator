@@ -26,6 +26,7 @@
 //   POST /api/move {type:'joint'|'linear', joints?:[deg], pose?:[x,y,z,rx,ry,rz], speed?, wait?}
 //        speed: joint → % (1~100), linear → mm/s
 import http from 'node:http';
+import { hostAllowed } from '../netguard.js';
 import { VENDORS } from '../../shared/robots.js';
 import { makeLogger, bindServer, baseTcp, toVendorPose, fromVendorPose, startMove, busy, progRunning, findFile, readBody, safeReadVar, safeWriteVar, stripExt } from './common.js';
 
@@ -229,7 +230,9 @@ export async function start(ctrl, opts = {}) {
     if (req.method === 'OPTIONS') { res.writeHead(204, cors); return res.end(); }
     let url;
     try { url = new URL(req.url, 'http://localhost'); } catch { return send(400, { error: 'bad url' }); }
-    const path = decodeURIComponent(url.pathname).replace(/\/+$/, '') || '/';
+    if (!hostAllowed(req)) return send(403, { error: `허용되지 않은 Host: ${req.headers.host}` });   // DNS 리바인딩 방어
+    let path;
+    try { path = decodeURIComponent(url.pathname).replace(/\/+$/, '') || '/'; } catch { return send(400, { error: 'bad url' }); }
     try {
       const raw = ['POST', 'PUT', 'PATCH'].includes(req.method) ? await readBody(req) : Buffer.alloc(0);
       let body = null;

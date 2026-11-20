@@ -22,13 +22,13 @@
     <button id="btnChat" class="projbtn" title="Claude 채팅: 로봇 프로그램 생성·수정·검증">✦ Claude</button>
     <button id="btnEstop" class="estop" title="비상정지 (정지 범주 0: 즉시 정지 + 서보 OFF). 누르면 잠김 — 다시 눌러 해제 후 알람 리셋">비상정지</button>
     <div class="hstat">
-      <span id="stConn" class="pill off">연결 끊김</span>
+      <span id="stConn" role="status" aria-live="polite" class="pill off">연결 끊김</span>
       <span id="stEstop" class="pill alarm hidden" title="외부 비상정지 입력 (시스템 I/O)">E-STOP</span>
-      <span id="stServo" class="pill off">SERVO OFF</span>
+      <span id="stServo" role="status" aria-live="polite" class="pill off">SERVO OFF</span>
       <span id="stMode" class="pill">TEACH</span>
-      <span id="stProg" class="pill">IDLE</span>
+      <span id="stProg" role="status" aria-live="polite" class="pill">IDLE</span>
       <span id="stColl" class="pill alarm hidden">간섭</span>
-      <span id="stAlarm" class="pill alarm hidden">ALARM</span>
+      <span id="stAlarm" role="status" aria-live="polite" class="pill alarm hidden">ALARM</span>
     </div>
   </header>
 

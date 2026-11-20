@@ -6,6 +6,8 @@
 import { spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import os from 'node:os';
+import fs from 'node:fs';
+import path from 'node:path';
 import { SYSTEM, summarizeInput, summarizeResult } from './chat.js';
 
 const MCP_NAME = 'robot';
@@ -20,6 +22,27 @@ export function claudeCliAvailable(cmd = 'claude') {
     cliChecked = r.status === 0;
   } catch { cliChecked = false; }
   return cliChecked;
+}
+
+// 시스템 프롬프트·MCP 설정은 임시 파일로, 사용자 입력은 stdin 으로 넘긴다.
+//  Windows 에서는 claude(.cmd) 실행에 셸이 필요한데, cmd.exe 는 인수를 안전하게 이스케이프할 방법이 없어
+//  채팅 문장(공백·따옴표·& 등)을 명령줄에 넣으면 깨지거나 명령 주입이 될 수 있다.
+let tmpDir = null;
+function argFile(name, content) {
+  if (!tmpDir) {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'robot-emu-claude-'));
+    process.once('exit', () => { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {} });
+  }
+  const f = path.join(tmpDir, name);
+  try { if (fs.readFileSync(f, 'utf8') === content) return f; } catch {}
+  fs.writeFileSync(f, content);
+  return f;
+}
+// cmd.exe 용 인수: 전부 큰따옴표로 감쌈 (인수에 큰따옴표·% 가 없음을 보장 — 사용자 입력은 stdin 으로만)
+function winQuote(a) {
+  const s = String(a);
+  if (/["%\r\n]/.test(s)) throw new Error(`명령줄 인수에 쓸 수 없는 문자: ${s.slice(0, 40)}`);
+  return `"${s}"`;
 }
 
 // 중첩 실행 표시·API 키 환경변수 제거 → 구독 로그인 사용
@@ -48,15 +71,16 @@ export class ClaudeCodeSession {
   reset() { this.stop(); this.sessionId = crypto.randomUUID(); this.started = false; }
   stop() { if (this.child) { this.stopped = true; this.child.kill('SIGTERM'); } }
 
-  args(text) {
+  // 사용자 입력(text)은 명령줄에 넣지 않음 — run() 이 stdin 으로 전달
+  args() {
     const mcp = { mcpServers: { [MCP_NAME]: { type: 'http', url: this.mcpUrl } } };
     const a = [
-      '-p', text,
+      '-p',
       '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
-      '--mcp-config', JSON.stringify(mcp), '--strict-mcp-config',
+      '--mcp-config', argFile('mcp.json', JSON.stringify(mcp)), '--strict-mcp-config',
       '--tools', '',                       // 내장 도구(파일·셸) 없음 — 에뮬레이터 도구만
       '--allowedTools', `mcp__${MCP_NAME}`,
-      '--system-prompt', SYSTEM,
+      '--system-prompt-file', argFile('system.txt', SYSTEM),
       ...(this.started ? ['--resume', this.sessionId] : ['--session-id', this.sessionId]),
     ];
     if (this.config.cliModel) a.push('--model', this.config.cliModel);
@@ -83,8 +107,11 @@ export class ClaudeCodeSession {
     return new Promise((resolve) => {
       let child;
       try {
-        child = this.spawn(this.cmd, this.args(text), { cwd: os.tmpdir(), env: childEnv(), stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32' });
+        const win = process.platform === 'win32';
+        const args = win ? this.args().map(winQuote) : this.args();
+        child = this.spawn(this.cmd, args, { cwd: os.tmpdir(), env: childEnv(), stdio: ['pipe', 'pipe', 'pipe'], shell: win });
       } catch (e) { resolve({ error: cliError(e) }); return; }
+      if (child.stdin) { child.stdin.on('error', () => {}); child.stdin.end(text); }
       this.child = child;
       const tools = new Map();   // tool_use_id → { name, input }
       let buf = '', stderr = '', result = null, sawText = false;

@@ -38,12 +38,12 @@ export function tokenize(src, opts = {}) {
     }
     if (/[0-9]/.test(ch) || (ch === '.' && /[0-9]/.test(src[i + 1] || ''))) {
       const m = /^(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?/.exec(src.slice(i));
-      toks.push({ k: 'num', v: parseFloat(m[0]), col }); i += m[0].length; continue;
+      toks.push({ k: 'num', v: parseFloat(m[0]), real: /[.eE]/.test(m[0]), col }); i += m[0].length; continue;   // real: 실수 표기(KRL INT/INT 판별용)
     }
     if (ch === '"') {
       let j = i + 1, s = '';
       for (;;) {
-        if (j >= src.length) break;
+        if (j >= src.length) throw new SyntaxErr('문자열이 닫히지 않았습니다 (\" 누락)', col);
         if (src[j] === '"') {
           if (src[j + 1] === '"') { s += '"'; j += 2; continue; }
           break;
@@ -133,7 +133,7 @@ export class Parser {
 
   primary() {
     const t = this.next();
-    if (t.k === 'num') return { t: 'num', v: t.v };
+    if (t.k === 'num') return t.real ? { t: 'num', v: t.v, real: true } : { t: 'num', v: t.v };
     if (t.k === 'str') return { t: 'str', v: t.v };
     if (t.k === 'id') return { t: 'id', name: t.v };
     if (t.k === 'op' && t.v === '(') {
@@ -242,7 +242,7 @@ export function evaluate(n, env) {
       if (n.op === 'AND') { const a = evaluate(n.a, env); if (!truthy(a)) return env.numericBool ? 0 : false; return env.numericBool ? (truthy(evaluate(n.b, env)) ? -1 : 0) : truthy(evaluate(n.b, env)); }
       if (n.op === 'OR') { const a = evaluate(n.a, env); if (truthy(a)) return env.numericBool ? -1 : true; return env.numericBool ? (truthy(evaluate(n.b, env)) ? -1 : 0) : truthy(evaluate(n.b, env)); }
       const a = evaluate(n.a, env), b = evaluate(n.b, env);
-      if (env.binop) { const r = env.binop(n.op, a, b); if (r !== undefined) return r; }
+      if (env.binop) { const r = env.binop(n.op, a, b, n); if (r !== undefined) return r; }
       return binop(n.op, a, b, env.numericBool);
     }
     case 'call': {
