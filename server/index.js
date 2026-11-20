@@ -14,10 +14,12 @@ import { CAMERAS } from '../shared/cameras.js';
 import { ProjectStore } from './project.js';
 import { listVars, Timeline } from './inspect.js';
 import { handleMcp } from './ai/mcp.js';
+import { configureNetGuard, requestRejected } from './netguard.js';
 import { AssetStore, MAX_UPLOAD } from './assets.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const config = loadConfig();
+configureNetGuard(config);
 const ctrl = new Controller();
 ctrl.netHost = config.host;   // DRL 소켓(server_socket_open) 바인딩 주소 — 통신 모듈과 같은 규칙 (null = 모든 인터페이스)
 // 사용자 3D 모델 자산 (셀 레이아웃 models[] 가 참조). 프로젝트 복원 전에 연결해야 간섭 메시를 읽을 수 있음
@@ -32,12 +34,14 @@ if (config.restoreSession !== false && !config.robot) projects.restoreAutosave()
 projects.startAutosave();
 
 // 설정 우선순위: 기본값 < config.json < 환경변수(PORT, HOST)
-//  host: 바인딩 주소. 생략 시 모든 인터페이스(외부 PLC·PC 접속용). '127.0.0.1' 로 두면 이 PC 에서만 접속 가능.
+//  host: 바인딩 주소. 기본 '127.0.0.1'(이 PC 에서만 접속). 다른 PC·PLC 에서 접속하려면 '0.0.0.0'(모든 인터페이스).
 //        protocols.<키>.host 를 따로 주지 않은 통신 모듈에도 같은 값이 적용된다.
+//  allowedHosts: 웹 UI 를 IP 가 아닌 호스트 이름(예: 'robot-pc.local')으로 열 때 그 이름 목록 (DNS 리바인딩 방어)
 function loadConfig() {
   const def = {
     httpPort: 3000,
-    host: null,
+    host: '127.0.0.1',
+    allowedHosts: [],
     robot: null, gripper: null,
     // Claude 채팅. backend: 'auto'(API 키 환경변수가 있으면 api, 없으면 claude-code) | 'api'(ANTHROPIC_API_KEY 또는 ant auth login)
     //   | 'claude-code'(설치된 Claude Code CLI 의 구독 로그인 사용, API 키 불필요). 환경변수 AI_BACKEND 로도 지정
@@ -90,7 +94,8 @@ const STATIC = [
 ];
 
 function serveStatic(req, res) {
-  let url = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+  let url;
+  try { url = decodeURIComponent(new URL(req.url, 'http://x').pathname); } catch { res.writeHead(400); return res.end('Bad request'); }
   if (url === '/') url = '/index.html';
   for (const [prefix, dir] of STATIC) {
     if (!url.startsWith(prefix)) continue;
@@ -98,7 +103,7 @@ function serveStatic(req, res) {
     if (!file.startsWith(dir)) break;
     if (fs.existsSync(file) && fs.statSync(file).isFile()) {
       res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
-      fs.createReadStream(file).pipe(res);
+      fs.createReadStream(file).on('error', () => res.destroy()).pipe(res);
       return;
     }
   }
@@ -121,7 +126,7 @@ async function handleCmd(m) {
     case 'jog': ctrl.startJog(m.jog, 'ui'); return;
     case 'jogStop': ctrl.stopJog(); return;
     case 'setJoints': return ctrl.teachJoints(m.joints, 'ui');   // 펜던트 관절 직접 지정 = 조그와 같은 조건
-    case 'teachPose': return ctrl.teachPose({ p: m.p, q: m.q }, 'ui');   // 직접교시: TCP 핸들 드래그
+    case 'teachPose': return ctrl.teachPose({ p: m.p, q: m.q }, 'ui');   // p[3] mm, q[4] 쿼터니언 — 형식 검사는 teachPose 에서   // 직접교시: TCP 핸들 드래그
     case 'teachJoints': return ctrl.teachJoints(m.joints, 'ui');      // 직접교시: 관절 드래그 · 되돌리기
     case 'moveJoints':
       ctrl.move({ kind: 'J', target: { joints: m.joints }, speed: { frac: m.speed ?? 0.3 }, source: 'ui' }).catch((e) => !e.aborted && !String(e.code).startsWith('REJECT') && ctrl.alarm(e.code || 'MOTION', e.message));
@@ -131,8 +136,20 @@ async function handleCmd(m) {
       return;
     case 'setDO': ctrl.setDO(m.n, m.v); return;
     case 'setDI': ctrl.setDI(m.n, m.v); return;
-    case 'gripperIO': Object.assign(ctrl.gripperIO, m.map); ctrl.emitState(); return;
-    case 'saveFile': ctrl.loadFiles({ [m.name]: m.text }); return { files: filesMsg() };
+    case 'gripperIO': {   // { map: { close, open, fbClosed, fbOpen, fbPart } } — 번호는 정수 1~512
+      const next = { ...ctrl.gripperIO };
+      for (const [k, v] of Object.entries(m.map || {})) {
+        if (!(k in next)) throw new Error(`알 수 없는 그리퍼 신호: ${k}`);
+        const n = Number(v);
+        if (!Number.isInteger(n) || n < 1 || n > 512) throw new Error(`그리퍼 신호 ${k} 번호가 올바르지 않습니다: ${v} (1~512)`);
+        next[k] = n;
+      }
+      Object.assign(ctrl.gripperIO, next); ctrl.emitState(); return;
+    }
+    case 'saveFile':
+      if (typeof m.name !== 'string' || !m.name.trim()) throw new Error('파일 이름(name)이 필요합니다');
+      if (typeof m.text !== 'string') throw new Error('파일 내용(text)이 필요합니다');
+      ctrl.loadFiles({ [m.name]: m.text }); return { files: filesMsg() };
     case 'deleteFile': ctrl.deleteFile(m.name); return { files: filesMsg() };
     case 'setMain': ctrl.setMain(m.name); return;
     case 'start': return { ok: await ctrl.start({ step: false, source: 'ui' }), reject: ctrl.lastReject };
@@ -172,7 +189,7 @@ async function handleCmd(m) {
     case 'ioLabel': ctrl.setIoLabel(m.type, m.n, { name: m.name, desc: m.desc }); return;
     case 'ioLabels': if (m.labels) ctrl.setIoLabels(m.labels); return { labels: ctrl.ioLabels };
     case 'state': return { state: ctrl.snapshot() };
-    default: throw new Error(`알 수 없는 명령: ${m.cmd}`);
+    default: throw new Error(m.cmd === undefined ? '명령(cmd)이 없습니다' : `알 수 없는 명령: ${m.cmd}`);
   }
 }
 
@@ -185,7 +202,7 @@ function readBody(req, max) {
     let n = 0;
     req.on('data', (c) => {
       n += c.length;
-      if (n > max) { reject(new Error(`업로드 크기 상한(${Math.round(max / 1048576)} MB) 초과`)); req.destroy(); return; }
+      if (n > max) { reject(Object.assign(new Error(`업로드 크기 상한(${Math.round(max / 1048576)} MB) 초과`), { status: 413 })); req.destroy(); return; }
       chunks.push(c);
     });
     req.on('end', () => resolve(Buffer.concat(chunks)));
@@ -194,11 +211,26 @@ function readBody(req, max) {
 }
 
 // ---------------------------------------------------------------- HTTP 서버
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://x');
+const server = http.createServer((req, res) => {
+  handleHttp(req, res).catch((e) => {
+    console.error('HTTP 처리 오류:', e);
+    if (!res.headersSent) { res.writeHead(500); res.end(); } else res.destroy();
+  });
+});
+
+async function handleHttp(req, res) {
+  let url;
+  try { url = new URL(req.url, 'http://x'); } catch { res.writeHead(400); return res.end('Bad request'); }
+  // /api · /mcp 는 로봇을 움직일 수 있으므로 다른 사이트(브라우저)발 요청 차단
+  if (url.pathname.startsWith('/api/') || url.pathname === '/mcp') {
+    const why = requestRejected(req);
+    if (why) {
+      ctrl.log('comm', `요청 거부 (${url.pathname}): ${why}`);
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: why }));
+    }
+  }
   if (url.pathname.startsWith('/api/')) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
     try {
       let out;
@@ -224,13 +256,19 @@ const server = http.createServer(async (req, res) => {
         out = { files: filesMsg(), current: projects.current, models: Object.keys(p.assets || {}).length };
       }
       else if (url.pathname === '/api/cmd' && req.method === 'POST') {
-        const body = await new Promise((r) => { let s = ''; req.on('data', (c) => (s += c)); req.on('end', () => r(s)); });
-        out = (await handleCmd(JSON.parse(body || '{}'))) ?? { ok: true };
+        if (!/^application\/json\b/i.test(req.headers['content-type'] || '')) {
+          res.writeHead(415, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'Content-Type: application/json 이 필요합니다' }));
+        }
+        const body = (await readBody(req, 16e6)).toString('utf8');
+        let m;
+        try { m = JSON.parse(body || '{}'); } catch { throw new Error('JSON 형식 오류'); }
+        out = (await handleCmd(m)) ?? { ok: true };
       } else { res.writeHead(404); return res.end('{"error":"not found"}'); }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(out));
     } catch (e) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.writeHead(e.status || 400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
     }
     return;
@@ -240,10 +278,17 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   serveStatic(req, res);
-});
+}
 
 // ---------------------------------------------------------------- WebSocket
-const wss = new WebSocketServer({ server, path: '/ws' });
+const wss = new WebSocketServer({
+  server, path: '/ws', maxPayload: 16 * 1024 * 1024,
+  verifyClient: ({ req }) => {
+    const why = requestRejected(req);
+    if (why) ctrl.log('comm', `WebSocket 접속 거부: ${why}`);
+    return !why;
+  },
+});
 const send = (ws, msg) => ws.readyState === 1 && ws.send(JSON.stringify(msg));
 const broadcast = (msg) => { const s = JSON.stringify(msg); for (const c of wss.clients) if (c.readyState === 1) c.send(s); };
 
@@ -297,7 +342,7 @@ wss.on('connection', (ws) => {
     }
     try {
       const r = await handleCmd(m);
-      if (r?.files) broadcast({ type: 'files', ...r.files });
+      if (r?.files) { broadcast({ type: 'files', ...r.files }); lastFilesSig = filesSig(); }   // 아래 폴러가 같은 내용을 다시 보내지 않게
       if (m.id !== undefined) send(ws, { type: 'reply', id: m.id, ok: true, ...r });
     } catch (e) {
       ctrl.log('system', `명령 오류(${m.cmd}): ${e.message}`);
@@ -307,21 +352,46 @@ wss.on('connection', (ws) => {
 });
 
 // 상태 브로드캐스트 (최대 30Hz)
+//  자주 바뀌지 않는 큰 항목은 직전 전송과 같으면 뺀다 (클라이언트는 빠진 항목을 이전 값으로 채움 — app.js STICKY).
+//  새로 접속한 클라이언트는 init 메시지로 전체 상태를 받는다.
+const STICKY = ['sysio', 'cell', 'scene', 'safety', 'ioLabels', 'gripperIO', 'cameras'];
+const lastSticky = {};
+function stateDelta(st) {
+  for (const k of STICKY) {
+    if (!(k in st)) continue;
+    const j = JSON.stringify(st[k]);
+    if (j === lastSticky[k]) delete st[k]; else lastSticky[k] = j;
+  }
+  return st;
+}
 let pending = false;
 ctrl.on('state', () => {
   if (pending) return;
   pending = true;
-  setTimeout(() => { pending = false; broadcast({ type: 'state', state: ctrl.snapshot() }); }, 33);
+  setTimeout(() => { pending = false; broadcast({ type: 'state', state: stateDelta(ctrl.snapshot()) }); }, 33);
 });
-ctrl.on('log', (e) => broadcast({ type: 'log', entry: e }));
+// 로그는 100ms 단위로 묶어 전송 (반복문 안의 출력이 쏟아져도 클라이언트·네트워크가 버티도록, 묶음당 최대 300개)
+let logQ = [], logDropped = 0;
+ctrl.on('log', (e) => {
+  if (logQ.length >= 300) { logDropped++; return; }
+  logQ.push(e);
+  if (logQ.length === 1) setTimeout(flushLogs, 100);
+});
+function flushLogs() {
+  if (logDropped) { logQ.push({ t: Date.now(), src: 'system', msg: `로그 ${logDropped}개 생략 (너무 많음)` }); logDropped = 0; }
+  const q = logQ; logQ = [];
+  if (q.length === 1) broadcast({ type: 'log', entry: q[0] });
+  else if (q.length) broadcast({ type: 'logs', entries: q });
+}
 // 타임라인 이벤트는 100ms 단위로 묶어 전송
 let tlPending = [];
 timeline.listeners.add((e) => tlPending.push(e));
 setInterval(() => { if (tlPending.length) { broadcast({ type: 'tl', events: tlPending, now: Math.round(ctrl.simMs) }); tlPending = []; } }, 100);
 // 외부 인터페이스가 파일을 바꾸면 UI 에디터 갱신
 let lastFilesSig = '';
+const filesSig = () => ctrl.main + '|' + [...ctrl.files].map(([k, v]) => k + v.length + v.slice(0, 40)).join('|');
 setInterval(() => {
-  const sig = ctrl.main + '|' + [...ctrl.files].map(([k, v]) => k + v.length + v.slice(0, 40)).join('|');
+  const sig = filesSig();
   if (sig !== lastFilesSig) { lastFilesSig = sig; broadcast({ type: 'files', ...filesMsg() }); }
 }, 500);
 
@@ -342,6 +412,12 @@ server.listen(config.httpPort, config.host || undefined, async () => {
   } catch (e) {
     console.error('통신 모듈 시작 실패:', e.message);
   }
+});
+
+// 최후 안전망: 처리되지 않은 Promise 거부로 프로세스가 종료되지 않게 (기본 동작은 종료) — 기록만 남김
+process.on('unhandledRejection', (e) => {
+  console.error('[unhandledRejection]', e);
+  try { ctrl.log('system', `내부 오류(처리되지 않은 거부): ${e?.message ?? e}`); } catch {}
 });
 
 // 종료 처리: Ctrl+C(SIGINT, 모든 OS), SIGTERM(Linux/macOS 서비스·컨테이너), SIGBREAK(Windows Ctrl+Break)

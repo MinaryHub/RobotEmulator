@@ -270,14 +270,20 @@ export class CameraRig {
   render() {
     if (!this.cams.size) return;
     const r = this.view.renderer;
+    // 레이아웃 읽기(getBoundingClientRect)를 모두 먼저 하고 DOM 쓰기(_placeLabels)는 그 뒤에 —
+    // 읽기·쓰기가 섞이면 프레임마다 강제 레이아웃 재계산이 일어난다
     const canvas = r.domElement.getBoundingClientRect();
+    const boxes = [];
+    for (const c of this.cams.values()) {
+      if (!c.cfg.view) continue;
+      c._img ??= c.frame.querySelector('.img');
+      boxes.push([c, c._img.getBoundingClientRect()]);
+    }
     const dpr = r.getPixelRatio();
     const autoClear = r.autoClear;
     this.view.scene.updateMatrixWorld();
     this._placeLabels();
-    for (const c of this.cams.values()) {
-      if (!c.cfg.view) continue;
-      const box = c.frame.querySelector('.img').getBoundingClientRect();
+    for (const [c, box] of boxes) {
       if (box.width < 4 || box.height < 4) continue;
       this._renderTo(c, Math.round(box.width * dpr), Math.round(box.height * dpr));
       this.post.uniforms.cross.value = this.cross ? 1 : 0;

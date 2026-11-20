@@ -14,6 +14,13 @@
 
 export class AbortErr extends Error { constructor() { super('aborted'); this.aborted = true; } }
 
+// 동작·대기 없이 도는 반복문(입력 폴링 등)이 Node 이벤트 루프를 독점하지 않도록 이 시간마다 양보한다.
+// 양보하는 동안 시뮬레이션 주기·통신·UI(STOP/HOLD 포함)가 처리된다.
+const YIELD_MS = 4;
+// 호출 깊이 상한 — 무한 재귀가 서버 메모리를 다 쓰기 전에 알람으로 멈춤
+export const MAX_CALL_DEPTH = 500;
+const yieldNow = () => new Promise((r) => setImmediate(r));
+
 export class VM {
   constructor(ctrl, program) {
     this.ctrl = ctrl;
@@ -56,8 +63,10 @@ export class VM {
     // 시뮬레이션 시계(ctrl.simMs) 기준: HOLD 중 정지, 호스트 부하와 무관하게 로봇 시간 측정
     const st = { start: this.ctrl.simMs, hold0: 0, motion: 0, wait: 0, logic: 0, lines: new Map(), moves: 0 };
     this.ctrl.cycleStats.current = st;
+    let lastYield = performance.now();
     try {
       for (;;) {
+        if (performance.now() - lastYield >= YIELD_MS) { await yieldNow(); lastYield = performance.now(); }
         if (this.aborted) throw new AbortErr();
         if (this.ctrl.held) await this.waitResume();
         const f = this.frame;
@@ -84,7 +93,7 @@ export class VM {
         const t0 = this.ctrl.simMs;
         this._cat = 'logic';
         let r = ins.run(this, f);
-        if (r && typeof r.then === 'function') r = await r;
+        if (r && typeof r.then === 'function') { r = await r; lastYield = performance.now(); }
         const dt = Math.max(0, this.ctrl.simMs - t0);
         st[this._cat] += dt;
         if (this._cat === 'motion') st.moves++;
@@ -99,6 +108,7 @@ export class VM {
         else if (r.call) {
           f.pc++;
           const { proc, args = [], onReturn, locals } = r.call;
+          if (this.frames.length >= MAX_CALL_DEPTH) throw Object.assign(new Error(`호출 깊이 초과 (${MAX_CALL_DEPTH}단계) — 끝나지 않는 재귀 호출인지 확인하세요`), { code: 'STACK' });
           const lm = locals || new Map();
           proc.params?.forEach((p, i) => lm.set(p, args[i]));
           this.frames.push({ proc, pc: 0, locals: lm, onReturn });
@@ -118,6 +128,8 @@ export class VM {
       if (e.aborted) { this.status = 'aborted'; }
       else {
         this.status = 'error';
+        // 함수(FUNC/DEFFCT) 안에서 난 오류는 언어 모듈이 실제 위치(e.file/e.line)를 붙여 줌 → 그 줄을 표시
+        if (typeof e.line === 'number' && this.current) this.current = { ...this.current, file: e.file ?? this.current.file, line: e.line, callLine: this.current.line };
         const where = this.current ? `${this.current.file ?? ''}:${this.current.line ?? '?'} ` : '';
         this.ctrl.alarm(e.code || 'PROGRAM', `${where}${e.message}`);
       }
@@ -125,11 +137,12 @@ export class VM {
     if (this.status === 'done') {
       // 프로그램 종료 후 남은 모션(블렌딩 꼬리)까지 포함
       const t0 = this.ctrl.simMs;
-      if (!this.aborted) await this.ctrl.waitFor(() => this.ctrl.motionIdle || this.aborted, Infinity, this);
+      if (!this.aborted && !this.detached) await this.ctrl.waitFor(() => this.ctrl.motionIdle || this.aborted || this.detached, Infinity, this);
       st.motion += Math.max(0, this.ctrl.simMs - t0);
       this.cycle++;
-      this.ctrl.finishCycle(st);
-    } else this.ctrl.cycleStats.current = null;
+      // 꼬리 대기 중 새 실행이 시작되면(detach) 이 사이클 통계는 버림 (새 실행의 통계를 덮지 않게)
+      if (!this.detached) this.ctrl.finishCycle(st);
+    } else if (this.ctrl.cycleStats.current === st) this.ctrl.cycleStats.current = null;
     try { this.prog.cleanup?.(this); } catch { /* 정리 실패는 무시 */ }
     this.ctrl.emitState();
     this.ctrl.onProgramEnd?.(this);
@@ -147,6 +160,13 @@ export class VM {
     this.stepMode = step;
     const r = this._resume; this._resume = null;
     r?.();
+  }
+
+  // 새 실행으로 교체될 때: 남은 꼬리 대기를 끝냄 (모션은 취소하지 않음)
+  detach() {
+    if (this.detached) return;
+    this.detached = true;
+    this.ctrl.wakeWaiters?.(this);
   }
 
   abort() {

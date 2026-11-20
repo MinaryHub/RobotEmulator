@@ -387,7 +387,10 @@ function runSync(vm, proc, locals, depth = 0) {
   let guard = 0;
   while (frame.pc < proc.code.length) {
     if (++guard > 2e6) throw new RuntimeErr('ERR_LOOP', `${proc.name}: 무한 루프로 판단되어 중단`);
-    const r = proc.code[frame.pc].run(vm, frame);
+    const ins = proc.code[frame.pc];
+    let r;
+    // 함수 안에서 난 오류는 함수를 부른 줄이 아니라 실제로 실패한 줄을 가리키도록 위치를 붙임 (가장 안쪽이 우선)
+    try { r = ins.run(vm, frame); } catch (e) { if (e && typeof e === 'object' && e.line === undefined && !e.aborted) { e.file = ins.file ?? proc.file; e.line = ins.line; } throw e; }
     if (r && typeof r.then === 'function') throw new RuntimeErr('ERR_FUNC', `FUNC ${proc.name} 안에서는 이동/대기 명령을 사용할 수 없습니다`);
     if (!r) frame.pc++;
     else if (r.goto !== undefined) frame.pc = r.goto;
@@ -494,7 +497,18 @@ const FUNCS = {
   STRLEN: (cx, [s]) => String(s).length,
   STRPART: (cx, [s, st, len]) => String(s).substr(num(st) - 1, num(len)),
   STRFIND: (cx, [s, st, set]) => { const str = String(s); for (let i = num(st) - 1; i < str.length; i++) if (String(set).includes(str[i])) return i + 1; return str.length + 1; },
-  STRTOVAL: () => true,
+  // StrToVal(문자열, 변수) — 문자열을 변수의 데이터형으로 변환해 대입. 형식이 맞지 않으면 FALSE (변수는 그대로)
+  STRTOVAL(cx, [str, cur], named, node) {
+    const target = node?.args?.[1];
+    if (!target) throw new RuntimeErr('ERR_ARGNAME', 'StrToVal(문자열, 변수) — 결과를 받을 변수가 필요합니다');
+    const recType = cur && typeof cur === 'object' ? cur.$type : null;
+    let v;
+    try { v = parseValue(String(str), recType || undefined); } catch { return false; }
+    if (cur !== undefined && !recType && typeof cur !== typeof v) return false;
+    if (recType && v?.$type !== recType) return false;
+    assign(cx, target, v);
+    return true;
+  },
   ORIENTZYX(cx, [z, y, x]) {
     const q = quatFromR(RfromZYX(num(z), num(y), num(x)));
     return { $type: 'orient', q1: q[0], q2: q[1], q3: q[2], q4: q[3] };
@@ -559,7 +573,7 @@ const HEADER = [
   /^[A-Za-z_]\w*\s*:$/,
 ];
 
-function splitStatements(text) {
+function splitStatements(text, file) {
   let lines = text.replace(/\r\n?/g, '\n').split('\n');
   // 구형 .prg 헤더 (%%% VERSION:1 LANGUAGE:ENGLISH %%%)
   if (lines[0]?.trim() === '%%%') {
@@ -570,6 +584,11 @@ function splitStatements(text) {
   let cur = '', curLine = 1;
   for (let li = 0; li < lines.length; li++) {
     const s = stripComment(lines[li], ['!']);
+    // 끝나지 않은 문장 뒤에 블록 키워드(ENDPROC 등)가 오면 앞 문장의 ';' 누락 — 블록 오류가 아니라 그 문장 위치로 알림
+    const head = s.trim();
+    if (cur.trim() && head && (HEADER[0].test(head) || HEADER[1].test(head))) {
+      throw new CompileError(`';' 가 빠졌습니다: ${cur.trim().slice(0, 40)}`, file, curLine);
+    }
     let inStr = false;
     for (let i = 0; i < s.length; i++) {
       const ch = s[i];
@@ -635,7 +654,7 @@ const DECL_RE = /^(?:(?:LOCAL|TASK)\s+)?(CONST|PERS|VAR)\s+([A-Za-z_]\w*)\s+([A-
 function compile(files, main, ctrl) {
   const schema = { ...SCHEMA };
   const prog = {
-    lang: 'rapid', entry: 'MAIN', procs: {}, globals: new Map(), meta: new Map(), schema,
+    lang: 'rapid', entry: 'MAIN', procs: {}, globals: new Map(), meta: new Map(), schema, warnings: [],   // warnings: 에뮬레이터가 실행하지 않는 부분 {file, line, msg}
     modules: {}, state: null,
     init(vm) {
       prog.state = vm.rapid = {
@@ -651,7 +670,7 @@ function compile(files, main, ctrl) {
   const cctx = new Ctx(prog, ctrl, null, null);
 
   for (const file of names) {
-    const stmts = splitStatements(files.get(file));
+    const stmts = splitStatements(files.get(file), file);
     let module = null;
     let i = 0;
     while (i < stmts.length) {
@@ -687,11 +706,12 @@ function compile(files, main, ctrl) {
         const body = [];
         let inErr = false;
         while (j < stmts.length && !new RegExp(`^${endKw}\\b`, 'i').test(stmts[j].text)) {
-          if (/^(ERROR|BACKWARD|UNDO)\b/i.test(stmts[j].text)) inErr = true;
+          if (/^(ERROR|BACKWARD|UNDO)\b/i.test(stmts[j].text)) { inErr = true; prog.warnings.push({ file, line: stmts[j].line, msg: `${stmts[j].text.split(/\s/)[0].toUpperCase()} 처리기` }); }
           if (!inErr) body.push(stmts[j]);
           j++;
         }
         if (j >= stmts.length) throw new CompileError(`${endKw} 가 없습니다`, file, line);
+        if (kind === 'TRAP') prog.warnings.push({ file, line, msg: `TRAP ${m[3]}` });
         if (kind !== 'TRAP') {
           const name = kind === 'FUNC' ? m[3] : (m[2] ? null : m[3]);
           if (!name) throw new CompileError('루틴 선언 형식 오류', file, line);
@@ -807,7 +827,7 @@ function compileBody(prog, proc, body, file, ctrl, pending) {
       const cond = p.expr();
       if (p.acceptKw('THEN')) {
         if (!p.eof()) throw new Error('THEN 뒤에 불필요한 토큰');
-        stack.push({ k: 'IF', j: jumpIfNot(line, evr(cond)), ends: [] });
+        stack.push({ k: 'IF', line, j: jumpIfNot(line, evr(cond)), ends: [] });
         return;
       }
       // 한 줄 IF: IF cond 명령;
@@ -846,7 +866,7 @@ function compileBody(prog, proc, body, file, ctrl, pending) {
     if ((m = /^WHILE\b([\s\S]*)\bDO$/i.exec(t))) {
       const cond = parseExpr(m[1]);
       const topPc = code.length;
-      stack.push({ k: 'WHILE', top: topPc, j: jumpIfNot(line, evr(cond)) });
+      stack.push({ k: 'WHILE', line, top: topPc, j: jumpIfNot(line, evr(cond)) });
       return;
     }
     if (/^ENDWHILE$/i.test(t)) {
@@ -881,7 +901,7 @@ function compileBody(prog, proc, body, file, ctrl, pending) {
         const x = f.locals.get(v), e = f.locals.get(kE), s = f.locals.get(kS);
         return (s >= 0 ? x > e + 1e-9 : x < e - 1e-9) ? { goto: chk.target } : undefined;
       });
-      stack.push({ k: 'FOR', chk, chkPc, v, kS });
+      stack.push({ k: 'FOR', line, chk, chkPc, v, kS });
       return;
     }
     if (/^ENDFOR$/i.test(t)) {
@@ -895,7 +915,7 @@ function compileBody(prog, proc, body, file, ctrl, pending) {
       const ast = parseExpr(t.slice(4));
       const key = `__TEST${hid++}`;
       emit(line, (vm, f) => { f.locals.set(key, evr(ast)(vm, f)); });
-      stack.push({ k: 'TEST', key, skip: null, ends: [], any: false });
+      stack.push({ k: 'TEST', line, key, skip: null, ends: [], any: false });
       return;
     }
     if ((m = /^CASE\b([\s\S]*):$/i.exec(t))) {
@@ -977,7 +997,7 @@ function compileBody(prog, proc, body, file, ctrl, pending) {
       if (run) emit(line, run);
       return;
     }
-    if (IGNORED.has(U)) return;
+    if (IGNORED.has(U)) { if (WARN_IGNORED.has(U)) prog.warnings.push({ file, line, msg: name }); return; }
     if (!p.eof()) throw new Error(`인자 형식 오류: '${p.peek().v}'`);
     pending.push({ name, file, line });
     emit(line, (vm, f) => {
@@ -990,7 +1010,7 @@ function compileBody(prog, proc, body, file, ctrl, pending) {
   for (const s of body) {
     at(file, s.line, () => stmt(s.text, s.line));
   }
-  if (stack.length) throw new CompileError(`${stack[stack.length - 1].k} 블록이 닫히지 않았습니다`, file, body.at(-1)?.line ?? proc.line);
+  if (stack.length) throw new CompileError(`${stack[stack.length - 1].k} 블록이 닫히지 않았습니다`, file, stack[stack.length - 1].line ?? body.at(-1)?.line ?? proc.line);   // 여는 줄을 가리킴
   for (const [ins, lbl, line] of gotos) {
     if (proc.labels[lbl] === undefined) throw new CompileError(`라벨 '${lbl}' 이 없습니다`, file, line);
     ins.target = proc.labels[lbl];
@@ -1010,6 +1030,8 @@ const IGNORED = new Set(['ACCSET', 'SINGAREA', 'GRIPLOAD', 'PATHACCLIM', 'WORLDA
   'ITIMER', 'IENABLE', 'IDISABLE', 'ISLEEP', 'IWATCH', 'CONNECT', 'SOFTACT', 'SOFTDEACT', 'STOREPATH', 'RESTOPATH', 'MOTIONSUP', 'LOADID', 'TRIGGIO', 'TRIGGEQUIP',
   'STOPMOVE', 'STARTMOVE', 'CLEARPATH', 'ERRLOG', 'SKIPWARN', 'RESETRETRYCOUNT', 'SETAO', 'SETGO', 'CORRCON', 'CORRDISCON', 'PATHRESOL', 'CONFJ_', 'SPEEDREFRESH',
   'ACTUNIT', 'DEACTUNIT', 'TUNESERVO', 'SETSYSDATA', 'TPSHOW', 'UILISTVIEW', 'STEPBWDPATH', 'WAITSYNCTASK', 'SYNCMOVEON', 'SYNCMOVEOFF', 'CIRCPATHMODE']);
+// 무시하면 프로그램 동작이 달라질 수 있는 명령 → 컴파일 시 경고 (나머지는 설정성 명령이라 조용히 무시)
+const WARN_IGNORED = new Set(['CONNECT', 'ISIGNALDI', 'ISIGNALDO', 'ITIMER', 'IWATCH', 'TRIGGIO', 'TRIGGEQUIP', 'SETAO', 'SETGO', 'STOREPATH', 'RESTOPATH', 'STOPMOVE', 'STARTMOVE', 'CLEARPATH']);
 const IGNORE_REST = new Set(['CONNECT', 'ISIGNALDI', 'ISIGNALDO', 'ITIMER']);
 
 const evalArg = (c, ast) => (ast === true || ast === undefined ? ast : c.ev(ast));

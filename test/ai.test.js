@@ -1,5 +1,6 @@
 // AI 연동: 도구(tools.js), MCP HTTP 서버(mcp.js), Claude 채팅 루프(chat.js — 가짜 클라이언트로 검증, 네트워크 없음)
 import http from 'node:http';
+import fs from 'node:fs';
 import { Controller } from '../server/controller.js';
 import { TOOLS, callTool } from '../server/ai/tools.js';
 import { handleMcp } from '../server/ai/mcp.js';
@@ -154,6 +155,10 @@ body = await (await rpc({ jsonrpc: '2.0', id: 5, method: 'nope' })).json();
 ok(body.error?.code === -32601, 'MCP 모르는 메서드 → -32601');
 res = await rpc({ jsonrpc: '2.0', id: 6, method: 'ping' }, { Origin: 'http://evil.example' });
 ok(res.status === 403, 'MCP 외부 Origin 거부');
+res = await rpc({ jsonrpc: '2.0', id: 7, method: 'ping' }, { Origin: 'http://evil.example:3000', Host: 'evil.example:3000' });
+ok(res.status === 403, 'MCP DNS 리바인딩(Origin=Host=외부 도메인) 거부');
+res = await rpc({ jsonrpc: '2.0', id: 8, method: 'ping' }, { Origin: `http://127.0.0.1:${srv.address().port}` });
+ok(res.status === 200, 'MCP 같은 출처 Origin 허용');
 res = await post('{bad');
 ok(res.status === 400 && (await res.json()).error.code === -32700, 'MCP 잘못된 JSON → -32700');
 srv.close();

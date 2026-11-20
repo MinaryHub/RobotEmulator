@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { box, cylZ } from './gripperMesh.js';
+import { clearGroup } from './dispose.js';
 
 const DEG = Math.PI / 180;
 
@@ -86,8 +87,7 @@ export class CellMeshes {
   }
 
   clear() {
-    this.group.traverse((m) => { if (m.isMesh || m.isLineSegments) { m.geometry?.dispose(); } });
-    this.group.clear();
+    clearGroup(this.group);   // 재질·컨베이어 벨트 텍스처까지 해제
     this.dyn = {};
   }
 

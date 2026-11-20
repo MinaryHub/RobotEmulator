@@ -6,6 +6,7 @@
 //   Claude Code 등록 예:  claude mcp add --transport http robot-emulator http://localhost:3000/mcp
 //   stdio 만 지원하는 클라이언트: node tools/mcp-stdio.js [http://localhost:3000/mcp]
 import { TOOLS, callTool } from './tools.js';
+import { requestRejected } from '../netguard.js';
 
 const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 const SERVER_INFO = { name: 'robot-emulator', title: '산업용 로봇 에뮬레이터', version: '1.0.0' };
@@ -42,19 +43,10 @@ async function dispatch(ctrl, msg) {
   }
 }
 
-// 브라우저발 DNS 리바인딩 방지: Origin 이 있으면 요청 Host 와 같거나 localhost 여야 함
-function originAllowed(req) {
-  const o = req.headers.origin;
-  if (!o) return true;
-  try {
-    const u = new URL(o);
-    return u.host === req.headers.host || ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname);
-  } catch { return false; }
-}
-
 // http 요청 처리 (index.js 에서 /mcp 경로를 넘김)
 export async function handleMcp(ctrl, req, res) {
-  if (!originAllowed(req)) { res.writeHead(403, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify(rpcError(null, -32000, 'Origin not allowed'))); }
+  // 브라우저발 CSRF · DNS 리바인딩 방지 (Host 허용 목록 + 같은 출처 Origin)
+  if (requestRejected(req)) { res.writeHead(403, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify(rpcError(null, -32000, 'Origin not allowed'))); }
   if (req.method === 'GET') { res.writeHead(405, { Allow: 'POST' }); return res.end(); } // 서버 → 클라이언트 SSE 스트림은 제공하지 않음
   if (req.method === 'DELETE') { res.writeHead(204); return res.end(); }              // 세션 없음
   if (req.method !== 'POST') { res.writeHead(405, { Allow: 'POST' }); return res.end(); }

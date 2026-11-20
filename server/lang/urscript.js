@@ -863,10 +863,33 @@ function compileBody(prog, proc, body, sc) {
   const ctxOf = (vm, f) => ({ vm, f, scope: sc });
   const parse = (src, line) => { try { return parseExpr(src); } catch (e) { throw new CompileError(`구문 오류: ${e.message}`, file, line); } };
 
+  // 분리 대상 호출(사용자 함수·대기 함수)이 들어 있는지
+  const hasHoisted = (n) => {
+    if (!n || typeof n !== 'object') return false;
+    if (Array.isArray(n)) return n.some(hasHoisted);
+    if (n.t === 'call' && n.fn?.t === 'name' && (prog.defs.get(n.fn.name) || ASYNC[n.fn.name])) return true;
+    for (const [k, v] of Object.entries(n)) {
+      if (k === 'kw') { if (Object.values(v).some(hasHoisted)) return true; }
+      else if (v && typeof v === 'object' && hasHoisted(v)) return true;
+    }
+    return false;
+  };
+  // and / or 의 오른쪽에 분리 대상 호출이 있으면 조건 점프로 단락 평가를 지킨다 (`ready and pick()` → ready 가 거짓이면 pick 미호출)
+  const lowerShortCircuit = (n, line) => {
+    const k = `$t${tmpN++}`;
+    const a = val(lower(n.a, line));
+    emit(line, (vm, f) => { f.locals.set(k, truthy(a(vm, f))); });
+    const skip = jump(line, (vm, f) => (n.t === 'and' ? !f.locals.get(k) : f.locals.get(k)));
+    const b = val(lower(n.b, line));
+    emit(line, (vm, f) => { f.locals.set(k, truthy(b(vm, f))); });
+    skip.to = code.length;
+    return { t: 'tmp', k };
+  };
   // 식 안의 사용자 함수·대기 함수 호출을 앞선 명령으로 분리
   const lower = (n, line) => {
     if (!n || typeof n !== 'object') return n;
     if (Array.isArray(n)) return n.map((x) => lower(x, line));
+    if ((n.t === 'and' || n.t === 'or') && hasHoisted(n.b)) return lowerShortCircuit(n, line);
     const out = {};
     for (const [k, v] of Object.entries(n)) {
       if (k === 'kw') out.kw = Object.fromEntries(Object.entries(v).map(([a, b]) => [a, lower(b, line)]));

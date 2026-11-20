@@ -14,6 +14,8 @@ const TAG = 'KAWASAKI-AS';
 const CRLF = '\r\n';
 const IAC = 255, DONT = 254, DO = 253, WONT = 252, WILL = 251, SB = 250, SE = 240;
 const OPT_ECHO = 1, OPT_SGA = 3;
+const MAX_LINE = 4096;               // 명령 한 줄 최대 바이트
+const MAX_UPLOAD = 8 * 1024 * 1024;  // LOAD 파일 최대 바이트
 const ERR_INVALID = '(P1002)Invalid command.';
 
 // AS 프로그램 목록 (.PROGRAM 이름) — as.js 의 listPrograms 가 없을 때 사용
@@ -333,7 +335,7 @@ export async function start(ctrl, opts = {}) {
   // ------------------------------------------------------------ 세션
   function onConnection(sock) {
     const peer = `${sock.remoteAddress}:${sock.remotePort}`;
-    const sess = { state: 'login', line: [], echo: false, upload: null, lastCR: false, queue: Promise.resolve() };
+    const sess = { state: 'login', line: [], echo: false, upload: null, lastCR: false, tn: 0, queue: Promise.resolve() };
     clients.add(sock);
     sock.setNoDelay(true);
     log(`접속: ${peer}`, true);
@@ -377,23 +379,42 @@ export async function start(ctrl, opts = {}) {
     };
 
     sock.on('data', (chunk) => {
-      // 텔넷 IAC 처리
+      // 텔넷 IAC 처리 — 협상 바이트가 TCP 청크 경계에서 끊겨도 이어서 해석하도록 상태(sess.tn)를 세션에 보관
+      //   tn: 0 일반 · 1 IAC 직후 · 2 WILL/WONT/DO/DONT 옵션 바이트 대기 · 3 SB 안 · 4 SB 안에서 IAC 직후
       const bytes = [];
       for (let i = 0; i < chunk.length; i++) {
         const b = chunk[i];
-        if (b === IAC && !sess.upload) {
-          const c = chunk[i + 1];
-          if (c === IAC) { bytes.push(IAC); i++; continue; }
-          if (c >= WILL && c <= DONT) { i += 2; enableEcho(); continue; }
-          if (c === SB) { while (i < chunk.length && !(chunk[i] === IAC && chunk[i + 1] === SE)) i++; i++; enableEcho(); continue; }
-          i++; continue;
+        if (sess.upload) { bytes.push(b); continue; }
+        switch (sess.tn) {
+          case 1:
+            if (b === IAC) { bytes.push(IAC); sess.tn = 0; }
+            else if (b >= WILL && b <= DONT) sess.tn = 2;
+            else if (b === SB) sess.tn = 3;
+            else sess.tn = 0;
+            continue;
+          case 2: sess.tn = 0; enableEcho(); continue;
+          case 3: if (b === IAC) sess.tn = 4; continue;
+          case 4: sess.tn = b === SE ? 0 : 3; if (b === SE) enableEcho(); continue;
         }
+        if (b === IAC) { sess.tn = 1; continue; }
         bytes.push(b);
       }
+      let upBytes = null;   // 업로드 내용은 청크 단위로 모아 Buffer 하나로 (바이트마다 객체를 만들지 않음)
+      const flushUpload = () => {
+        if (!upBytes || !sess.upload) { upBytes = null; return; }
+        const up = sess.upload;
+        up.size += upBytes.length;
+        if (up.size > MAX_UPLOAD) {
+          sess.upload = null;
+          log(`LOAD 중단: ${up.name} — ${MAX_UPLOAD} bytes 초과`, true);
+          write(`${CRLF}(P1100)File too large${CRLF}>`);
+        } else up.buf.push(Buffer.from(upBytes));
+        upBytes = null;
+      };
       for (const b of bytes) {
         if (sess.upload) {
-          if (b === 0x1a) { const up = sess.upload; sess.upload = null; sess.line = []; sess.queue = sess.queue.then(() => finishUpload(up)); continue; }
-          sess.upload.buf.push(Buffer.from([b]));
+          if (b === 0x1a) { flushUpload(); const up = sess.upload; sess.upload = null; sess.line = []; if (up) sess.queue = sess.queue.then(() => finishUpload(up)).catch((e) => { log(`LOAD 오류: ${e.message}`, true); write(`${CRLF}(P1100)${e.message}${CRLF}>`); }); continue; }
+          (upBytes ??= []).push(b);
           continue;
         }
         if (b === 0x0d || b === 0x0a) {
@@ -403,17 +424,19 @@ export async function start(ctrl, opts = {}) {
           if (sess.echo) write(CRLF);
           // LOAD 명령: 같은 TCP 청크에 이어지는 파일 내용을 놓치지 않도록 즉시 업로드 모드로 전환
           const lm = sess.state === 'cmd' && /^\s*LOAD\s+(?:\/\w+\s+)?(\S.*)$/i.exec(line);
-          if (lm) sess.upload = { name: loadName(lm[1].trim()), buf: [] };
-          sess.queue = sess.queue.then(() => handleLine(line));
+          if (lm) sess.upload = { name: loadName(lm[1].trim()), buf: [], size: 0 };
+          sess.queue = sess.queue.then(() => handleLine(line)).catch((e) => { log(`명령 처리 오류: ${e.message}`, true); write(`${CRLF}${ERR_INVALID}${CRLF}>`); });
           continue;
         }
         sess.lastCR = false;
         if (b === 0) continue;
         if (b === 0x08 || b === 0x7f) { if (sess.line.length) { sess.line.pop(); if (sess.echo) write('\b \b'); } continue; }
         if (b === 0x03) { sess.line = []; write(`${CRLF}>`); continue; }
+        if (sess.line.length >= MAX_LINE) continue;   // 한 줄 길이 제한 (넘는 부분은 버림)
         sess.line.push(b);
         if (sess.echo && sess.state === 'cmd') sock.write(Buffer.from([b]));
       }
+      flushUpload();
     });
     sock.on('close', () => { clients.delete(sock); log(`연결 종료: ${peer}`, true); });
     sock.on('error', () => {});

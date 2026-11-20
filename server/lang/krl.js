@@ -356,6 +356,7 @@ function makeEnv(cx) {
     index(obj, idx) {
       if (obj?.$proxy) {
         const n = Math.round(idx[0]);
+        if (obj.$proxy.startsWith('timer')) timerAt(cx, n);
         switch (obj.$proxy) {
           case 'do': return ctrl.getDO(n);
           case 'di': return ctrl.getDI(n);
@@ -376,7 +377,12 @@ function makeEnv(cx) {
       return v;
     },
     struct: (type, obj) => (type ? { $type: K(type), ...obj } : obj),
-    binop(op, a, b) {
+    binop(op, a, b, node) {
+      // KRL: INT / INT 는 정수 나눗셈 (소수부 버림). 피연산자의 선언 타입으로 판단 — 7.0 같은 REAL 값과 구분하기 위해 값이 아닌 식을 봄
+      if (op === '/' && node && typeof a === 'number' && typeof b === 'number' && staticInt(cx, node.a) && staticInt(cx, node.b)) {
+        if (b === 0) throw new RuntimeErr('MATH', '0 으로 나눔');
+        return Math.trunc(a / b);
+      }
       if (op === ':') {
         if (!isStruct(a) || !isStruct(b)) throw new RuntimeErr('TYPE', "기하 연산자 ':' 의 피연산자는 FRAME/POS 여야 합니다");
         if (isAxisVal(a) || isAxisVal(b)) throw new RuntimeErr('TYPE', "기하 연산자 ':' 에 AXIS 형은 사용할 수 없습니다");
@@ -418,6 +424,28 @@ function varMeta(cx, key) {
   return cx.prog.meta.get(key);
 }
 
+// 식의 정적 타입이 INT 인지 (리터럴·선언된 변수·배열 요소·정수 연산). 알 수 없으면 false (= 실수 나눗셈)
+function staticInt(cx, n) {
+  switch (n?.t) {
+    case 'num': return !n.real;
+    case 'id': case 'index': {
+      const key = rootKey(n);
+      if (!key || (n.t === 'index' && n.obj.t !== 'id')) return false;
+      return varMeta(cx, key)?.type === 'INT';
+    }
+    case 'un': return (n.op === '-' || n.op === '+') && staticInt(cx, n.a);
+    case 'bin': return ['+', '-', '*', '/', 'DIV', 'MOD'].includes(n.op) && staticInt(cx, n.a) && staticInt(cx, n.b);
+    default: return false;
+  }
+}
+
+// $TIMER[n] 범위 검사 (1~64)
+function timerAt(cx, n) {
+  const t = n >= 1 ? cx.st.timers[n] : undefined;
+  if (!t) throw new RuntimeErr('INDEX', `$TIMER 인덱스 범위 초과: ${n} (1~${cx.st.timers.length - 1})`);
+  return t;
+}
+
 function assignK(cx, node, value) {
   const { prog } = cx;
   if (node.t === 'id') {
@@ -439,6 +467,7 @@ function assignK(cx, node, value) {
     const idx = node.idx.map((x) => Math.round(cx.ev(x)));
     if (obj?.$proxy) {
       const n = idx[0];
+      if (obj.$proxy.startsWith('timer')) timerAt(cx, n);
       switch (obj.$proxy) {
         case 'do': cx.ctrl.setDO(n, truthy(value)); return;
         case 'di': cx.ctrl.setDI(n, truthy(value)); return;
@@ -497,7 +526,10 @@ function runSync(vm, proc, locals, depth = 0) {
   let guard = 0;
   while (frame.pc < proc.code.length) {
     if (++guard > 2e6) throw new RuntimeErr('LOOP', `${proc.name}: 무한 루프로 판단되어 중단`);
-    const r = proc.code[frame.pc].run(vm, frame);
+    const ins = proc.code[frame.pc];
+    let r;
+    // 함수 안에서 난 오류는 실제로 실패한 줄을 가리키도록 위치를 붙임 (가장 안쪽이 우선)
+    try { r = ins.run(vm, frame); } catch (e) { if (e && typeof e === 'object' && e.line === undefined && !e.aborted) { e.file = ins.file ?? proc.file; e.line = ins.line; } throw e; }
     if (r && typeof r.then === 'function') throw new RuntimeErr('FUNC', `함수 ${proc.name} 안에서는 이동/대기 명령을 사용할 수 없습니다`);
     if (!r) frame.pc++;
     else if (r.goto !== undefined) frame.pc = r.goto;
@@ -620,7 +652,7 @@ function isDeclLine(prog, t) {
 function compile(files, main, ctrl) {
   const prog = {
     lang: 'krl', entry: null, procs: {}, globals: new Map(), meta: new Map(), signals: new Map(),
-    strucs: {}, enums: {}, state: newState(),
+    strucs: {}, enums: {}, state: newState(), warnings: [],   // warnings: 에뮬레이터가 실행하지 않는 문장 {file, line, msg}
     init(vm) {
       vm.krl = prog.state;
       vm.ctrl.toolOverride = null;
@@ -767,7 +799,11 @@ function compileBody(prog, proc, ctrl, pending) {
 
   function stmt(t, line) {
     let m;
-    if (/^(GLOBAL\s+)?INTERRUPT\b/i.test(t) || /^(TRIGGER|ANIN|ANOUT|BRAKE|RESUME|ON_ERROR_PROCEED|CONTINUE|EXT|EXTFCT|IMPORT|SIGNAL)\b/i.test(t)) return;
+    if (/^(GLOBAL\s+)?INTERRUPT\b/i.test(t) || /^(TRIGGER|ANIN|ANOUT|BRAKE|RESUME|ON_ERROR_PROCEED|CONTINUE|EXT|EXTFCT|IMPORT|SIGNAL)\b/i.test(t)) {
+      // 동작에 영향을 주는데 에뮬레이터가 실행하지 않는 문장은 경고 (표준 IR_STOPM 인터럽트 선언은 제외)
+      if ((/^(GLOBAL\s+)?INTERRUPT\s+DECL\b/i.test(t) && !/\$STOPMESS/i.test(t)) || /^(TRIGGER|ANOUT)\b/i.test(t)) prog.warnings.push({ file, line, msg: t.split(/\s+/).slice(0, 2).join(' ') });
+      return;
+    }
     // 라벨
     if ((m = /^([A-Za-z_]\w*)\s*:$/.exec(t))) { proc.labels[K(m[1])] = code.length; return; }
     // 지역 선언
@@ -792,7 +828,7 @@ function compileBody(prog, proc, ctrl, pending) {
       const cond = p.expr();
       p.expectKw('THEN');
       if (!p.eof()) throw new Error('THEN 뒤에 불필요한 토큰');
-      stack.push({ k: 'IF', j: jumpIfNot(line, evr(cond)), ends: [] });
+      stack.push({ k: 'IF', line, j: jumpIfNot(line, evr(cond)), ends: [] });
       return;
     }
     if (/^ELSE$/i.test(t)) {
@@ -834,7 +870,7 @@ function compileBody(prog, proc, ctrl, pending) {
         const x = cx(vm, f).ev(vNode), e = f.locals.get(kE), s = f.locals.get(kS);
         return (s >= 0 ? x > e : x < e) ? { goto: chk.target } : undefined;
       });
-      stack.push({ k: 'FOR', chk, chkPc, vNode, kS, breaks: [] });
+      stack.push({ k: 'FOR', line, chk, chkPc, vNode, kS, breaks: [] });
       return;
     }
     if (/^ENDFOR$/i.test(t)) {
@@ -848,7 +884,7 @@ function compileBody(prog, proc, ctrl, pending) {
     if (/^WHILE\b/i.test(t)) {
       const cond = parseE(t.slice(5));
       const topPc = code.length;
-      stack.push({ k: 'WHILE', top: topPc, j: jumpIfNot(line, evr(cond)), breaks: [] });
+      stack.push({ k: 'WHILE', line, top: topPc, j: jumpIfNot(line, evr(cond)), breaks: [] });
       return;
     }
     if (/^ENDWHILE$/i.test(t)) {
@@ -859,7 +895,7 @@ function compileBody(prog, proc, ctrl, pending) {
       return;
     }
     // REPEAT / UNTIL
-    if (/^REPEAT$/i.test(t)) { stack.push({ k: 'REPEAT', top: code.length, breaks: [] }); return; }
+    if (/^REPEAT$/i.test(t)) { stack.push({ k: 'REPEAT', line, top: code.length, breaks: [] }); return; }
     if (/^UNTIL\b/i.test(t)) {
       const s = top('REPEAT'); stack.pop();
       const cond = parseE(t.slice(5));
@@ -868,7 +904,7 @@ function compileBody(prog, proc, ctrl, pending) {
       return;
     }
     // LOOP / ENDLOOP
-    if (/^LOOP$/i.test(t)) { stack.push({ k: 'LOOP', top: code.length, breaks: [] }); return; }
+    if (/^LOOP$/i.test(t)) { stack.push({ k: 'LOOP', line, top: code.length, breaks: [] }); return; }
     if (/^ENDLOOP$/i.test(t)) {
       const s = top('LOOP'); stack.pop();
       jump(line).target = s.top;
@@ -881,7 +917,7 @@ function compileBody(prog, proc, ctrl, pending) {
       const ast = parseE(t.slice(6));
       const key = `__SW${hid++}`;
       emit(line, (vm, f) => { f.locals.set(key, evr(ast)(vm, f)); });
-      stack.push({ k: 'SWITCH', key, skip: null, ends: [], any: false });
+      stack.push({ k: 'SWITCH', line, key, skip: null, ends: [], any: false });
       return;
     }
     if (/^CASE\b/i.test(t)) {
@@ -1050,7 +1086,7 @@ function compileBody(prog, proc, ctrl, pending) {
 
   for (const l of proc.body) at(file, l.line, () => stmt(l.text, l.line));
   delete proc.body;
-  if (stack.length) throw new CompileError(`${stack[stack.length - 1].k} 블록이 닫히지 않았습니다`, file, code.at(-1)?.line ?? proc.line);
+  if (stack.length) throw new CompileError(`${stack[stack.length - 1].k} 블록이 닫히지 않았습니다`, file, stack[stack.length - 1].line ?? code.at(-1)?.line ?? proc.line);   // 여는 줄을 가리킴
   for (const [ins, lbl, line] of gotos) {
     if (proc.labels[lbl] === undefined) throw new CompileError(`라벨 '${lbl}' 이 없습니다`, file, line);
     ins.target = proc.labels[lbl];

@@ -116,7 +116,7 @@ DEF flow( )
   ENDIF
   Log("sq", Square(7))
   Log("fact", Fact(5))
-  r = 7 / 2
+  r = 7 / 2.0
   i = 2.6
   Log("int", i)
   Log("real", r * 2)
@@ -356,6 +356,16 @@ check(krl.readVar(ctrl, 'nope') === undefined, '없는 변수 undefined');
 check(krl.writeVar(ctrl, 'nope', '1') === false, '없는 변수 쓰기 실패');
 check(formatValue(parseValue('{FDAT: TOOL_NO 1, BASE_NO 0, IPO_FRAME #BASE}')) === '{FDAT: TOOL_NO 1, BASE_NO 0, IPO_FRAME #BASE}', 'formatValue/parseValue 열거형');
 check(formatValue(parseValue('"abc"')) === '"abc"' && formatValue(parseValue('FALSE')) === 'FALSE' && formatValue(123) === '123', '기본형 형식');
+
+// ---------------------------------------------------------------- 정수 나눗셈
+console.log('[INT / INT]');
+load({
+  'divt.src': 'DEF divt( )\n  DECL INT i\n  i = 7\n  qi = i / 2\n  qd = 7 / 2\n  qr = 7 / 2.0\n  qx = 7.0 / 2\n  qn = -7 / 2\n  qm = i / 2 * 2\nEND\n',
+  'divt.dat': 'DEFDAT divt\n  DECL INT qi=0\n  DECL REAL qd=0.0\n  DECL REAL qr=0.0\n  DECL REAL qx=0.0\n  DECL INT qn=0\n  DECL INT qm=0\nENDDAT\n',
+});
+check(await run() === 'done', 'INT 나눗셈 프로그램 실행');
+const dv = Object.fromEntries(['qi', 'qd', 'qr', 'qx', 'qn', 'qm'].map((n) => [n, krl.readVar(ctrl, n)]));
+check(dv.qi === '3' && dv.qd === '3.0' && dv.qr === '3.5' && dv.qx === '3.5' && dv.qn === '-3' && dv.qm === '6', `INT/INT 는 소수부 버림, 실수가 섞이면 실수 나눗셈 ${JSON.stringify(dv)}`);
 
 // ---------------------------------------------------------------- 컴파일 오류
 console.log('[컴파일 오류]');

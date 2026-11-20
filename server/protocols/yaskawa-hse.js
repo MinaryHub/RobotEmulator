@@ -502,11 +502,20 @@ export async function start(ctrl, opts = {}) {
 
   // ------------------------------------------------------------ 파일 제어
   // 세션: key=주소:포트 → { kind:'load'|'save', name, chunks, out:[Buffer], reqId }
+  //   클라이언트가 보낸 블록 번호·크기를 그대로 믿지 않도록 순서·용량·개수·유휴 시간 제한
   const sessions = new Map();
   const CHUNK = 400;
+  const MAX_LOAD_BYTES = 4 * 1024 * 1024, MAX_SESSIONS = 64, SESSION_IDLE_MS = 30000;
+  const sweep = setInterval(() => {
+    const now = Date.now();
+    for (const [k, v] of sessions) if (now - (v.at ?? 0) > SESSION_IDLE_MS) sessions.delete(k);
+  }, 5000);
+  sweep.unref?.();
   const fileSock = makeSocket(2, async (q, reply, rinfo) => {
     const key = `${rinfo.address}:${rinfo.port}`;
     const svc = q.service;
+    const cur = sessions.get(key);
+    if (cur) cur.at = Date.now();
     const sendBlock = (s, idx) => {
       const last = idx === s.out.length - 1;
       const blk = (idx + 1) | (last ? 0x80000000 : 0);
@@ -529,17 +538,23 @@ export async function start(ctrl, opts = {}) {
         if (blockNo === 0 && !lastBit) {
           const name = bufStr(q.data);
           if (!name) throw new HseError(AS.SIZE);
-          sessions.set(key, { kind: 'load', name, chunks: [] });
+          if (!sessions.has(key) && sessions.size >= MAX_SESSIONS) throw new HseError(AS.CANT_LOAD, ST.ERR, '동시 파일 세션이 너무 많음');
+          sessions.set(key, { kind: 'load', name, chunks: [], bytes: 0, at: Date.now() });
           log(`파일 로드 시작: ${name}`, true);
           return reply(respSub(svc), Buffer.alloc(0), 0);
         }
         const s = sessions.get(key);
         if (!s || s.kind !== 'load') throw new HseError(AS.CANT_LOAD, ST.ERR, '로드 세션 없음');
-        s.chunks[blockNo - 1] = Buffer.from(q.data);
+        // 블록은 1부터 순서대로. 직전 블록 재전송(UDP 재시도)은 다시 확인 응답만
+        if (blockNo === s.chunks.length && blockNo > 0) return reply(respSub(svc), Buffer.alloc(0), q.block);
+        if (blockNo !== s.chunks.length + 1) { sessions.delete(key); throw new HseError(AS.CANT_LOAD, ST.ERR, `블록 번호 오류: ${blockNo} (기대 ${s.chunks.length + 1})`); }
+        s.bytes += q.data.length;
+        if (s.bytes > MAX_LOAD_BYTES) { sessions.delete(key); throw new HseError(AS.SIZE, ST.ERR, '파일이 너무 큼'); }
+        s.chunks.push(Buffer.from(q.data));
         reply(respSub(svc), Buffer.alloc(0), q.block);
         if (lastBit) {
           sessions.delete(key);
-          const text = Buffer.concat(s.chunks.filter(Boolean)).toString('latin1');
+          const text = Buffer.concat(s.chunks).toString('latin1');
           ctrl.loadFiles({ [s.name]: text });
           log(`파일 로드 완료: ${s.name} (${text.length} bytes, ${blockNo} 블록)`, true);
         }
@@ -570,7 +585,8 @@ export async function start(ctrl, opts = {}) {
         const out = [];
         for (let i = 0; i < content.length; i += CHUNK) out.push(content.subarray(i, i + CHUNK));
         if (!out.length) out.push(Buffer.alloc(0));
-        const s = { kind: 'save', out };
+        const s = { kind: 'save', out, at: Date.now() };
+        if (!sessions.has(key) && sessions.size >= MAX_SESSIONS) throw new HseError(AS.CANT_LOAD, ST.ERR, '동시 파일 세션이 너무 많음');
         sessions.set(key, s);
         sendBlock(s, 0);
         return;
@@ -590,6 +606,7 @@ export async function start(ctrl, opts = {}) {
     name: 'Yaskawa High-Speed Ethernet Server', proto: 'udp', vendor: 'yaskawa',
     port: r1.error ? null : r1.port, filePort: r2.error ? null : r2.port,
     close() {
+      clearInterval(sweep);
       cycles.stop();
       ctrl.off('log', onLog);
       try { robotSock.close(); } catch {}

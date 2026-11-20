@@ -16,7 +16,7 @@
 //   SIG:n           내부 신호(2001~2999) 상태
 //   TIMER:n         타이머 기준 시각(ctrl.simMs, 시뮬레이션 시계 ms)
 //   __AS_LOADED__:파일명   데이터 섹션 적용 표시 (파일 내용이 바뀌었을 때만 다시 적용 → HERE 로 티칭한 값 유지)
-//   로컬 변수(.name, 프로그램 인자)는 frame.locals 에 '.' 을 뗀 대문자 이름으로 저장 (예: .$s → '$S').
+//   로컬 변수(.name, 프로그램 인자)는 frame.locals 에 '.' 을 붙인 대문자 이름으로 저장 (예: .$s → '.$S') — 전역 $S 와 구분.
 //   프로그램 인자는 참조 전달: 실인자가 변수이면 RETURN 시 값을 되돌려 쓴다.
 //
 // ── 진입 프로그램 ───────────────────────────────────────────────────────────
@@ -82,8 +82,11 @@ const keyOf = (name, idx) => (idx && idx.length ? `${name}[${idx.map((n) => Math
 function readV(ctrl, frame, id, idx, ctx) {
   const { local, name } = parseName(id);
   const k = keyOf(name, idx);
+  // 로컬(.이름)은 '.' 을 붙인 키로 저장 → 같은 이름의 전역 변수를 가리지 않음.
+  // '.' 없이 선언된 프로그램 인자는 '.' 없는 키 (본문에서 '.' 없이 참조)
+  const lk = local ? '.' + k : k;
   if (local || frame?.locals?.has(k)) {
-    const v = frame?.locals?.get(k);
+    const v = frame?.locals?.get(lk);
     if (v === undefined) throw new RuntimeErr('AS', `값이 정의되지 않은 로컬 변수: .${k}`);
     return v;
   }
@@ -108,7 +111,8 @@ function writeV(ctrl, frame, id, idx, value) {
   const { local, name } = parseName(id);
   const k = keyOf(name, idx);
   if (typeof value === 'boolean') value = value ? -1 : 0;
-  if (local || frame?.locals?.has(k)) { frame.locals.set(k, value); return; }
+  if (local) { frame.locals.set('.' + k, value); return; }
+  if (frame?.locals?.has(k)) { frame.locals.set(k, value); return; }
   ctrl.regs.set(`${globalKind(name, value)}:${k}`, value);
 }
 
@@ -830,7 +834,7 @@ function compileProc(p, calls) {
     if (!(f.label in labels)) throw new CompileError(`라벨 ${f.label} 이(가) 없습니다`, file, f.line);
     f.ins.target = labels[f.label];
   }
-  const params = p.params.map((x) => x.replace(/^\./, '').toUpperCase());
+  const params = p.params.map((x) => (x.startsWith('.') ? '.' + x.slice(1).toUpperCase() : x.toUpperCase()));   // readV/writeV 의 로컬 키 규칙과 같게
   return { name: p.name, params, file, code, labels };
 }
 
