@@ -1,7 +1,7 @@
 # 산업용 로봇 에뮬레이터 사용자 매뉴얼
 
 > 대상 독자: 로봇 시스템 통합(SI) 현장에서 **PLC·상위 PC(MES, 비전, HMI) 프로그램을 개발·시험하는 엔지니어**
-> 이 문서는 "무엇을 어떻게 하는가" 중심의 사용 안내서입니다. 주소 맵·프로토콜 지원 범위 같은 참조 표는 [README](../README.md)에 있습니다.
+> 이 문서는 "무엇을 어떻게 하는가" 중심의 사용 안내서입니다. 주소 맵·프로토콜 지원 범위 같은 참조 표는 [README](../README.ko.md)에 있습니다.
 
 ## 목차
 
@@ -533,7 +533,7 @@ PLC 를 Modbus TCP **클라이언트(마스터)**로 설정하고 에뮬레이�
 
 전용 입출력 방식(외부 시작 신호, 프로그램 번호 선택)을 쓰는 셀이라면 명령 레지스터 대신 [시스템 I/O](#93-시스템-io-전용-입출력) 를 켜고 코일로 시퀀스를 구동하십시오.
 
-전체 주소 맵: [README › Modbus TCP 주소 맵](../README.md#modbus-tcp-주소-맵).
+전체 주소 맵: [README › Modbus TCP 주소 맵](../README.ko.md#modbus-tcp-주소-맵).
 
 **국내 PLC 연결 요령**
 
@@ -550,7 +550,7 @@ PLC 를 Modbus TCP **클라이언트(마스터)**로 설정하고 에뮬레이�
 - 엔드포인트: `opc.tcp://<IP>:4840/UA/RobotEmulator`, 보안 None + 익명 (Basic256Sha256 도 가능, 클라이언트 인증서 자동 신뢰)
 - 노드: `Objects/Robot/…` — 상태, 관절, TCP, IO, 레지스터, 제어 메서드(ServoOn, Start, MoveJoints 등)
 - UaExpert 같은 범용 클라이언트로 먼저 탐색해 보는 것을 권합니다.
-- 전체 노드 목록: [README › OPC UA 주소 공간](../README.md#opc-ua-주소-공간)
+- 전체 노드 목록: [README › OPC UA 주소 공간](../README.ko.md#opc-ua-주소-공간)
 
 ### 12.4 제조사 프로토콜
 
@@ -598,7 +598,7 @@ PLC 를 Modbus TCP **클라이언트(마스터)**로 설정하고 에뮬레이�
   ```bash
   claude mcp add --transport http robot-emulator http://localhost:3000/mcp
   ```
-- 자세한 설정: [README › Claude 연동](../README.md#claude-연동-채팅--mcp)
+- 자세한 설정: [README › Claude 연동](../README.ko.md#claude-연동-채팅--mcp)
 
 ---
 
