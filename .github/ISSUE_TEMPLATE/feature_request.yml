@@ -1,0 +1,22 @@
+name: 기능 제안
+description: 새 로봇 모델·명령·통신 프로토콜·화면 기능 등을 제안합니다
+title: "[제안] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: 필요한 기능
+      description: 어떤 작업에서 무엇이 필요한가요?
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: 예시·자료
+      description: 실제 로봇의 명령 문법, 매뉴얼 페이지, 사양표 링크 등
+  - type: textarea
+    id: env
+    attributes:
+      label: 환경
+      description: 사용 중인 버전 (정보 창에서 열면 자동 입력)

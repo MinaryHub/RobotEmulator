@@ -10,6 +10,7 @@ import { initCameraPanel, renderCameraPanel } from './cameraPanel.js';
 import { initChatPanel, onChatEvent, onChatReconnect } from './chatPanel.js';
 import { initSysioPanel, renderSysioPanel, loadSysioPresets } from './sysioPanel.js';
 import { ioLabelMap, escHtml, labelsToCsv, csvToLabels } from './ioLabels.js';
+import { initAboutPanel, onAbout, onRestarting } from './aboutPanel.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -49,6 +50,8 @@ function connect() {
     else if (m.type === 'comms') { app.comms = m.comms; renderComms(); }
     else if (m.type === 'tl') dbg.onTimeline(m);
     else if (m.type === 'chat') onChatEvent(m);
+    else if (m.type === 'about') onAbout(m.about);
+    else if (m.type === 'restarting') onRestarting(m.tag);
     // 명령 오류는 error 필드로 구분 (start/servo 등은 거부 시 ok:false + reject 를 정상 응답으로 돌려줌)
     else if (m.type === 'reply') { const p = pending.get(m.id); if (p) { pending.delete(m.id); clearTimeout(p.timer); m.ok || m.error === undefined ? p.res(m) : p.rej(new Error(m.error)); } }
   };
@@ -89,6 +92,7 @@ function onInit(m) {
   renderComms();
   onChatReconnect();
   loadSysioPresets();
+  onAbout(m.about, { fromInit: true });
 }
 
 // ---------------------------------------------------------------- 상태 반영
@@ -860,5 +864,6 @@ const dbg = initDebugPanels({ cmd });
 initSysioPanel({ cmd, getState: () => app.st });
 initCellPanel({ cmd, view, getState: () => app.st });
 initChatPanel({ send: (msg) => ws?.readyState === 1 && ws.send(JSON.stringify(msg)) });
+initAboutPanel({ cmd, getState: () => app.st, isDirty: () => app.dirty.size > 0, saveAll, showToast });
 initCameraPanel({ cmd, view, getState: () => app.st, getModel: () => app.robots.find((r) => r.id === app.robotId) });
 connect();

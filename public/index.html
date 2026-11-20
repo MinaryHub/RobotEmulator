@@ -20,6 +20,8 @@
     </div>
     <button id="btnProject" class="projbtn" title="프로젝트 저장/불러오기">📁 프로젝트</button>
     <button id="btnChat" class="projbtn" title="Claude 채팅: 로봇 프로그램 생성·수정·검증">✦ Claude</button>
+    <button id="btnUpdate" class="projbtn updbtn hidden" title="새 버전이 있습니다 — 눌러서 업데이트">⬆ 새 버전</button>
+    <button id="btnAbout" class="projbtn" title="정보 · 업데이트 · 문의하기 · 후원하기" aria-label="정보">ⓘ</button>
     <button id="btnEstop" class="estop" title="비상정지 (정지 범주 0: 즉시 정지 + 서보 OFF). 누르면 잠김 — 다시 눌러 해제 후 알람 리셋">비상정지</button>
     <div class="hstat">
       <span id="stConn" role="status" aria-live="polite" class="pill off">연결 끊김</span>
@@ -279,6 +281,39 @@
         <button value="close" style="margin-left:auto">닫기</button>
       </div>
       <div class="note">로봇·그리퍼·설정, 제조사별 프로그램과 변수, 셀 레이아웃이 저장됩니다. JSON 내보내기에는 셀에 배치한 3D 모델 파일도 함께 묶입니다. 작업 내용은 2초마다 자동 저장되어 서버를 다시 켜도 복원됩니다.</div>
+    </form>
+  </dialog>
+
+  <dialog id="aboutDlg">
+    <form method="dialog" class="projdlg aboutdlg">
+      <h3>산업용 로봇 에뮬레이터 <span id="abVer" class="abver"></span></h3>
+      <div id="abBuild" class="note"></div>
+      <section>
+        <h4>업데이트</h4>
+        <div id="abUpd" class="abupd"></div>
+        <pre id="abNotes" class="abnotes" hidden></pre>
+        <div class="prow">
+          <button type="button" id="abCheck">지금 확인</button>
+          <button type="button" id="abApply" class="primary" hidden>업데이트 및 재시작</button>
+          <a id="abRelease" class="btnlink" target="_blank" rel="noopener" hidden>릴리스 페이지</a>
+          <a id="abChangelog" class="btnlink" target="_blank" rel="noopener">변경 기록</a>
+        </div>
+      </section>
+      <section>
+        <h4>문의하기</h4>
+        <div class="prow">
+          <a id="abBug" class="btnlink" target="_blank" rel="noopener">🐞 버그 신고</a>
+          <a id="abIdea" class="btnlink" target="_blank" rel="noopener">💡 기능 제안</a>
+          <a id="abIssues" class="btnlink" target="_blank" rel="noopener">이슈 목록</a>
+        </div>
+        <div class="note">GitHub 이슈로 접수됩니다 (GitHub 계정 필요). 버전·OS·로봇 모델이 미리 채워지며, 보내기 전에 내용을 확인할 수 있습니다.</div>
+      </section>
+      <section id="abSponsorSec">
+        <h4>후원하기</h4>
+        <div class="prow"><a id="abSponsor" class="btnlink sponsor" target="_blank" rel="noopener">♥ 후원하기 (GitHub Sponsors)</a></div>
+        <div class="note">이 프로젝트가 도움이 되었다면 후원으로 개발을 응원해 주세요.</div>
+      </section>
+      <div class="prow"><button value="close" style="margin-left:auto">닫기</button></div>
     </form>
   </dialog>
 

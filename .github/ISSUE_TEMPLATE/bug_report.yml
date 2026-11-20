@@ -1,0 +1,39 @@
+name: 버그 신고
+description: 에뮬레이터가 기대와 다르게 동작하거나 오류가 납니다
+title: "[버그] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        에뮬레이터 화면의 ⓘ → **버그 신고**로 열면 환경 정보가 자동으로 채워집니다.
+        개인 정보나 회사 기밀(실제 현장 프로그램 등)은 올리지 마십시오.
+  - type: textarea
+    id: what
+    attributes:
+      label: 무슨 일이 있었나요?
+      description: 실제 동작과 기대한 동작
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 재현 방법
+      description: 로봇 모델, 사용한 프로그램(일부), 누른 버튼 순서 등
+      placeholder: |
+        1. 모델 KUKA KR 6 R900 선택
+        2. 아래 프로그램 실행
+        3. ...
+  - type: textarea
+    id: logs
+    attributes:
+      label: 로그·알람
+      description: 하단 로그 패널의 관련 줄을 붙여 넣으세요
+      render: text
+  - type: textarea
+    id: env
+    attributes:
+      label: 환경
+      description: 버전, OS, Node.js, 브라우저 (정보 창에서 열면 자동 입력)
+    validations:
+      required: true

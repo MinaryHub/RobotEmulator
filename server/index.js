@@ -16,11 +16,17 @@ import { listVars, Timeline } from './inspect.js';
 import { handleMcp } from './ai/mcp.js';
 import { configureNetGuard, requestRejected } from './netguard.js';
 import { AssetStore, MAX_UPLOAD } from './assets.js';
+import { Updater } from './updater.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const config = loadConfig();
 configureNetGuard(config);
 const ctrl = new Controller();
+// 버전 정보·업데이트 (GitHub Releases). 프로그램 실행 중에는 업데이트 적용 거부
+const updater = await new Updater({
+  root: ROOT, config: config.update, log: (src, msg) => ctrl.log(src, msg),
+  isBusy: () => (['running', 'paused'].includes(ctrl.vm?.status) ? '프로그램 실행 중에는 업데이트할 수 없습니다 — 정지한 뒤 다시 시도하세요' : null),
+}).init();
 ctrl.netHost = config.host;   // DRL 소켓(server_socket_open) 바인딩 주소 — 통신 모듈과 같은 규칙 (null = 모든 인터페이스)
 // 사용자 3D 모델 자산 (셀 레이아웃 models[] 가 참조). 프로젝트 복원 전에 연결해야 간섭 메시를 읽을 수 있음
 const ASSET_DIR = path.join(ROOT, 'assets', 'models');
@@ -46,6 +52,9 @@ function loadConfig() {
     // Claude 채팅. backend: 'auto'(API 키 환경변수가 있으면 api, 없으면 claude-code) | 'api'(ANTHROPIC_API_KEY 또는 ant auth login)
     //   | 'claude-code'(설치된 Claude Code CLI 의 구독 로그인 사용, API 키 불필요). 환경변수 AI_BACKEND 로도 지정
     ai: { backend: 'auto', model: 'claude-opus-5-5', effort: 'high', fallbacks: true, cliModel: null },
+    // 업데이트: enabled(새 버전 자동 확인), intervalHours(확인 주기), allowApply(화면에서 원클릭 업데이트 허용),
+    //   repo('owner/name', 기본 package.json repository), sponsorUrl(후원 링크, 기본 package.json funding)
+    update: { enabled: true, intervalHours: 24, allowApply: true },
     protocols: {
       yaskawaHse: { port: 10040, filePort: 10041 },
       kawasakiAs: { port: 23, fallbackPort: 10023 },
@@ -64,7 +73,7 @@ function loadConfig() {
       const u = JSON.parse(fs.readFileSync(f, 'utf8'));
       const protocols = { ...def.protocols };
       for (const [k, v] of Object.entries(u.protocols || {})) protocols[k] = { ...(def.protocols[k] || {}), ...v };
-      cfg = { ...def, ...u, protocols, ai: { ...def.ai, ...(u.ai || {}) } };
+      cfg = { ...def, ...u, protocols, ai: { ...def.ai, ...(u.ai || {}) }, update: { ...def.update, ...(u.update || {}) } };
     } catch (e) { console.error('config.json 오류:', e.message); }
   }
   if (process.env.PORT) {
@@ -189,6 +198,15 @@ async function handleCmd(m) {
     case 'ioLabel': ctrl.setIoLabel(m.type, m.n, { name: m.name, desc: m.desc }); return;
     case 'ioLabels': if (m.labels) ctrl.setIoLabels(m.labels); return { labels: ctrl.ioLabels };
     case 'state': return { state: ctrl.snapshot() };
+    // 버전·업데이트 (정보 창)
+    case 'about': return { about: updater.info() };
+    case 'updateCheck': await updater.check(); return { about: updater.info() };
+    case 'updateApply': {   // 오래 걸리므로 시작만 하고 진행 상황은 'about' 브로드캐스트·로그로 알림
+      const why = await updater.blocker();
+      if (why) throw new Error(why);
+      updater.apply().catch(() => {});
+      return { started: true };
+    }
     default: throw new Error(m.cmd === undefined ? '명령(cmd)이 없습니다' : `알 수 없는 명령: ${m.cmd}`);
   }
 }
@@ -329,6 +347,7 @@ wss.on('connection', (ws) => {
     type: 'init', robots: ROBOTS, grippers: GRIPPERS, vendors: VENDORS, cameras: CAMERAS,
     state: ctrl.snapshot(), logs: ctrl.logs.slice(-200), files: filesMsg(),
     comms: comms.map(({ name, proto, port }) => ({ name, proto, port })),
+    about: updater.info(),
   });
   ws.on('message', async (raw) => {
     let m;
@@ -412,6 +431,18 @@ server.listen(config.httpPort, config.host || undefined, async () => {
   } catch (e) {
     console.error('통신 모듈 시작 실패:', e.message);
   }
+  updater.start();
+});
+
+// 업데이트 상태 변화 → 모든 화면에 알림. 적용이 끝나면 재시작 (npm start = launcher 가 다시 띄움)
+updater.on('change', (about) => broadcast({ type: 'about', about }));
+updater.on('restart', (tag) => {
+  broadcast({ type: 'restarting', tag });
+  if (process.env.ROBOT_EMU_LAUNCHER) setTimeout(() => shutdown('update', 75), 300);
+  else {
+    ctrl.log('system', `[업데이트] ${tag} 설치 완료 — 'npm start' 로 실행하지 않아 자동 재시작할 수 없습니다. 서버를 직접 다시 시작하세요`);
+    updater._set({ applying: null, restartNeeded: tag });
+  }
 });
 
 // 최후 안전망: 처리되지 않은 Promise 거부로 프로세스가 종료되지 않게 (기본 동작은 종료) — 기록만 남김
@@ -422,15 +453,17 @@ process.on('unhandledRejection', (e) => {
 
 // 종료 처리: Ctrl+C(SIGINT, 모든 OS), SIGTERM(Linux/macOS 서비스·컨테이너), SIGBREAK(Windows Ctrl+Break)
 let shuttingDown = false;
-async function shutdown(sig) {
+// code: 종료 코드 (75 = 업데이트 후 재시작 요청 — server/launcher.js)
+async function shutdown(sig, code = 0) {
   if (shuttingDown) return process.exit(1);   // 두 번째 신호는 즉시 종료
   shuttingDown = true;
   console.log(`\n  종료 중 (${sig})...`);
   try { projects.saveAutosave?.(); } catch {}
-  const force = setTimeout(() => process.exit(0), 3000);
+  const force = setTimeout(() => process.exit(code), 3000);
   force.unref();
   await Promise.allSettled(comms.map(async (c) => c.close?.()));
-  process.exit(0);
+  try { for (const c of wss.clients) c.terminate(); server.closeAllConnections?.(); server.close(); } catch {}
+  process.exit(code);
 }
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) {
   try { process.on(sig, () => shutdown(sig)); } catch {}
