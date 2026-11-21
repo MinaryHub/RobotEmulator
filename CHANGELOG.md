@@ -7,6 +7,17 @@
 
 릴리스 절차는 [README의 버전 관리](README.ko.md#버전-관리와-업데이트) 절을 보십시오.
 
+## [1.2.0] - 2026-11-21
+
+### 추가
+- **Windows · macOS · Linux 휴대용 꾸러미.** Node.js 를 설치하지 않아도 됩니다. 압축을 풀고 실행 파일을 더블클릭하면 서버가 뜨고 브라우저가 열립니다.
+  - `win-x64`, `darwin-arm64`(Apple Silicon), `darwin-x64`(Intel Mac), `linux-x64`, `linux-arm64`
+  - Node.js 22 를 `runtime/` 에 포함합니다.
+- **Android 앱 (APK).** 앱 안에서 에뮬레이터 서버가 돌고 화면이 바로 열립니다. Android 7.0 이상, arm64·armv7 기기를 지원합니다.
+  - Node 18 기반(nodejs-mobile)이라 OPC UA 서버는 동작하지 않습니다. 나머지 통신 인터페이스는 모두 동작합니다.
+  - Android 15 이상의 16 KB 페이지 기기에서는 처음 실행할 때 "호환 모드로 실행" 안내가 한 번 뜰 수 있습니다.
+- 꾸러미 만들기: `npm run package:desktop`, `npm run package:android`, 릴리스에 올리기: `npm run package:upload`
+
 ## [1.1.1] - 2026-11-21
 
 ### 수정

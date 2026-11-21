@@ -21,7 +21,23 @@
 | ![Direct teach gizmo on a UR5e](screenshots/direct-teach.png) **Direct teach** — drag the TCP or a link (Universal Robots) | ![Flange-mounted depth camera and a fixed monitoring camera with live previews](screenshots/vision-camera.png) **Vision cameras** — flange and fixed cameras with live previews |
 | ![Claude chat panel next to a Doosan DRL program](screenshots/claude-chat.png) **Claude chat** — write, compile and test-run programs (Doosan DRL) | ![About dialog with version, update check, issue links and sponsor link](screenshots/about.png) **About** — version, one-click update, contact, sponsor |
 
-## 실행
+## 내려받기
+
+[Releases](https://github.com/MinaryHub/RobotEmulator/releases/latest)에서 최신 꾸러미를 받습니다. 데스크톱 꾸러미에는 Node.js 가 들어 있어 따로 설치할 것이 없습니다.
+
+| 플랫폼 | 파일 | 실행 |
+|---|---|---|
+| Windows (x64) | `RobotEmulator-<버전>-win-x64.zip` | 압축을 풀고 **Start RobotEmulator.cmd** 더블클릭 |
+| macOS (Apple Silicon / Intel) | `…-darwin-arm64.tar.gz` / `…-darwin-x64.tar.gz` | 압축을 풀고 **Start RobotEmulator.command** 더블클릭 (처음에는 서명되지 않은 스크립트라 오른쪽 클릭 → 열기) |
+| Linux (x64 / arm64) | `…-linux-x64.tar.gz` / `…-linux-arm64.tar.gz` | 압축을 풀고 `./start-robot-emulator.sh` |
+| Android 7.0 이상 (arm64 / armv7) | `…-android.apk` | APK 설치(이 출처의 앱 설치 허용) 후 **Robot Emulator** 실행 |
+
+- 데스크톱 꾸러미는 브라우저로 `http://localhost:3000` 을 자동으로 엽니다. 콘솔 창을 닫거나 Ctrl+C 로 끕니다.
+- 프로젝트는 `app/projects/` 에 저장됩니다. 새 버전으로 옮길 때 이 폴더를 복사하십시오. 새 버전이 나오면 정보 창에 알림이 뜨고, 릴리스 페이지에서 받습니다 (버튼 한 번 업데이트는 git clone 설치만).
+- **Android:** 앱 안에서 Node.js 18(nodejs-mobile)로 서버가 돕니다. OPC UA 서버를 빼고 모두 동작합니다. 태블릿이나 가로 화면이 쓰기 좋습니다. 16 KB 페이지를 쓰는 Android 15 이상 기기에서는 포함된 Node 라이브러리가 16 KB 정렬이 아니어서 처음에 "호환 모드" 안내가 한 번 뜰 수 있지만 동작에는 문제없습니다. 같은 Wi-Fi 의 PLC·PC 에서 앱의 통신 포트에 접속하는 설정(`host`)은 아직 앱에서 바꿀 수 없습니다.
+- 릴리스마다 `SHA256SUMS-<버전>.txt` 에 파일 체크섬이 있습니다.
+
+## 실행 (소스에서)
 
 ```bash
 npm install
@@ -94,6 +110,9 @@ npm test           # 기구학 · 5개 언어 · 5개 통신 프로토콜 · 필
 
 1. **버전 올리기:** 기능 브랜치에서 `package.json` 의 `version` 을 올리고, `CHANGELOG.md` 에 `## [X.Y.Z] - 날짜` 절을 씁니다. 그다음 PR 로 머지합니다.
 2. **릴리스 만들기:** `main` 에서 `git pull` 을 한 뒤 `npm run release` 로 확인합니다. 문제가 없으면 `npm run release -- --yes` 로 태그 `vX.Y.Z` 와 GitHub 릴리스를 만듭니다. 릴리스 노트는 CHANGELOG 의 해당 절에서 가져옵니다.
+3. **꾸러미:** 같은 `main` 에서 `npm run package:desktop`, `npm run package:android` 를 실행한 뒤 `npm run package:upload` 로 릴리스에 올립니다 (`SHA256SUMS-X.Y.Z.txt` 포함).
+   - 데스크톱 꾸러미는 어느 OS 에서나 만들 수 있습니다 (의존성이 모두 순수 JavaScript/WASM). `zip`, `tar`, `unzip` 이 필요합니다.
+   - APK 는 JDK 17 이상, NDK 28 이 포함된 Android SDK, 그리고 저장소 밖의 릴리스 키를 가리키는 `android/keystore.properties` 가 필요합니다 (없으면 디버그 키로 서명).
 
 ## 문의 · 후원
 

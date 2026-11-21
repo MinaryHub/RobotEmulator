@@ -8,16 +8,17 @@ import { fileURLToPath } from 'node:url';
 
 export const RESTART_CODE = 75;
 const entry = path.join(path.dirname(fileURLToPath(import.meta.url)), 'index.js');
-let child = null, stopping = false;
+let child = null, stopping = false, restarted = false;
 
 function launch() {
   child = spawn(process.execPath, [...process.execArgv, entry, ...process.argv.slice(2)], {
     stdio: 'inherit',
-    env: { ...process.env, ROBOT_EMU_LAUNCHER: '1' },
+    env: { ...process.env, ROBOT_EMU_LAUNCHER: '1', ...(restarted ? { ROBOT_EMU_RESTARTED: '1' } : {}) },
   });
   child.on('exit', (code, signal) => {
     if (code === RESTART_CODE && !stopping) {
       console.log('\n  업데이트 완료 — 서버를 다시 시작합니다...\n');
+      restarted = true;   // 다시 띄울 때 브라우저를 또 열지 않게
       setTimeout(launch, 500);
       return;
     }

@@ -22,7 +22,23 @@ The UI is available in English and Korean. It follows the browser language, and 
 | ![Direct teach gizmo on a UR5e](screenshots/direct-teach.png) **Direct teach** — drag the TCP or a link (Universal Robots) | ![Flange-mounted depth camera and a fixed monitoring camera with live previews](screenshots/vision-camera.png) **Vision cameras** — flange and fixed cameras with live previews |
 | ![Claude chat panel next to a Doosan DRL program](screenshots/claude-chat.png) **Claude chat** — write, compile and test-run programs (Doosan DRL) | ![About dialog with version, update check, issue links and sponsor link](screenshots/about.png) **About** — version, one-click update, contact, sponsor |
 
-## Quick start
+## Download
+
+Get the latest build from [Releases](https://github.com/MinaryHub/RobotEmulator/releases/latest). The desktop packages include Node.js, so nothing else needs to be installed.
+
+| Platform | File | How to start |
+|---|---|---|
+| Windows (x64) | `RobotEmulator-<version>-win-x64.zip` | Unzip, double-click **Start RobotEmulator.cmd** |
+| macOS (Apple Silicon / Intel) | `…-darwin-arm64.tar.gz` / `…-darwin-x64.tar.gz` | Extract, double-click **Start RobotEmulator.command** (first time: right-click → Open, because the script is not signed) |
+| Linux (x64 / arm64) | `…-linux-x64.tar.gz` / `…-linux-arm64.tar.gz` | Extract, run `./start-robot-emulator.sh` |
+| Android 7.0+ (arm64 / armv7) | `…-android.apk` | Install the APK (allow installing from this source), open **Robot Emulator** |
+
+- The desktop packages open the browser at `http://localhost:3000` automatically. Close the console window (or Ctrl+C) to stop.
+- Projects are saved in `app/projects/`. Copy that folder when you move to a new version. Packages show a notice when a new version is released; download it from the release page (one-click update is for `git clone` installs).
+- **Android:** the server runs inside the app on Node.js 18 (nodejs-mobile). Everything works except the OPC UA server. A tablet or a phone in landscape works best. On Android 15+ devices with 16 KB pages, a one-time "compatibility mode" notice may appear because the bundled Node library is not 16 KB aligned; the app still runs. To reach the app's protocol ports from a PLC or PC on the same Wi-Fi, set `"host": "0.0.0.0"` (not configurable in the app yet).
+- `SHA256SUMS-<version>.txt` in each release lists the file checksums.
+
+## Quick start (from source)
 
 ```bash
 git clone https://github.com/MinaryHub/RobotEmulator
@@ -96,6 +112,9 @@ The server checks GitHub releases at startup and every 24 hours. When a newer ve
 
 1. **Bump the version:** on a feature branch, raise `version` in `package.json` and add a `## [X.Y.Z] - date` section to `CHANGELOG.md`, then merge the PR.
 2. **Release:** on `main`, `git pull`, then run `npm run release` to check. If everything is fine, `npm run release -- --yes` creates tag `vX.Y.Z` and the GitHub release, with notes taken from the CHANGELOG section.
+3. **Packages:** still on `main`, run `npm run package:desktop` and `npm run package:android`, then `npm run package:upload` to attach them (and `SHA256SUMS-X.Y.Z.txt`) to the release.
+   - Desktop packages can be built on any OS (all dependencies are pure JavaScript/WASM); they need `zip`, `tar` and `unzip`.
+   - The APK needs JDK 17+, the Android SDK with NDK 28, and `android/keystore.properties` pointing to the release keystore (kept outside the repository; without it the APK is signed with the debug key).
 
 ## Contact and sponsoring
 
