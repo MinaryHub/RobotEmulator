@@ -23,3 +23,6 @@ android/local.properties
 android/keystore.properties
 *.jks
 *.keystore
+# 로고 PNG 는 brand/render.sh 로 SVG 에서 다시 만듦 (참조하는 곳 없음).
+# 웹 화면·Android 가 실제로 쓰는 public/favicon*, public/apple-touch-icon.png, android 아이콘은 추적함
+brand/*.png
