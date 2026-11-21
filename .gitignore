@@ -11,3 +11,15 @@ projects/
 Thumbs.db
 # 사용자 3D 모델 자산 (업로드 시 생성)
 assets/
+# 배포 꾸러미 (tools/package.js) · Android 빌드 산출물
+dist/
+android/.gradle/
+android/build/
+android/app/build/
+android/app/.cxx/
+android/app/src/main/assets/
+android/libnode/
+android/local.properties
+android/keystore.properties
+*.jks
+*.keystore

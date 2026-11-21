@@ -1,0 +1,17 @@
+// Android 앱: 에뮬레이터 서버(Node.js, nodejs-mobile)를 앱 안에서 실행하고 WebView 로 화면을 띄운다
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = 'RobotEmulator'
+include ':app'

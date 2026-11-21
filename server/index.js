@@ -433,6 +433,8 @@ server.on('error', (e) => {
 server.listen(config.httpPort, config.host || undefined, async () => {
   const shown = !config.host || config.host === '0.0.0.0' || config.host === '::' ? 'localhost' : config.host;
   console.log(`\n  산업용 로봇 에뮬레이터  →  http://${shown}:${config.httpPort}`);
+  // 휴대용 꾸러미(더블클릭 실행): 브라우저 자동 열기. 업데이트 후 재시작 때는 열지 않음
+  if (process.env.ROBOT_EMU_OPEN === '1' && !process.env.ROBOT_EMU_RESTARTED) openBrowser(`http://${shown}:${server.address().port}/`);
   console.log(config.host && /^(127\.|::1$|localhost$)/i.test(config.host) ? '  (이 PC 에서만 접속 가능)\n' : `  (바인딩: ${config.host || '모든 인터페이스'} — 인증 없음, 신뢰할 수 있는 네트워크에서만 사용)\n`);
   try {
     const { startAll } = await import('./protocols/index.js');
@@ -455,6 +457,15 @@ updater.on('restart', (tag) => {
     updater._set({ applying: null, restartNeeded: tag });
   }
 });
+
+// 기본 브라우저로 URL 열기 (실패해도 무시 — 콘솔의 주소로 직접 열면 됨)
+function openBrowser(url) {
+  const [cmd, args] = process.platform === 'win32' ? ['cmd.exe', ['/d', '/c', 'start', '""', url]]
+    : process.platform === 'darwin' ? ['open', [url]] : ['xdg-open', [url]];
+  import('node:child_process').then(({ spawn }) => {
+    try { spawn(cmd, args, { stdio: 'ignore', detached: true, windowsHide: true }).on('error', () => {}).unref(); } catch {}
+  });
+}
 
 // 최후 안전망: 처리되지 않은 Promise 거부로 프로세스가 종료되지 않게 (기본 동작은 종료) — 기록만 남김
 process.on('unhandledRejection', (e) => {
