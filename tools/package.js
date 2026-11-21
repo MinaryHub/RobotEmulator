@@ -29,7 +29,7 @@ const run = (cmd, args, opts = {}) => execFileSync(cmd, args, { stdio: 'inherit'
 const log = (...a) => console.log('•', ...a);
 
 // 저장소 파일 중 꾸러미에 넣지 않을 것
-const EXCLUDE = [/^test\//, /^\.github\//, /^screenshots\//, /^android\//, /^tools\/package\.js$/, /^tools\/release\.js$/, /^\.gitignore$/];
+const EXCLUDE = [/^test\//, /^\.github\//, /^screenshots\//, /^brand\//, /^android\//, /^tools\/package\.js$/, /^tools\/release\.js$/, /^\.gitignore$/];
 // node_modules 정리: 실행에 필요 없는 파일
 const PRUNE_FILE = /(\.map|\.d\.ts|\.d\.mts|\.d\.cts|\.tsbuildinfo|(?<!\.d)\.ts|\.md|\.markdown)$/i;
 const KEEP_FILE = /^(license|licence|notice|copying)/i;

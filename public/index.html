@@ -5,14 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Robot Emulator</title>
   <link rel="stylesheet" href="/style.css">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><path fill='%23f07a12' d='M6 28h20v-4H6zm4-6h6l6-10-4-2-5 8h-3z'/><circle cx='21' cy='9' r='4' fill='%23ccc'/></svg>">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <script type="importmap">
     { "imports": { "three": "/vendor/three/build/three.module.js", "three/addons/": "/vendor/three/examples/jsm/" } }
   </script>
 </head>
 <body>
   <header>
-    <div class="brand" title="산업용 로봇 에뮬레이터"><span class="logo">◆</span><span class="bt"> 산업용 로봇 에뮬레이터</span></div>
+    <div class="brand" title="산업용 로봇 에뮬레이터"><img class="logo" src="/favicon.svg" alt="" width="22" height="22"><span class="bt"> 산업용 로봇 에뮬레이터</span></div>
     <div class="hsel">
       <label>제조사 <select id="selVendor"></select></label>
       <label>모델 <select id="selRobot"></select></label>
