@@ -1,3 +1,5 @@
+<p align="center"><img src="brand/logo.svg" width="128" alt="Robot Emulator 로고"></p>
+
 # 산업용 로봇 에뮬레이터
 
 [English](README.md) | **한국어**
