@@ -51,6 +51,7 @@
 //            로봇 프로그램/다른 인터페이스와 값을 공유한다.
 import net from 'node:net';
 import { makeLogger, bindServer, startMove } from './common.js';
+import { hexOf, peerOf } from './traffic.js';
 
 const TAG = 'MODBUS';
 const NIO = 512;
@@ -81,7 +82,7 @@ export function alarmCodeNum(code) {
 }
 
 // ------------------------------------------------------------ 입력 레지스터 이미지 생성
-export function inputRegisters(ctrl) {
+export function inputRegisters(ctrl, needPose = true) {
   const r = new Array(IR_SIZE).fill(0);
   const st = ctrl.vm?.status ?? 'idle';
   let bits = 0;
@@ -109,13 +110,15 @@ export function inputRegisters(ctrl) {
   r[7] = ctrl.lastReject?.code ?? 0;
   r[8] = (ctrl.sysio?.lastPgno ?? 0) & 0xFFFF;
   for (let i = 0; i < 6; i++) putI32(r, 10 + i * 2, (ctrl.joints[i] ?? 0) * 1000);
-  let vp = [];
-  try { vp = ctrl.vendorPose(); } catch {}
-  const isAbb = ctrl.vendor === 'abb';
-  for (let i = 0; i < 7; i++) {
-    const v = vp[i] ?? 0;
-    const scale = i < 3 ? 1000 : isAbb ? 1e6 : 1000;
-    putI32(r, 30 + i * 2, i === 6 && !isAbb ? 0 : v * scale);
+  if (needPose) {
+    let vp = [];
+    try { vp = ctrl.vendorPose(); } catch {}
+    const isAbb = ctrl.vendor === 'abb';
+    for (let i = 0; i < 7; i++) {
+      const v = vp[i] ?? 0;
+      const scale = i < 3 ? 1000 : isAbb ? 1e6 : 1000;
+      putI32(r, 30 + i * 2, i === 6 && !isAbb ? 0 : v * scale);
+    }
   }
   putU32(r, 50, (Number(ctrl.cycleStats?.last?.total) || 0) * 1000);
   putU32(r, 52, (Number(ctrl.cycleStats?.current?.elapsed) || 0) * 1000);
@@ -140,7 +143,7 @@ export async function start(ctrl, opts = {}) {
       case 0: return 0;
       case 1: ok = ctrl.setServo(true) !== false; break;
       case 2: ctrl.setServo(false); break;
-      case 3: ok = !ctrl.alarms.length && ctrl.servo && !!(await ctrl.start({ step: false })); break;
+      case 3: ok = !!(await ctrl.start({ step: false })); break;
       case 4: {
         const active = ctrl.segment || ctrl.vm?.status === 'running' || ctrl.vm?.status === 'paused';
         if (active) ctrl.hold(); else ok = false;
@@ -151,7 +154,7 @@ export async function start(ctrl, opts = {}) {
       case 7: ctrl.resetAlarms(); break;
       case 8: ctrl.resetProgram(); break;
       case 9: {
-        if (!ctrl.servo || ctrl.alarms.length || ctrl.segment || ctrl.vm?.status === 'running') { ok = false; break; }
+        if (ctrl.segment || ctrl.vm?.status === 'running') { ok = false; break; }
         const err = await startMove(ctrl, { kind: 'J', target: { joints: [...ctrl.robot.home] }, speed: { frac: 0.3 }, base: null }, log);
         ok = !err;
         break;
@@ -186,25 +189,32 @@ export async function start(ctrl, opts = {}) {
     }
     return out;
   };
-  // 쓰기 전 전체 주소 검증 → 일부만 쓰이는 일이 없도록
+  // 쓰기 전 전체 주소 검증 → 일부만 쓰이는 일이 없도록 (파라미터 HR1/사용자 레지스터를 먼저 쓰고 명령 HR0을 마지막에 실행)
   const writeHolding = async (addr, vals) => {
     for (let a = addr; a < addr + vals.length; a++) {
       if (a >= 3 && a < HR_USER_BASE) throw new MbEx(EX_ADDR, `예약 주소 쓰기 ${a}`);
       if (a >= HR_USER_BASE + HR_USER_COUNT) throw new MbEx(EX_ADDR, `주소 범위 오류 ${a}`);
       if (a === 0 && !(vals[a - addr] in COMMANDS) && vals[a - addr] !== 0) throw new MbEx(EX_VALUE, `알 수 없는 명령 코드 ${vals[a - addr]}`);
     }
-    let regsChanged = false;
+    let regsChanged = false, pendingCmd = null;
     for (let a = addr; a < addr + vals.length; a++) {
       const v = vals[a - addr];
-      if (a === 0) { state.lastCmd = v; state.lastResult = await runCommand(v); }
+      if (a === 0) pendingCmd = v;
       else if (a === 1) ctrl.setOverride(Math.max(1, Math.min(100, v)));
       else if (a === 2) { /* 결과 레지스터: 쓰기 무시 */ }
       else { ctrl.regs.set(`MB:${a - HR_USER_BASE}`, toInt16(v)); regsChanged = true; }
     }
     if (regsChanged) ctrl.emitState();
+    if (pendingCmd !== null) { state.lastCmd = pendingCmd; state.lastResult = await runCommand(pendingCmd); }
   };
 
   // --- PDU 처리 → 응답 PDU
+  const pduSummary = (pdu) => {
+    const fc = pdu[0];
+    const fcs = `FC${String(fc).padStart(2, '0')}`;
+    if (pdu.length >= 5) return `${fcs} addr=${pdu.readUInt16BE(1)} qty/val=${pdu.readUInt16BE(3)}`;
+    return fcs;
+  };
   const handlePdu = async (pdu) => {
     const fc = pdu[0];
     const need = (n) => { if (pdu.length < n) throw new MbEx(EX_VALUE, 'PDU 길이 부족'); };
@@ -223,7 +233,7 @@ export async function start(ctrl, opts = {}) {
         const addr = pdu.readUInt16BE(1), qty = pdu.readUInt16BE(3);
         let vals;
         if (fc === 3) vals = readHolding(addr, qty);
-        else { checkRange(addr, qty, 125, IR_SIZE); vals = inputRegisters(ctrl).slice(addr, addr + qty); }
+        else { checkRange(addr, qty, 125, IR_SIZE); vals = inputRegisters(ctrl, addr + qty > 30 && addr < 44).slice(addr, addr + qty); }
         return regsResp(fc, vals);
       }
       case 5: {
@@ -246,7 +256,9 @@ export async function start(ctrl, opts = {}) {
         const addr = pdu.readUInt16BE(1), qty = pdu.readUInt16BE(3), bc = pdu[5];
         if (qty < 1 || qty > 1968 || bc !== Math.ceil(qty / 8) || pdu.length < 6 + bc) throw new MbEx(EX_VALUE, '수량/바이트 수 오류');
         if (addr + qty > NIO) throw new MbEx(EX_ADDR, `코일 주소 범위 오류 ${addr}+${qty}`);
-        for (let i = 0; i < qty; i++) ctrl.setDI(addr + i + 1, !!(pdu[6 + (i >> 3)] & (1 << (i & 7))));
+        const batch = [];
+        for (let i = 0; i < qty; i++) batch.push([addr + i + 1, !!(pdu[6 + (i >> 3)] & (1 << (i & 7)))]);
+        ctrl.setDIBatch(batch);
         return Buffer.from(pdu.subarray(0, 5));
       }
       case 16: {
@@ -281,7 +293,8 @@ export async function start(ctrl, opts = {}) {
   // --- TCP 연결: MBAP 프레이밍
   const server = net.createServer((sock) => {
     sockets.add(sock);
-    const peer = `${sock.remoteAddress}:${sock.remotePort}`;
+    const peer = peerOf(sock);
+    ctrl.traffic?.connect('modbus', peer);
     log(`클라이언트 접속 ${peer}`, true);
     let buf = Buffer.alloc(0);
     let chain = Promise.resolve(); // 연결별 요청 순차 처리
@@ -296,13 +309,19 @@ export async function start(ctrl, opts = {}) {
         buf = buf.subarray(6 + len);
         if (pid !== 0) { log(`프로토콜 ID ${pid} != 0 — 무시`); continue; }
         chain = chain.then(async () => {
-          let resp;
+          if (sock.destroyed) return;
+          const t0 = performance.now();
+          const sum = pduSummary(pdu);
+          if (await ctrl.traffic?.applyFault('modbus', peer, sum)) return;
+          let resp, ok = true, errMsg = null;
           try { resp = await handlePdu(pdu); }
           catch (e) {
+            ok = false; errMsg = e.message;
             const code = e instanceof MbEx ? e.code : EX_FAIL;
             log(`FC${pdu[0]} 예외 ${String(code).padStart(2, '0')}: ${e.message}`);
             resp = Buffer.from([(pdu[0] | 0x80) & 0xFF, code]);
           }
+          ctrl.traffic?.record('modbus', { client: peer, dir: 'req', summary: `${sum} → ${ok ? `OK (${resp.length}B)` : `EX 0x${resp[1].toString(16).padStart(2, '0')}`}`, hex: `${hexOf(pdu, 24)} | ${hexOf(resp, 24)}`, ok, error: errMsg, ms: performance.now() - t0 });
           const h = Buffer.alloc(7);
           h.writeUInt16BE(tid, 0); h.writeUInt16BE(0, 2); h.writeUInt16BE(resp.length + 1, 4); h[6] = unit;
           if (!sock.destroyed) sock.write(Buffer.concat([h, resp]));
@@ -310,7 +329,7 @@ export async function start(ctrl, opts = {}) {
       }
     });
     sock.on('error', () => {});
-    sock.on('close', () => { sockets.delete(sock); log(`클라이언트 종료 ${peer}`, true); });
+    sock.on('close', () => { sockets.delete(sock); ctrl.traffic?.disconnect('modbus', peer); log(`클라이언트 종료 ${peer}`, true); });
   });
 
   let r = await bindServer(server, port, host);

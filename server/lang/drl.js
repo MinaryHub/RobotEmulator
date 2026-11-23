@@ -502,8 +502,16 @@ function binop(op, a, b) {
     if (typeof a === 'string' || typeof b === 'string') throw err(`str 과 ${pyType(typeof a === 'string' ? b : a)} 는 더할 수 없습니다 — str() 로 바꾸세요`);
   }
   if (op === '*') {
-    if (typeof a === 'string' && typeof b === 'number') return a.repeat(Math.max(0, int(b)));
-    if (Array.isArray(a) && typeof b === 'number' && !isPos(a)) { const r = []; for (let i = 0; i < int(b); i++) r.push(...a); return r; }
+    if (typeof a === 'string' && typeof b === 'number') {
+      const n = Math.max(0, int(b));
+      if (a.length * n > 1_000_000) throw err('문자열 반복 크기 상한(1,000,000) 초과');
+      return a.repeat(n);
+    }
+    if (Array.isArray(a) && typeof b === 'number' && !isPos(a)) {
+      const n = Math.max(0, int(b));
+      if (a.length * n > 1_000_000) throw err('리스트 반복 크기 상한(1,000,000) 초과');
+      const r = []; for (let i = 0; i < n; i++) r.push(...a); return r;
+    }
   }
   if (op === '%' && typeof a === 'string') return percentFormat(a, b);
   const x = num(a, `연산자 ${op}`), y = num(b, `연산자 ${op}`);
@@ -1262,7 +1270,7 @@ function compileBody(prog, proc, body, sc) {
     }
     // 식 문장 (docstring 은 무시)
     const ast = parse(text, line);
-    if (ast.t === 'str' || ast.t === 'num' || ast.t === 'fstr') return;
+    if (ast.t === 'str' || ast.t === 'num') return;
     checkCallable(ast, line);
     const low = lower(ast, line);
     if (low.t === 'tmp') return;   // 분리된 호출 자체
@@ -1391,7 +1399,8 @@ function planPickPlace(ctrl) {
   const r = ctrl.robot;
   const tool = toolOf(ctrl);
   const ok = (p) => !!ikNearest(r, tcpToFlange({ p, R: DOWN }, tool, null), r.home);
-  const objs = ctrl.objects;
+  const objs = ctrl.objects || [];
+  if (!objs.length) return { app: 100, ok: true, pts: [] };
   const s = objs[0].size[2];
   const app = Math.round(Math.max(80, s * 2.5));
   const R = r.reach;

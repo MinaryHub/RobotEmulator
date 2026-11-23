@@ -163,10 +163,14 @@ export function initCellPanel(opts) {
 
 const r1 = (v) => (Math.round(v * 10) / 10).toString();
 const hex = (c) => '#' + (Number(c) & 0xffffff).toString(16).padStart(6, '0');
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 function fieldHtml(it, f) {
   const lb = LBL[f] ?? f;
-  if (BOOL.has(f)) return `<label>${lb}<input type="checkbox" data-f="${f}" ${it[f] !== false && it[f] ? 'checked' : ''}></label>`;
+  if (BOOL.has(f)) {
+    const checked = f === 'collide' ? it[f] !== false : !!it[f];
+    return `<label>${lb}<input type="checkbox" data-f="${f}" ${checked ? 'checked' : ''}></label>`;
+  }
   if (f === 'origColor') return `<label>${lb}<input type="checkbox" data-f="origColor" ${it.color === null || it.color === undefined ? 'checked' : ''}></label>`;
   if (f === 'color') return `<label>${lb}<input type="color" data-f="color" value="${hex(it.color ?? 0xb4bcc6)}"></label>`;
   if (f === 'unit') {
@@ -177,7 +181,7 @@ function fieldHtml(it, f) {
   if (f === 'opacity') return `<label>${lb}<input type="number" step="0.05" min="0.05" max="1" data-f="opacity" value="${it.opacity ?? (it.collide === false ? 0.5 : 1)}"></label>`;
   if (f === 'mode') return `<label>${lb}<select data-f="mode"><option value="auto" ${it.mode === 'auto' ? 'selected' : ''}>자동(비면 배출)</option><option value="edge" ${it.mode === 'edge' ? 'selected' : ''}>DO 상승 에지</option></select></label>`;
   if (f === 'size') return [0, 1, 2].map((i) => `<label>${['크기 X', '크기 Y', '크기 Z'][i]}<input type="number" step="any" data-f="size${i}" value="${r1(it.size[i])}"></label>`).join('');
-  if (TEXT.has(f)) return `<label>${lb}<input type="text" data-f="${f}" value="${String(it[f] ?? '').replace(/"/g, '&quot;')}"></label>`;
+  if (TEXT.has(f)) return `<label>${lb}<input type="text" data-f="${f}" value="${esc(it[f])}"></label>`;
   const v = it[f];
   return `<label>${lb}<input type="number" step="any" data-f="${f}" value="${v === null || v === undefined ? '' : r1(v)}"${f === 'z' && v === null ? ' placeholder="자동"' : ''}></label>`;
 }
@@ -207,13 +211,23 @@ function modelStatus(m, hit) {
   return `${size} · ${flags}${hit ? ' · <span style="color:#ff6b6b;font-weight:600">● 간섭 중</span>' : ''}`;
 }
 
+let lastCellRef = null;
+let lastHitSig = '';
 export function renderCellPanel(st) {
   if (!root || !st?.cell?.layout) return;
+  if (!root.classList.contains('active')) return;
+  const hitArr = (st.collision?.pairs || []).map((p) => p.b);
+  const hitSig = hitArr.join(',');
+  if (!force && st.cell === lastCellRef && hitSig === lastHitSig) return;
+  lastCellRef = st.cell;
+  lastHitSig = hitSig;
   const { layout: L, status = {}, presets = [], rev } = st.cell;
   const sel = $('#cellPreset', root);
-  if (sel.options.length !== presets.length) sel.innerHTML = presets.map((p) => `<option value="${p.id}">${p.name}</option>`).join('');
+  if (sel.options.length !== presets.length) sel.innerHTML = presets.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('');
   if (document.activeElement !== sel && L.preset) sel.value = L.preset;
-  $('#cellName', root).textContent = L.preset ? (presets.find((p) => p.id === L.preset)?.name ?? L.name) : `${L.name} (사용자 정의)`;
+  const nameTxt = L.preset ? (presets.find((p) => p.id === L.preset)?.name ?? L.name) : `${L.name} (사용자 정의)`;
+  const nameEl = $('#cellName', root);
+  if (nameEl.textContent !== nameTxt) nameEl.textContent = nameTxt;
   const list = $('#cellList', root);
   const key = rev + '|' + JSON.stringify(L);
   const editing = list.contains(document.activeElement) && /INPUT|SELECT/.test(document.activeElement.tagName);
@@ -228,15 +242,16 @@ export function renderCellPanel(st) {
       ...L.workpieces.map((w) => ({ kind: 'workpiece', it: w })),
     ];
     list.innerHTML = items.map(({ kind, it }) => {
-      return `<div class="cell-item ${collapsed.has(it.id) ? 'collapsed' : ''}" data-id="${it.id}" data-kind="${kind}">
-        <div class="hd"><button data-act="fold" title="접기/펼치기">${collapsed.has(it.id) ? '▸' : '▾'}</button><span class="k">${KIND_NAME[kind]}</span><b>${it.id}${it.name ? ' · ' + it.name : ''}</b>
+      const id = esc(it.id);
+      return `<div class="cell-item ${collapsed.has(it.id) ? 'collapsed' : ''}" data-id="${id}" data-kind="${esc(kind)}">
+        <div class="hd"><button data-act="fold" title="접기/펼치기">${collapsed.has(it.id) ? '▸' : '▾'}</button><span class="k">${KIND_NAME[kind]}</span><b>${id}${it.name ? ' · ' + esc(it.name) : ''}</b>
         <button data-act="del" title="삭제" ${kind === 'table' && L.tables.length < 2 ? 'disabled' : ''}>삭제</button></div>
-        <div class="st" data-st="${it.id}"></div>
+        <div class="st" data-st="${id}"></div>
         <div class="grid3">${FIELDS[kind].map((f) => fieldHtml(it, f)).join('')}</div>
       </div>`;
     }).join('') || '<div class="note">항목 없음</div>';
   }
-  const hit = new Set((st.collision?.pairs || []).map((p) => p.b));
+  const hit = new Set(hitArr);
   for (const d of [...L.devices, ...(L.models || [])]) {
     const el = list.querySelector(`[data-st="${window.CSS.escape(d.id)}"]`);
     if (!el) continue;

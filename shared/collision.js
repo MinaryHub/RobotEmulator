@@ -125,6 +125,11 @@ function toolLocalCapsules(g) {
       if (L > 1) caps.push({ a: [0, 0, 0], b: tip.slice(), r: 30 * SHRINK, toTip: true });
     }
   }
+  // 커스텀 STL 그리퍼 등 geom 세부 치수가 비어 있는 경우에도 기본 툴 캡슐 보장
+  if (!sections.length && !caps.length) {
+    const L = Math.hypot(...tip);
+    if (L > 1) caps.push({ a: [0, 0, 0], b: tip.slice(), r: 30 * SHRINK, toTip: true });
+  }
   for (const [z0, z1, rad] of sections) {
     const r = rad * SHRINK;
     const pull = Math.min(r, (z1 - z0) / 2) * 0.5;
@@ -309,9 +314,9 @@ export function segBoxDist(a, b, box) {
   const f = (t) => {
     const x = Math.abs(la[0] + dx * t) - h[0], y = Math.abs(la[1] + dy * t) - h[1], z = Math.abs(la[2] + dz * t) - h[2];
     const ox = x > 0 ? x : 0, oy = y > 0 ? y : 0, oz = z > 0 ? z : 0;
-    return Math.sqrt(ox * ox + oy * oy + oz * oz);
+    return ox * ox + oy * oy + oz * oz;
   };
-  return minConvex(f);
+  return Math.sqrt(minConvex(f));
 }
 function toLocal(p, box) {
   const x = p[0] - box.c[0], y = p[1] - box.c[1], z = p[2] - box.c[2];
@@ -323,12 +328,12 @@ function toLocal(p, box) {
 // 선분 ↔ 수직 원기둥(축 = z, 중심 (cx,cy), 반경 rad, z0~z1) 거리
 export function segCylDist(a, b, cx, cy, rad, z0, z1) {
   const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
-  return minConvex((t) => {
+  return Math.sqrt(minConvex((t) => {
     const x = a[0] + dx * t - cx, y = a[1] + dy * t - cy, z = a[2] + dz * t;
     let dr = Math.sqrt(x * x + y * y) - rad; if (dr < 0) dr = 0;
     const dzz = z > z1 ? z - z1 : z < z0 ? z0 - z : 0;
-    return Math.sqrt(dr * dr + dzz * dzz);
-  });
+    return dr * dr + dzz * dzz;
+  }));
 }
 
 // 선분 ↔ 평면 z = z0 (위쪽이 자유공간) — 부호 있는 거리 (아래로 뚫고 들어가면 음수)
@@ -393,16 +398,18 @@ export function checkCollision(model, jointsDeg, gripper, scene, objects, opts =
       const gap = aabbGap(c.a, c.b, t);
       report(c.id, 'table', gap > rr + 1 ? gap - rr : segBoxDist(c.a, c.b, t) - rr, 'env');
     }
-    // 받침대
+    // 받침대 (Z축 빠른 배제로 상공 작업 시 36회 탐색 생략)
     if (env.pedestal && PEDESTAL_TEST.has(c.id)) {
       const p = env.pedestal;
-      report(c.id, 'pedestal', segCylDist(c.a, c.b, 0, 0, p.r, p.z0, p.z1) - rr, 'env');
+      const zMin = c.a[2] < c.b[2] ? c.a[2] : c.b[2];
+      const zGap = zMin - p.z1;
+      report(c.id, 'pedestal', zGap > rr + 1 ? zGap - rr : segCylDist(c.a, c.b, 0, 0, p.r, p.z0, p.z1) - rr, 'env');
     }
     // 셀 장애물 (OBB / 메시). 외접구 → OBB 순으로 빠른 배제
     if (obstacles) {
       for (const ob of obstacles) {
         if (isTool && ob.tool === false) continue;
-        const br = Math.hypot(ob.h[0], ob.h[1], ob.h[2]);
+        const br = ob._br ?? (ob._br = Math.hypot(ob.h[0], ob.h[1], ob.h[2]));
         const dc = pointSegDist(ob.c, c.a, c.b) - br;
         if (dc > rr + 1) { report(c.id, ob.id, dc - rr, 'env'); continue; }
         const db = segBoxDist(c.a, c.b, ob);

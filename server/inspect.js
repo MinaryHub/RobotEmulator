@@ -62,7 +62,7 @@ export class Timeline {
     this.last[sig] = v;
     const e = { t: Math.round(this.ctrl.simMs), s: sig, v };
     this.events.push(e);
-    if (this.events.length > this.max) this.events.splice(0, this.events.length - this.max);
+    if (this.events.length > this.max + 2000) this.events = this.events.slice(-this.max);
     for (const l of this.listeners) l(e);
   }
   sampleStatus() {
@@ -77,6 +77,16 @@ export class Timeline {
   snapshot() {
     // 현재 값도 함께 (타임라인 시작 이전 상태 표시용)
     return { now: Math.round(this.ctrl.simMs), events: this.events.slice(-5000), current: { ...this.last } };
+  }
+  toCSV(ioLabels = {}) {
+    const esc = (s) => { const t = String(s ?? ''); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+    const lines = ['sim_ms,sim_sec,signal,label,value'];
+    for (const e of this.events) {
+      const m = /^(DI|DO)(\d+)$/.exec(e.s);
+      const lbl = m ? (ioLabels[m[1].toLowerCase()]?.[m[2]]?.name || '') : '';
+      lines.push(`${e.t},${(e.t / 1000).toFixed(3)},${esc(e.s)},${esc(lbl)},${e.v ? 1 : 0}`);
+    }
+    return lines.join('\n') + '\n';
   }
   clear() { this.events = []; }
 }

@@ -80,7 +80,7 @@ export class VM {
         this.current = { file: ins.file ?? f.proc.file, line: ins.line, proc: f.proc.name };
         this.ctrl.emitState();
         // 브레이크포인트: 해당 라인 실행 직전에 일시정지 (재개 직후 같은 명령에서는 다시 멈추지 않음)
-        if (this._bpSkip !== ins && this.ctrl.breakpoints?.has(`${this.current.file}:${this.current.line}`)) {
+        if (this.ctrl.breakpoints?.size > 0 && this._bpSkip !== ins && this.ctrl.breakpoints.has(`${this.current.file}:${this.current.line}`)) {
           this._bpSkip = ins;
           this.status = 'paused';
           this.ctrl.log('program', `브레이크포인트: ${this.current.file}:${this.current.line}`);
@@ -137,11 +137,18 @@ export class VM {
     if (this.status === 'done') {
       // 프로그램 종료 후 남은 모션(블렌딩 꼬리)까지 포함
       const t0 = this.ctrl.simMs;
+      this._finishing = true;
       if (!this.aborted && !this.detached) await this.ctrl.waitFor(() => this.ctrl.motionIdle || this.aborted || this.detached, Infinity, this);
-      st.motion += Math.max(0, this.ctrl.simMs - t0);
-      this.cycle++;
-      // 꼬리 대기 중 새 실행이 시작되면(detach) 이 사이클 통계는 버림 (새 실행의 통계를 덮지 않게)
-      if (!this.detached) this.ctrl.finishCycle(st);
+      this._finishing = false;
+      if (this.aborted) {
+        this.status = 'aborted';
+        if (this.ctrl.cycleStats.current === st) this.ctrl.cycleStats.current = null;
+      } else {
+        st.motion += Math.max(0, this.ctrl.simMs - t0);
+        this.cycle++;
+        // 꼬리 대기 중 새 실행이 시작되면(detach) 이 사이클 통계는 버림 (새 실행의 통계를 덮지 않게)
+        if (!this.detached) this.ctrl.finishCycle(st);
+      }
     } else if (this.ctrl.cycleStats.current === st) this.ctrl.cycleStats.current = null;
     try { this.prog.cleanup?.(this); } catch { /* 정리 실패는 무시 */ }
     this.ctrl.emitState();
@@ -171,7 +178,7 @@ export class VM {
 
   abort() {
     this.aborted = true;
-    if (this.status === 'running' || this.status === 'paused') this.status = 'aborted';
+    if (this.status === 'running' || this.status === 'paused' || this._finishing) this.status = 'aborted';
     this.ctrl.cancelMotion();
     this.ctrl.wakeWaiters?.(this);
     this.stepResume(false);

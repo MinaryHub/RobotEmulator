@@ -1139,7 +1139,7 @@ const INSTR = {
     const n = sigArg(c, args[0], 'do');
     const len = nm.PLENGTH !== undefined ? num(nm.PLENGTH) : 0.2;
     const ctrl = vm.ctrl;
-    if (nm.HIGH) { ctrl.setDO(n, true); return; }
+    if (nm.HIGH) { ctrl.setDO(n, true); ctrl.after(len, () => ctrl.setDO(n, false)); return; }
     const was = ctrl.getDO(n);
     ctrl.setDO(n, !was);
     ctrl.after(len, () => ctrl.setDO(n, was));

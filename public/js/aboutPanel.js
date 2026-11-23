@@ -36,7 +36,12 @@ function render() {
   if (!about) return;
   const u = about.update || {};
   $('#abVer').textContent = `v${about.version}`;
-  $('#abBuild').textContent = [about.commit && `커밋 ${about.commit}${about.branch ? ` (${about.branch})` : ''}`, about.install === 'git' ? 'git clone 설치' : '압축 파일 설치', `Node.js ${about.node}`].filter(Boolean).join(' · ');
+  const buildParts = [
+    about.commit && `<span>커밋 ${escHtml(about.commit)}${about.branch ? ` (${escHtml(about.branch)})` : ''}</span>`,
+    `<span>${about.install === 'git' ? 'git clone 설치' : '압축 파일 설치'}</span>`,
+    `<span>Node.js ${escHtml(about.node)}</span>`,
+  ].filter(Boolean);
+  $('#abBuild').innerHTML = buildParts.join(' · ');
   const L = about.links || {};
   let html;
   if (u.applying) html = `⏳ ${escHtml(u.applying)}`;

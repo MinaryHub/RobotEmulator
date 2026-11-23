@@ -14,6 +14,7 @@ import { checkCollision } from '../shared/collision.js';
 import { LANGS } from './lang/index.js';
 import { Cell } from './cell.js';
 import { localizeFiles } from './lang/examples-en.js';
+import { vendorAlarm } from '../shared/alarms.js';
 
 const NIO = 512;
 const TICK_MS = 8;
@@ -76,6 +77,17 @@ export class Controller extends EventEmitter {
     this.heldMs = 0;
     this._heldSince = 0;
     this._dirty = true;
+    // WebSocket stateDelta 최적화용 필드별 리비전 카운터 (매 틱 JSON.stringify 회피)
+    this._rev = { sysio: 1, cell: 1, scene: 1, safety: 1, ioLabels: 1, gripperIO: 1, cameras: 1, faults: 1 };
+    // 고장 주입 상태 (ROADMAP-SI P1-1)
+    this.faults = {
+      gripperFail: false,
+      conveyorStall: false,
+      feederJam: false,
+      sensorStuck: {},         // { sensorId: 'on' | 'off' }
+      commLatencyMs: 0,
+      commDropPct: 0,
+    };
     this.cell = new Cell(this);
     this.sysio = new SystemIO(this);  // 시스템 I/O (전용 입출력, 기본 사용 안 함)  // 셀 레이아웃 + 주변기기 (resetScene 보다 먼저)
     this.setGripper('robotiq-2f85');
@@ -92,6 +104,69 @@ export class Controller extends EventEmitter {
     this._waiters = [];        // 시뮬레이션 시계 기준 대기/조건/타이머 (서브스텝마다 평가)
     this._ticking = false;
     this._timer = setInterval(() => this.tick(), TICK_MS);
+  }
+
+  _bumpRev(key) { if (this._rev && key in this._rev) this._rev[key]++; }
+
+  close() {
+    if (this._timer) { clearInterval(this._timer); this._timer = null; }
+    this.stopProgram();
+  }
+
+  // ------------------------------------------------------------ 고장 주입 (P1-1)
+  setFaults(patch = {}) {
+    if (!patch || typeof patch !== 'object') return this.faults;
+    const f = this.faults;
+    if (patch.gripperFail !== undefined) f.gripperFail = !!patch.gripperFail;
+    if (patch.conveyorStall !== undefined) f.conveyorStall = !!patch.conveyorStall;
+    if (patch.feederJam !== undefined) f.feederJam = !!patch.feederJam;
+    if (patch.commLatencyMs !== undefined) {
+      const ms = Number(patch.commLatencyMs);
+      f.commLatencyMs = Number.isFinite(ms) ? Math.max(0, Math.min(5000, Math.round(ms))) : 0;
+    }
+    if (patch.commDropPct !== undefined) {
+      const pct = Number(patch.commDropPct);
+      f.commDropPct = Number.isFinite(pct) ? Math.max(0, Math.min(100, Math.round(pct))) : 0;
+    }
+    if (patch.sensorStuck && typeof patch.sensorStuck === 'object') {
+      const next = { ...f.sensorStuck };
+      for (const [id, mode] of Object.entries(patch.sensorStuck)) {
+        if (mode === 'on' || mode === 'off') next[id] = mode;
+        else delete next[id];
+      }
+      f.sensorStuck = next;
+    }
+    this.syncGripperFeedback();
+    this.cell._syncDeviceDIs?.();
+    this._bumpRev('faults');
+    this.log('system', `고장 주입 설정 변경 (그리퍼실패=${f.gripperFail ? 'ON' : 'OFF'}, 컨베이어정지=${f.conveyorStall ? 'ON' : 'OFF'}, 피더막힘=${f.feederJam ? 'ON' : 'OFF'}, 지연=${f.commLatencyMs}ms, 손실=${f.commDropPct}%)`);
+    this.emitState();
+    return f;
+  }
+  clearFaults() {
+    this.faults = { gripperFail: false, conveyorStall: false, feederJam: false, sensorStuck: {}, commLatencyMs: 0, commDropPct: 0 };
+    this.syncGripperFeedback();
+    this.cell._syncDeviceDIs?.();
+    this._bumpRev('faults');
+    this.log('system', '고장 주입 전체 해제');
+    this.emitState();
+    return this.faults;
+  }
+  injectFaultAction(kind, msg) {
+    if (kind === 'servoTrip') {
+      this._freeze();
+      this._servoOffKeep();
+      this.alarm('SERVO_TRIP', msg || '고장 주입: 서보 드라이브 트립');
+    } else if (kind === 'motionStop') {
+      this.cancelMotion();
+      if (this.vm && (this.vm.status === 'running' || this.vm.status === 'paused' || this.vm._finishing)) this.vm.abort();
+      this.log('alarm', '고장 주입: 모션 강제 정지');
+      this.emitState();
+    } else {
+      const code = String(kind || 'INTERNAL').toUpperCase();
+      this.alarm(code, msg || `고장 주입: ${code}`);
+      if (this.vm && (this.vm.status === 'running' || this.vm.status === 'paused' || this.vm._finishing)) this.vm.abort();
+    }
   }
 
   // ------------------------------------------------------------ 설정
@@ -111,7 +186,8 @@ export class Controller extends EventEmitter {
     this.jog = null;
     this.toolOverride = null;
     this.base = null;
-    this.alarms = [];
+    // 비상정지/안전 펜스가 여전히 활성인 경우 해당 안전 알람은 유지
+    this.alarms = this.safety ? this.alarms.filter((a) => (a.code === 'ESTOP' && this.estopActive) || (a.code === 'FENCE' && this.safety.fenceOpen && this.autoMode)) : [];
     this.resetScene();
     if (vendorChanged) {
       // 이전 제조사의 프로그램/변수는 보관해 두었다가 다시 선택하면 복원
@@ -158,6 +234,7 @@ export class Controller extends EventEmitter {
   setCameras(list) {
     const before = this.cameras.length;
     this.cameras = normalizeCameras(list);
+    this._bumpRev('cameras');
     if (this.cameras.length !== before) this.log('system', `카메라 ${this.cameras.length}대 장착`);
     this.emitState();
   }
@@ -175,9 +252,10 @@ export class Controller extends EventEmitter {
   }
 
   alarm(code, msg) {
-    const a = { t: Date.now(), code, msg };
+    const va = vendorAlarm(this.vendor, code);
+    const a = { t: Date.now(), code, vendorCode: va.code, vendorName: va.name, msg };
     this.alarms.push(a);
-    this.log('alarm', `[${code}] ${msg}`);
+    this.log('alarm', `[${code}${va.code !== code ? '/' + va.code : ''}] ${msg}`);
     this.cancelMotion();
     this.emitState();
   }
@@ -197,17 +275,18 @@ export class Controller extends EventEmitter {
 
   snapshot() {
     const tcpWorld = fkTcp(this.robot, this.joints, this.tool, null);
+    const tcpPose = this.base ? poseMul(poseInv(this.base), tcpWorld) : tcpWorld;
     const doOn = [], diOn = [];
     for (let i = 1; i <= NIO; i++) { if (this.io.do[i]) doOn.push(i); if (this.io.di[i]) diOn.push(i); }
     return {
       robotId: this.robot.id, vendor: this.vendor, gripperId: this.gripper.id, gripperCustom: this.gripper.custom ? this.gripper : null,
-      joints: this.joints, tcp: this.vendorPose(), tcpWorld: { p: tcpWorld.p, q: quatFromR(tcpWorld.R) },
+      joints: this.joints, tcp: toVendorPose(this.vendor, tcpPose), tcpWorld: { p: tcpWorld.p, q: quatFromR(tcpWorld.R) },
       tool: this.tool.p.concat(quatFromR(this.tool.R)),
       grip: { pos: this.grip.pos, closed: this.grip.closed, holding: this.grip.holding?.id ?? null },
       io: { do: doOn, di: diOn, names: this.ioNames }, gripperIO: this.gripperIO,
       servo: this.servo, mode: this.mode, override: this.override, held: this.held,
       interlock: this.interlock, safety: { ...this.safety, estop: this.estopActive }, lastReject: this.lastReject,
-      ioLabels: this.ioLabels, sysio: this.sysio.snapshot(),
+      ioLabels: this.ioLabels, sysio: this.sysio.snapshot(), faults: this.faults,
       moving: this.segs.length > 0 || !!this.jog, blendEnabled: this.blendEnabled,
       collision: this.collision, collisionMode: this.collisionMode, autoResetScene: this.autoResetScene,
       breakpoints: [...this.breakpoints], simMs: Math.round(this.simMs), timeScale: this.timeScale,
@@ -233,19 +312,19 @@ export class Controller extends EventEmitter {
   get autoMode() { return this.mode === 'PLAY' || this.mode === 'REMOTE'; }
 
   // 명령 허용 판정. 허용이면 null, 거부면 { code, reason }
-  //  op: start | resume | servoOn | move | jog | mode
+  //  op: start | resume | servoOn | move | jog | mode | select
   checkCommand(op, source = 'internal') {
     const S = this.safety;
     // 안전 신호는 출처·인터록 설정과 관계없이 항상 적용
-    if (['start', 'resume', 'servoOn', 'move', 'jog'].includes(op)) {
+    if (['start', 'resume', 'servoOn', 'move', 'jog', 'select'].includes(op)) {
       if (this.estopActive) return REJECT.ESTOP;
-      if (S.fenceOpen && this.autoMode && op !== 'jog') return REJECT.FENCE_OPEN;
+      if (S.fenceOpen && this.autoMode && op !== 'jog' && op !== 'select') return REJECT.FENCE_OPEN;
     }
     if (op === 'jog' && S.requireEnable && !S.enable) return REJECT.ENABLE_OFF;
     if (!this.interlock || source === 'internal') return null;
     if (op === 'mode') return source === 'ext' ? REJECT.MODE_LOCKED : null;
     if (op === 'jog') return this.mode === 'TEACH' ? null : REJECT.JOG_NOT_TEACH;
-    if (source === 'ext' && ['start', 'resume', 'servoOn', 'move'].includes(op) && this.mode !== 'REMOTE') return REJECT.NOT_REMOTE;
+    if (source === 'ext' && ['start', 'resume', 'servoOn', 'move', 'select'].includes(op) && this.mode !== 'REMOTE') return REJECT.NOT_REMOTE;
     if (source === 'ui' && ['start', 'resume', 'move'].includes(op) && this.mode === 'REMOTE') return REJECT.REMOTE_LOCAL;
     return null;
   }
@@ -272,8 +351,9 @@ export class Controller extends EventEmitter {
   // 안전 알람: 일반 알람과 달리 모션을 취소하지 않음 (정지 위치에서 재개 가능하도록 HOLD 로 동결)
   _safetyAlarm(code, msg) {
     if (this.alarms.some((a) => a.code === code)) return;
-    this.alarms.push({ t: Date.now(), code, msg });
-    this.log('alarm', `[${code}] ${msg}`);
+    const va = vendorAlarm(this.vendor, code);
+    this.alarms.push({ t: Date.now(), code, vendorCode: va.code, vendorName: va.name, msg });
+    this.log('alarm', `[${code}${va.code !== code ? '/' + va.code : ''}] ${msg}`);
   }
   // 동작 중이면 HOLD 로 동결 (hold() 와 달리 동작이 없어도 조용히 통과)
   _freeze() {
@@ -302,6 +382,7 @@ export class Controller extends EventEmitter {
     } else if (!this.estopActive && was) {
       this.log('system', '비상정지 해제 — 알람 리셋 후 서보 ON, 시작');
     }
+    this._bumpRev('safety');
     this.emitState();
   }
 
@@ -320,15 +401,17 @@ export class Controller extends EventEmitter {
         this._safetyAlarm('FENCE', '자동 운전 중 안전 펜스 열림 (정지 범주 1)');
       }
     }
+    this._bumpRev('safety');
     this.emitState();
   }
 
-  setEnableSwitch(on) { this.safety.enable = !!on; if (!on) this.jog = null; this.emitState(); }
+  setEnableSwitch(on) { this.safety.enable = !!on; if (!on) this.jog = null; this._bumpRev('safety'); this.emitState(); }
 
   setSafetyOptions(o = {}) {
     if (o.requireEnable !== undefined) this.safety.requireEnable = !!o.requireEnable;
     if (o.fenceStop === 'stop1' || o.fenceStop === 'stop2') this.safety.fenceStop = o.fenceStop;
     if (o.interlock !== undefined) { this.interlock = !!o.interlock; this.log('system', `모드 인터록 ${this.interlock ? 'ON' : 'OFF'}`); }
+    this._bumpRev('safety');
     this.emitState();
   }
 
@@ -340,6 +423,7 @@ export class Controller extends EventEmitter {
     const name = String(label?.name ?? '').trim().slice(0, 40), desc = String(label?.desc ?? '').trim().slice(0, 120);
     if (!name && !desc) delete this.ioLabels[type][n];
     else this.ioLabels[type][n] = { name, desc };
+    this._bumpRev('ioLabels');
     this.emitState();
   }
   setIoLabels(labels) {
@@ -349,6 +433,7 @@ export class Controller extends EventEmitter {
       if (k >= 1 && k <= NIO && (l?.name || l?.desc)) out[t][k] = { name: String(l.name ?? '').slice(0, 40), desc: String(l.desc ?? '').slice(0, 120) };
     }
     this.ioLabels = out;
+    this._bumpRev('ioLabels');
     this.emitState();
   }
 
@@ -374,6 +459,12 @@ export class Controller extends EventEmitter {
     if (this.interlock && (prev === 'TEACH') !== (m === 'TEACH') && (this.vm?.status === 'running' || this.vm?.status === 'paused' || this.segment)) {
       this.stopProgram();
       this.log('system', '모드 전환으로 프로그램 정지');
+    }
+    // 안전 펜스가 열린 채 자동 운전(PLAY/REMOTE)으로 전환되면 즉시 안전 정지 적용
+    if (this.autoMode && this.safety.fenceOpen && this.safety.fenceStop !== 'stop2' && this.servo) {
+      this._freeze();
+      this._servoOffKeep();
+      this._safetyAlarm('FENCE', '안전 펜스 열린 상태에서 자동 운전 전환 (정지 범주 1)');
     }
     this.jog = null;
     this.emitState();
@@ -404,9 +495,25 @@ export class Controller extends EventEmitter {
   setDI(n, v) {
     n = Number(n);
     if (!(n >= 1 && n <= NIO)) throw new Error(`입력 번호 범위 초과: ${n}`);
-    this.io.di[n] = !!v;
-    this.emit('io', { type: 'di', n, v: !!v });
+    v = !!v;
+    if (this.io.di[n] === v) return;
+    this.io.di[n] = v;
+    this.emit('io', { type: 'di', n, v });
     this.emitState();
+  }
+  // 대량 DI 갱신 (Modbus FC15, HSE 다중 쓰기 등): 바뀐 비트만 이벤트 발생, 상태 갱신은 1회
+  setDIBatch(entries) {
+    let any = false;
+    for (const [rawN, rawV] of entries) {
+      const n = Number(rawN);
+      if (!(n >= 1 && n <= NIO)) throw new Error(`입력 번호 범위 초과: ${n}`);
+      const v = !!rawV;
+      if (this.io.di[n] === v) continue;
+      this.io.di[n] = v;
+      this.emit('io', { type: 'di', n, v });
+      any = true;
+    }
+    if (any) this.emitState();
   }
   getDI(n) { return !!this.io.di[Number(n)]; }
   // 이름 기반 신호 (RAPID 등). 처음 보는 이름은 빈 번호에 자동 매핑
@@ -434,6 +541,11 @@ export class Controller extends EventEmitter {
     }
     this.grip.closed = close;
     if (close) {
+      if (this.faults?.gripperFail) {
+        this.log('gripper', '[고장 주입] 그리퍼 파지 실패 (공작물 미파지 · 확인 DI 미응답)');
+        this.emitState();
+        return;
+      }
       const obj = this.findGraspable();
       if (obj) {
         const tcp = fkTcp(this.robot, this.joints, this.gripperTcp, null);
@@ -468,15 +580,15 @@ export class Controller extends EventEmitter {
     const yaw = Math.atan2(o.pose.R[1][0], o.pose.R[0][0]);
     o.pose = { p: [...o.pose.p], R: Rz(yaw) };
     let support = this.scene.floorZ;
-    const [x, y] = o.pose.p;
+    const [x, y, z] = o.pose.p;
     const t = this.scene.table;
-    if (Math.abs(x - t.x) <= t.w / 2 && Math.abs(y - t.y) <= t.d / 2) support = Math.max(support, t.z);
-    support = Math.max(support, this.cell.supportAt(x, y, o.pose.p[2])); // 추가 테이블·컨베이어·장애물 윗면
+    if (z >= t.z - 1 && Math.abs(x - t.x) <= t.w / 2 && Math.abs(y - t.y) <= t.d / 2) support = Math.max(support, t.z);
+    support = Math.max(support, this.cell.supportAt(x, y, z)); // 추가 테이블·컨베이어·장애물 윗면
     for (const other of this.objects) {
       if (other === o) continue;
       if (Math.abs(x - other.pose.p[0]) < (other.size[0] + o.size[0]) / 2 * 0.8 &&
           Math.abs(y - other.pose.p[1]) < (other.size[1] + o.size[1]) / 2 * 0.8 &&
-          other.pose.p[2] < o.pose.p[2]) support = Math.max(support, other.pose.p[2] + other.size[2] / 2);
+          other.pose.p[2] < z) support = Math.max(support, other.pose.p[2] + other.size[2] / 2);
     }
     o.pose.p[2] = support + o.size[2] / 2;
   }
@@ -484,10 +596,11 @@ export class Controller extends EventEmitter {
   syncGripperFeedback() {
     const g = this.gripperIO;
     if (!this.grip) return;
-    const closedFb = this.grip.closed && this.grip.pos > 0.95 || (this.grip.holding && this.grip.closed);
+    const fail = !!this.faults?.gripperFail;
+    const closedFb = !fail && (this.grip.closed && this.grip.pos > 0.95 || (this.grip.holding && this.grip.closed));
     const openFb = !this.grip.closed && this.grip.pos < 0.05;
     // 변화가 있을 때만 기록 → 외부(UI/통신)에서 같은 DI 를 강제로 바꿔도 덮어쓰지 않음
-    const fb = { fbClosed: !!closedFb, fbOpen: !!openFb, fbPart: !!this.grip.holding };
+    const fb = { fbClosed: !!closedFb, fbOpen: !!openFb, fbPart: !fail && !!this.grip.holding };
     const last = this._fbLast || {};
     for (const k of ['fbClosed', 'fbOpen', 'fbPart']) {
       if (g[k] && (fb[k] !== last[k] || last[k + 'No'] !== g[k])) { this.io.di[g[k]] = fb[k]; this.emit('io', { type: 'di', n: g[k], v: fb[k] }); this.emitState(); }
@@ -530,7 +643,18 @@ export class Controller extends EventEmitter {
       if (!j) throw new MotionError('UNREACHABLE', `목표 위치에 도달할 수 없습니다 (작업영역/관절한계 밖) [${tg.pose.p.map((v) => v.toFixed(1)).join(', ')}]`);
       return j;
     };
-    const toPose = (tg) => (tg.pose ? tg.pose : fkTcp(this.robot, tg.joints, tool, base));
+    const toPose = (tg) => {
+      if (!tg || typeof tg !== 'object') throw new MotionError('BAD_TARGET', '목표 위치가 올바르지 않습니다');
+      if (tg.pose) {
+        if (!Array.isArray(tg.pose.p) || tg.pose.p.length !== 3 || !tg.pose.p.every(Number.isFinite) || !Array.isArray(tg.pose.R) || tg.pose.R.length !== 3) {
+          throw new MotionError('BAD_TARGET', '목표 위치(pose)가 올바르지 않습니다');
+        }
+        return tg.pose;
+      }
+      const j = Array.isArray(tg.joints) ? tg.joints.map(Number) : [];
+      if (j.length !== 6 || !j.every(Number.isFinite)) throw new MotionError('BAD_TARGET', '목표 관절값(joints)이 올바르지 않습니다');
+      return fkTcp(this.robot, j, tool, base);
+    };
     try {
       const sp = cmd.speed || {};
       for (const k of ['frac', 'tcp', 'rot']) {
@@ -578,6 +702,12 @@ export class Controller extends EventEmitter {
 
   // 조그: {type:'joint', axis:0..5, dir:±1, speed:0~1} | {type:'cart', axis:0..5 (x,y,z,rx,ry,rz), dir, speed, frame:'base'|'tool'}
   startJog(j, source = 'ui') {
+    if (!j || typeof j !== 'object') return;
+    const type = j.type === 'cart' ? 'cart' : j.type === 'joint' ? 'joint' : null;
+    const axis = Number(j.axis);
+    const dir = Number(j.dir);
+    const speed = j.speed === undefined ? 0.1 : Number(j.speed);
+    if (!type || !Number.isInteger(axis) || axis < 0 || axis > 5 || !Number.isFinite(dir) || dir === 0 || !Number.isFinite(speed)) return;
     if (!this.servo) { this.log('system', '조그: 서보 OFF'); return; }
     const r = this.checkCommand('jog', source);
     if (r) { if (this.lastReject?.op !== 'jog' || Date.now() - this.lastReject.t > 2000) this.reject('jog', source, r); return; }
@@ -588,9 +718,44 @@ export class Controller extends EventEmitter {
       }
       return;
     }
-    this.jog = { ...j, until: performance.now() + 400 };
+    this.jog = { type, axis, dir: Math.sign(dir), speed: Math.max(0.01, Math.min(1, speed)), frame: j.frame === 'tool' ? 'tool' : 'base', until: performance.now() + 400 };
   }
   stopJog() { this.jog = null; this.emitState(); }
+
+  // 스텝 조그: 지정한 증분(deg 또는 mm)만큼 1회 이동
+  stepJog(j, source = 'ui') {
+    if (!j || typeof j !== 'object') return { ok: false, reason: '잘못된 조그 입력' };
+    const type = j.type === 'cart' ? 'cart' : j.type === 'joint' ? 'joint' : null;
+    const axis = Number(j.axis), dir = Number(j.dir), step = Number(j.step);
+    if (!type || !Number.isInteger(axis) || axis < 0 || axis > 5 || !Number.isFinite(dir) || dir === 0 || !Number.isFinite(step) || step <= 0 || step > 100) {
+      return { ok: false, reason: '잘못된 스텝 조그 값' };
+    }
+    const g = this._teachGate(source);
+    if (g) return g;
+    const r = this.robot;
+    const s = Math.sign(dir) * step;
+    let nj;
+    if (type === 'joint') {
+      nj = [...this.joints];
+      nj[axis] += s;
+      const [lo, hi] = r.limits[axis];
+      if (nj[axis] < lo || nj[axis] > hi) return { ok: false, reason: `소프트 리밋: ${axis + 1}축` };
+    } else {
+      const tool = this.tool;
+      const cur = fkTcp(r, this.joints, tool, null);
+      let next;
+      if (axis < 3) {
+        const v = [0, 0, 0]; v[axis] = s;
+        next = j.frame === 'tool' ? poseMul(cur, { p: v, R: Rz(0) }) : { p: add(cur.p, v), R: cur.R };
+      } else {
+        const rot = [Rx, Ry, Rz][axis - 3](s * DEG);
+        next = j.frame === 'tool' ? { p: cur.p, R: mul3(cur.R, rot) } : { p: cur.p, R: mul3(rot, cur.R) };
+      }
+      nj = ikNearest(r, tcpToFlange(next, tool, null), this.joints);
+      if (!nj || nj.some((v, i) => Math.abs(v - this.joints[i]) > 20)) return { ok: false, reason: '조그: 도달 불가/특이점' };
+    }
+    return this._teachApply(nj);
+  }
 
   // 티칭용: 관절각 직접 지정 (모션 없이 즉시)
   setJointsDirect(j) {
@@ -621,15 +786,17 @@ export class Controller extends EventEmitter {
       const ax = j.findIndex((v, i) => v < this.robot.limits[i][0] || v > this.robot.limits[i][1]);
       return { ok: false, reason: `소프트 리밋: ${ax + 1}축 (${j[ax].toFixed(1)}°)` };
     }
+    let preCol = null;
     if (this.collisionMode === 'stop') {
       const held = this.grip?.holding?.id;
-      const c = checkCollision(this.robot, j, this.gripper, this.scene, this.objects, { ignoreObjects: held ? [held] : [], obstacles: this.cell.obstacles() });
-      if (c.hit) return { ok: false, reason: `간섭: ${c.pairs.map((p) => `${p.a}↔${p.b}`).join(', ')}`, collision: true };
+      preCol = checkCollision(this.robot, j, this.gripper, this.scene, this.objects, { ignoreObjects: held ? [held] : [], obstacles: this.cell.obstacles() });
+      if (preCol.hit) return { ok: false, reason: `간섭: ${preCol.pairs.map((p) => `${p.a}↔${p.b}`).join(', ')}`, collision: true };
     }
     this.joints = [...j];
     this.jog = null;
     this.updateHeld();
-    this.checkCollisionNow();
+    if (preCol) this.collision = { hit: false, pairs: [] };
+    else this.checkCollisionNow();
     this.emitState();
     return { ok: true, joints: this.joints };
   }
@@ -681,7 +848,11 @@ export class Controller extends EventEmitter {
     return new Promise((res) => this._waiters.push({ pred, until, res, owner }));
   }
   // 시뮬레이션 시간 sec 후 fn 실행 (펄스 출력 등)
-  after(sec, fn) { this._waiters.push({ until: this.simMs + Math.max(0, sec) * 1000, fn }); }
+  after(sec, fn) {
+    const s = Number(sec);
+    const ms = Number.isFinite(s) ? Math.max(0, s) * 1000 : 0;
+    this._waiters.push({ until: this.simMs + ms, fn });
+  }
   // owner 의 대기를 모두 즉시 깨움 (프로그램 중단 시)
   wakeWaiters(owner) {
     const keep = [];
@@ -793,13 +964,14 @@ export class Controller extends EventEmitter {
 
   applyJog(dt) {
     const j = this.jog;
+    if (!j || !Number.isInteger(j.axis) || j.axis < 0 || j.axis > 5 || !Number.isFinite(j.dir)) { this.jog = null; return; }
     const r = this.robot;
     const sp = Math.max(0.01, Math.min(1, j.speed ?? 0.1)) * this.override / 100;
     if (j.type === 'joint') {
       const nj = [...this.joints];
       nj[j.axis] += j.dir * r.maxSpeed[j.axis] * sp * dt;
       const [lo, hi] = r.limits[j.axis];
-      if (nj[j.axis] < lo || nj[j.axis] > hi) { this.jog = null; this.log('system', `조그: 축${j.axis + 1} 소프트리밋`); return; }
+      if (!Number.isFinite(nj[j.axis]) || nj[j.axis] < lo || nj[j.axis] > hi) { this.jog = null; this.log('system', `조그: 축${j.axis + 1} 소프트리밋`); return; }
       this.joints = nj;
     } else {
       const tool = this.tool;
@@ -830,7 +1002,7 @@ export class Controller extends EventEmitter {
       const desc = r.pairs.map((p) => `${p.a}↔${p.b}`).join(', ');
       if (this.collisionMode === 'stop') {
         this.alarm('COLLISION', `간섭 감지: ${desc}`);
-        this.vm?.status === 'running' && this.vm.abort();
+        if (this.vm && (this.vm.status === 'running' || this.vm.status === 'paused' || this.vm._finishing)) this.vm.abort();
       } else this.log('alarm', `[경고] 간섭 감지: ${desc}`);
     }
     if (r.hit !== was) this.emitState();
@@ -870,12 +1042,13 @@ export class Controller extends EventEmitter {
     for (const [name, text] of entries) this.files.set(name, String(text ?? '').replace(/\r\n/g, '\n'));
     if (!this.main || !this.files.has(this.main)) this.main = this.lang.pickMain([...this.files.keys()], this.files);
     this.compile(true);
+    this.emit('files');
     this.emitState();
   }
-  deleteFile(name) { this.files.delete(name); if (this.main === name) this.main = this.lang.pickMain([...this.files.keys()], this.files); this.compile(true); this.emitState(); }
+  deleteFile(name) { this.files.delete(name); if (this.main === name) this.main = this.lang.pickMain([...this.files.keys()], this.files); this.compile(true); this.emit('files'); this.emitState(); }
   setMain(name) {
     if (!this.files.has(name)) throw new Error(`파일 없음: ${name}`);
-    this.main = name; this.compile(true); this.emitState();
+    this.main = name; this.compile(true); this.emit('files'); this.emitState();
   }
 
   compile(quiet = false) {
@@ -910,7 +1083,12 @@ export class Controller extends EventEmitter {
     if (this.alarms.length) { this.log('system', '알람 리셋 후 시작하십시오'); this._noteReject('start', source, REJECT.ALARM); return false; }
     if (!this.servo) { this.log('system', '서보 OFF — 시작 불가'); this._noteReject('start', source, REJECT.SERVO_OFF); return false; }
     if (this.vm && this.vm.status === 'running' && this.held) { this.resume(); return true; }
-    if (this.vm && this.vm.status === 'paused') { this.vm.stepResume(step); return true; }
+    if (this.vm && this.vm.status === 'paused') {
+      if (this.held) { this.heldMs += performance.now() - this._heldSince; this.held = false; this.emit('resume'); }
+      this.vm.stepResume(step);
+      this.emitState();
+      return true;
+    }
     if (this.vm?.status === 'running') return true;
     // 직전 실행이 아직 마지막 모션(블렌딩 꼬리)을 기다리는 중이면 분리 — 새 실행의 모션을 자기 것으로 세지 않게
     if (['done', 'error', 'aborted'].includes(this.vm?.status)) this.vm.detach?.();
@@ -957,7 +1135,7 @@ export class Controller extends EventEmitter {
   }
 
   stopProgram() {
-    if (this.vm && (this.vm.status === 'running' || this.vm.status === 'paused')) { this.vm.abort(); this.log('system', '프로그램 정지'); }
+    if (this.vm && (this.vm.status === 'running' || this.vm.status === 'paused' || this.vm._finishing)) { this.vm.abort(); this.log('system', '프로그램 정지'); }
     if (this.held) this.heldMs += performance.now() - this._heldSince;
     this.held = false;
     this.emit('resume');

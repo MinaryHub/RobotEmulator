@@ -46,13 +46,14 @@ export class ChatSession {
     this.abort = null;
   }
 
-  reset() { this.stop(); this.messages = []; }
+  reset() { this._gen = (this._gen || 0) + 1; this.stop(); this.messages = []; }
   stop() { this.abort?.abort(); }
 
   async ask(text) {
     if (this.busy) { this.send({ ev: 'error', msg: '이전 요청을 처리 중입니다. 정지 후 다시 보내세요.' }); return; }
     this.busy = true;
     this.abort = new AbortController();
+    const gen = this._gen || 0;
     const base = this.messages.length;
     this.messages.push({ role: 'user', content: String(text) });
     this.ctrl.log('system', `Claude 채팅: ${String(text).slice(0, 60)}`);
@@ -60,8 +61,8 @@ export class ChatSession {
       await this._loop();
       this.send({ ev: 'done' });
     } catch (e) {
-      // 실패한 턴은 대화에서 제거 (다음 질문이 깨진 기록 위에서 시작하지 않도록)
-      this.messages.length = base;
+      // 실패한 턴은 대화에서 제거 (reset()으로 이미 비워졌으면 건드리지 않음)
+      if ((this._gen || 0) === gen && this.messages.length > base) this.messages.length = base;
       this.send({ ev: 'error', msg: describeError(e) });
     } finally {
       this.busy = false;

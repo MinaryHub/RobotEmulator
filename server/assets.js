@@ -49,7 +49,7 @@ export class AssetStore {
     let h;
     try { h = JSON.parse(body.subarray(4, 4 + hl).toString('utf8')); } catch { throw new Error('업로드 헤더 JSON 오류'); }
     const gl = Number(h.glbBytes), cl = Number(h.colBytes);
-    if (!(gl > 12) || !(cl > 16) || 4 + hl + gl + cl !== body.length) throw new Error('업로드 크기가 헤더와 맞지 않습니다');
+    if (!Number.isSafeInteger(gl) || !Number.isSafeInteger(cl) || !(gl > 12) || !(cl > 16) || 4 + hl + gl + cl !== body.length) throw new Error('업로드 크기가 헤더와 맞지 않습니다');
     const glb = body.subarray(4 + hl, 4 + hl + gl), col = body.subarray(4 + hl + gl);
     if (glb.toString('latin1', 0, 4) !== 'glTF') throw new Error('표시용 모델이 GLB 형식이 아닙니다');
     const mesh = decodeCol(col);                  // 형식·인덱스 검증 (오류 시 throw)
@@ -109,7 +109,10 @@ export class AssetStore {
   unpack(id, rec) {
     if (!isAssetId(id)) throw new Error(`잘못된 모델 id: ${id}`);
     if (typeof rec?.glb !== 'string' || typeof rec?.col !== 'string') throw new Error(`묶인 모델 데이터가 없습니다: ${id}`);
+    const estBytes = Math.ceil((rec.glb.length + rec.col.length) * 0.75);
+    if (estBytes > MAX_UPLOAD) throw new Error(`묶인 모델 크기가 상한을 넘습니다: ${rec.name ?? id}`);
     const glb = Buffer.from(rec.glb, 'base64'), col = Buffer.from(rec.col, 'base64');
+    if (glb.length + col.length > MAX_UPLOAD) throw new Error(`묶인 모델 크기가 상한을 넘습니다: ${rec.name ?? id}`);
     const hash = crypto.createHash('sha256').update(glb).update(col).digest('hex').slice(0, 16);
     if (hash !== id) throw new Error(`묶인 모델 내용이 손상되었습니다: ${rec.name ?? id}`);
     const head = Buffer.from(JSON.stringify({ name: rec.name, format: rec.format, srcTris: rec.srcTris, glbBytes: glb.length, colBytes: col.length }), 'utf8');

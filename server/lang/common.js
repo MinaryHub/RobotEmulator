@@ -30,7 +30,7 @@ export function splitTop(s, sep = ',') {
     if (ch === '"') inStr = !inStr;
     if (!inStr) {
       if ('([{'.includes(ch)) depth++;
-      else if (')]}'.includes(ch)) depth--;
+      else if (')]}'.includes(ch)) { if (depth > 0) depth--; }
       else if (ch === sep && depth === 0) { out.push(cur); cur = ''; continue; }
     }
     cur += ch;

@@ -47,7 +47,8 @@ export function initCameraPanel(opts) {
   $('#camFrAll').onchange = (e) => send(list.map((c) => ({ ...c, frustum: e.target.checked })));
 }
 
-function send(next) { list = next; ctx.cmd('cameras', { list: next }); }
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function send(next) { list = next; ctx.cmd('cameras', { list: next }).catch(() => {}); }
 
 function add(typeId) {
   if (list.length >= MAX_CAMERAS) return alert(`카메라는 최대 ${MAX_CAMERAS}대까지 장착할 수 있습니다`);
@@ -60,10 +61,13 @@ function add(typeId) {
   send([...list, { id: `cam${n}`, type: typeId, name: `CAM${n} ${t(def.name).split(' (')[0]}`, mount, ...m, mode: def.modes[0], view: true, frustum: $('#camFrAll').checked }]);
 }
 
+let lastCamsRef = null;
 export function renderCameraPanel(st) {
   if (!root) return;
   const cams = st.cameras || [];
   ctx.view.cameras.set(cams);
+  if (cams === lastCamsRef && builtSig !== null) return;
+  lastCamsRef = cams;
   const sig = JSON.stringify(cams);
   if (sig === builtSig) return;
   // 편집 중인 입력이 있으면 다시 그리지 않음 (포커스 유지)
@@ -75,9 +79,9 @@ export function renderCameraPanel(st) {
   $('#camList').innerHTML = list.length ? list.map((c, i) => {
     const def = getCamera(c.type);
     return `<div class="cam-item">
-      <div class="hd"><input type="text" data-i="${i}" data-k="name" value="${c.name.replace(/"/g, '&quot;')}" maxlength="40">
+      <div class="hd"><input type="text" data-i="${i}" data-k="name" value="${esc(c.name)}" maxlength="40">
         <button data-i="${i}" data-a="reset" title="장착 위치 기본값">↺</button><button data-i="${i}" data-a="del" class="danger" title="제거">✕</button></div>
-      <div class="m">${def.maker} ${def.name}</div>
+      <div class="m">${esc(def.maker)} ${esc(def.name)}</div>
       <div class="grid3">
         <label>장착<select data-i="${i}" data-k="mount">${Object.entries(CAMERA_MOUNTS).map(([k, v]) => `<option value="${k}" ${k === c.mount ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
         <label>모드<select data-i="${i}" data-k="mode">${def.modes.map((m) => `<option value="${m}" ${m === c.mode ? 'selected' : ''}>${CAMERA_MODES[m]}</option>`).join('')}</select></label>

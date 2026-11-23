@@ -82,6 +82,8 @@ export class CameraRig {
 
   // cameras: 컨트롤러 state.cameras
   set(cameras) {
+    if (cameras === this._lastCameras) return;
+    this._lastCameras = cameras;
     const sig = JSON.stringify(cameras || []);
     if (sig === this.sig) return;
     this.sig = sig;
@@ -114,6 +116,7 @@ export class CameraRig {
     if (this._frames) this.update(this._frames, this._mat4); // 로봇이 정지 중이어도 즉시 배치
     // 프레임 순서를 목록 순서와 맞춤
     for (const cfg of cameras || []) { const c = this.cams.get(cfg.id); if (c) this.wrap.appendChild(c.frame); }
+    this.view.markDirty?.(true);
   }
 
   _create(cfg, def) {
@@ -218,7 +221,12 @@ export class CameraRig {
 
   _dispose(c) {
     this.mounts.remove(c.group);
-    c.group.traverse((m) => { m.geometry?.dispose(); m.material?.dispose?.(); });
+    c.group.traverse((m) => {
+      m.geometry?.dispose?.();
+      const mats = Array.isArray(m.material) ? m.material : m.material ? [m.material] : [];
+      for (const mt of mats) mt.dispose?.();
+    });
+    c.rt.depthTexture?.dispose?.();
     c.rt.dispose();
     c.frame.remove();
     c.label.remove();
@@ -240,8 +248,13 @@ export class CameraRig {
   update(frames, mat4) {
     this._frames = frames; this._mat4 = mat4;
     for (const c of this.cams.values()) {
-      const m = c.cfg.mount === 'flange' ? mat4(frames[6]) : c.cfg.mount === 'forearm' ? mat4(frames[3]) : new THREE.Matrix4();
-      c.group.matrix.multiplyMatrices(m, c.offset);
+      if (c.cfg.mount === 'flange') {
+        c.group.matrix.multiplyMatrices(mat4(frames[6]), c.offset);
+      } else if (c.cfg.mount === 'forearm') {
+        c.group.matrix.multiplyMatrices(mat4(frames[3]), c.offset);
+      } else {
+        c.group.matrix.copy(c.offset);
+      }
     }
   }
 
@@ -270,19 +283,17 @@ export class CameraRig {
   render() {
     if (!this.cams.size) return;
     const r = this.view.renderer;
-    // 레이아웃 읽기(getBoundingClientRect)를 모두 먼저 하고 DOM 쓰기(_placeLabels)는 그 뒤에 —
-    // 읽기·쓰기가 섞이면 프레임마다 강제 레이아웃 재계산이 일어난다
-    const canvas = r.domElement.getBoundingClientRect();
     const boxes = [];
     for (const c of this.cams.values()) {
       if (!c.cfg.view) continue;
       c._img ??= c.frame.querySelector('.img');
       boxes.push([c, c._img.getBoundingClientRect()]);
     }
+    const canvas = boxes.length ? r.domElement.getBoundingClientRect() : null;
+    this._placeLabels();
+    if (!boxes.length) return;
     const dpr = r.getPixelRatio();
     const autoClear = r.autoClear;
-    this.view.scene.updateMatrixWorld();
-    this._placeLabels();
     for (const [c, box] of boxes) {
       if (box.width < 4 || box.height < 4) continue;
       this._renderTo(c, Math.round(box.width * dpr), Math.round(box.height * dpr));

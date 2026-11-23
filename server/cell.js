@@ -340,6 +340,7 @@ export class Cell {
 
   // 레이아웃 적용 (검증). 공작물·장치 상태는 초기화된다
   setLayout(obj, { quiet = false } = {}) {
+    if (!obj || typeof obj !== 'object') throw new Error('레이아웃이 객체가 아닙니다');
     const L = normalizeLayout(clone(obj));
     this._apply(L);
     if (!quiet) this.ctrl.log('system', `셀 레이아웃 적용: ${L.name}${L.preset ? '' : ' (사용자 정의)'}`);
@@ -357,7 +358,8 @@ export class Cell {
     const changed = JSON.stringify(L) !== JSON.stringify(this.layout);
     this._releaseSignals();
     this.layout = L;
-    if (changed) this.rev++;
+    this._hasCylinders = L.devices.some((d) => d.type === 'cylinder');
+    if (changed) { this.rev++; this.ctrl._bumpRev?.('cell'); }
     this._buildScene();
     this.resetObjects();
     // 정지해 있는 로봇에 장애물·모델을 겹쳐 놓아도 바로 표시되도록 (기존에는 다음 이동 때 검사)
@@ -368,7 +370,7 @@ export class Cell {
   resetScene() {
     if (!this.layout || this.layout.preset) {
       const L = normalizeLayout(localizeLayout(presetLayout(this.layout?.preset || 'default', this.ctrl.robot), this.ctrl.uiLang));
-      if (JSON.stringify(L) !== JSON.stringify(this.layout)) { this._releaseSignals(); this.layout = L; this.rev++; }
+      if (JSON.stringify(L) !== JSON.stringify(this.layout)) { this._releaseSignals(); this.layout = L; this._hasCylinders = L.devices.some((d) => d.type === 'cylinder'); this.rev++; this.ctrl._bumpRev?.('cell'); }
     }
     this._buildScene();
     this.resetObjects();
@@ -379,6 +381,7 @@ export class Cell {
     const floorZ = floorZOf(R);
     const t = this.layout.tables[0];
     c.scene = { floorZ, table: { x: t.x, y: t.y, z: t.z, w: t.w, d: t.d }, pedestal: { d: Math.max(200, R * 0.3), h: -floorZ } };
+    c._bumpRev?.('scene');
     this._static = this._staticObstacles();
   }
 
@@ -387,6 +390,7 @@ export class Cell {
     if (!this.layout?.models?.some((m) => m.asset === assetId)) return;
     this._missing.delete(assetId);
     this.rev++;                       // 화면도 다시 구성 (파일 없어 상자로 표시되던 모델을 다시 불러오도록)
+    this.ctrl._bumpRev?.('cell');
     this._static = this._staticObstacles();
     this.ctrl.checkCollisionNow?.();
   }
@@ -410,8 +414,39 @@ export class Cell {
       this.rt[d.id] = r;
     }
     this._t = 0;
-    this._diLast = {};
+    // 이전 실행에서 켜져 있던 장치 DI를 즉시 초기 상태와 동기화 (프로그램 1행 시작 전 스테일 DI 레이스 방지)
+    this._syncDeviceDIs();
+    c._bumpRev?.('cell');
     c.emitState();
+  }
+
+  _syncDeviceDIs() {
+    const c = this.ctrl;
+    if (!this.layout) return;
+    for (const d of this.layout.devices) {
+      const r = this.rt[d.id];
+      if (!r) continue;
+      if (d.type === 'cylinder') {
+        this._writeDI(d.extDI, r.extended);
+        this._writeDI(d.retDI, r.retracted);
+      } else if (d.type === 'sink') {
+        this._writeDI(d.pulseDI, r.pulse > 0);
+      } else if (d.type === 'sensor') {
+        const stuck = c.faults?.sensorStuck?.[d.id];
+        let hit = false;
+        if (stuck === 'on' || stuck === 'off') {
+          hit = stuck === 'on';
+        } else {
+          for (const o of c.objects) {
+            const l = toLocalYaw(o.pose.p, [d.x, d.y, d.z], d.yaw || 0);
+            const e = halfExt(o, (d.yaw || 0) * DEG);
+            if (Math.abs(l[0]) < d.w / 2 + e[0] && Math.abs(l[1]) < d.d / 2 + e[1] && Math.abs(l[2]) < d.h / 2 + e[2]) { hit = true; break; }
+          }
+        }
+        r.on = hit;
+        this._writeDI(d.di, stuck ? hit : (d.invert ? !hit : hit));
+      }
+    }
   }
 
   // 장치가 구동하던 DI 를 OFF (레이아웃 교체 시)
@@ -453,9 +488,14 @@ export class Cell {
   }
 
   _conv(d) {
+    this._convCache ??= new WeakMap();
+    const cached = this._convCache.get(d);
+    if (cached && cached.x0 === d.x0 && cached.y0 === d.y0 && cached.x1 === d.x1 && cached.y1 === d.y1) return cached;
     const dx = d.x1 - d.x0, dy = d.y1 - d.y0, L = Math.hypot(dx, dy);
     const u = [dx / L, dy / L], n = [-u[1], u[0]];
-    return { L, u, n, yaw: Math.atan2(u[1], u[0]) };
+    const g = { x0: d.x0, y0: d.y0, x1: d.x1, y1: d.y1, L, u, n, yaw: Math.atan2(u[1], u[0]) };
+    this._convCache.set(d, g);
+    return g;
   }
 
   _staticObstacles() {
@@ -496,6 +536,7 @@ export class Cell {
   // 간섭 체크용 박스 목록 (정적 + 실린더 로드 현재 위치)
   obstacles() {
     if (!this.layout) return [];
+    if (!this._hasCylinders) return this._static;
     const dyn = [];
     for (const d of this.layout.devices) {
       if (d.type !== 'cylinder') continue;
@@ -540,7 +581,7 @@ export class Cell {
             const o = c.objects[i];
             if (o === held) continue;
             const p = o.pose.p;
-            if (Math.abs(p[0] - d.x) <= d.w / 2 && Math.abs(p[1] - d.y) <= d.d / 2 && p[2] <= d.z + d.h) {
+            if (Math.abs(p[0] - d.x) <= d.w / 2 && Math.abs(p[1] - d.y) <= d.d / 2 && p[2] >= d.z - 5 && p[2] <= d.z + d.h) {
               c.objects.splice(i, 1);
               r.count++;
               r.pulse = 0.3;
@@ -554,26 +595,31 @@ export class Cell {
         }
       }
     }
-    // 센서는 공작물 이동 후 평가
+    // 센서는 공작물 이동 후 평가 (고장 주입: sensorStuck ON/OFF 반영)
     for (const d of this.layout.devices) {
       if (d.type !== 'sensor') continue;
       const r = this.rt[d.id];
+      const stuck = c.faults?.sensorStuck?.[d.id];
       let hit = false;
-      for (const o of c.objects) {
-        const l = toLocalYaw(o.pose.p, [d.x, d.y, d.z], d.yaw || 0);
-        const e = halfExt(o, (d.yaw || 0) * DEG);
-        if (Math.abs(l[0]) < d.w / 2 + e[0] && Math.abs(l[1]) < d.d / 2 + e[1] && Math.abs(l[2]) < d.h / 2 + e[2]) { hit = true; break; }
+      if (stuck === 'on' || stuck === 'off') {
+        hit = stuck === 'on';
+      } else {
+        for (const o of c.objects) {
+          const l = toLocalYaw(o.pose.p, [d.x, d.y, d.z], d.yaw || 0);
+          const e = halfExt(o, (d.yaw || 0) * DEG);
+          if (Math.abs(l[0]) < d.w / 2 + e[0] && Math.abs(l[1]) < d.d / 2 + e[1] && Math.abs(l[2]) < d.h / 2 + e[2]) { hit = true; break; }
+        }
       }
       if (r.on !== hit) { r.on = hit; changed = true; }
-      this._writeDI(d.di, d.invert ? !hit : hit);
+      this._writeDI(d.di, stuck ? hit : (d.invert ? !hit : hit));
     }
-    if (changed) c.emitState();
+    if (changed) { c._bumpRev?.('cell'); c.emitState(); }
     return changed;
   }
 
   _tickConveyor(d, r, dt, held) {
     const c = this.ctrl;
-    const running = !d.runDO || c.getDO(d.runDO);
+    const running = !c.faults?.conveyorStall && (!d.runDO || c.getDO(d.runDO));
     const dir = d.reverseDO && c.getDO(d.reverseDO) ? -1 : 1;
     let changed = running !== r.running || dir !== r.dir;
     r.running = running; r.dir = dir;
@@ -622,6 +668,7 @@ export class Cell {
 
   _tickFeeder(d, r) {
     const c = this.ctrl;
+    if (c.faults?.feederJam) return false;
     let want = false;
     if (d.mode === 'edge') {
       const now = d.triggerDO ? c.getDO(d.triggerDO) : false;

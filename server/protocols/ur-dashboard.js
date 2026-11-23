@@ -10,7 +10,9 @@
 //   - power on = 전원만 켬(IDLE), brake release = 서보 ON(RUNNING), power off = 서보 OFF
 //   - play/stop/pause 는 외부 명령이라 모드 인터록(원격 모드)·안전 판정을 받는다. 거부되면 "Failed to execute: play"
 import net from 'node:net';
+import { StringDecoder } from 'node:string_decoder';
 import { makeLogger, bindServer, findFile, progRunning, stripExt } from './common.js';
+import { peerOf } from './traffic.js';
 
 const TAG = 'UR-DASHBOARD';
 
@@ -91,8 +93,8 @@ export async function start(ctrl, opts = {}) {
     if (cmd === 'is in remote control') return ctrl.mode === 'REMOTE' ? 'true' : 'false';
     if (cmd === 'get operational mode') return ctrl.mode === 'TEACH' ? 'MANUAL' : 'AUTOMATIC';
     if ((m = /^set operational mode\s+(manual|automatic)$/i.exec(raw))) {
-      ctrl.setMode(m[1].toLowerCase() === 'manual' ? 'TEACH' : 'PLAY');
-      return `Operational mode '${m[1].toLowerCase()}' is set`;
+      const ok = ctrl.setMode(m[1].toLowerCase() === 'manual' ? 'TEACH' : 'PLAY');
+      return ok === false ? 'Failed to execute: set operational mode' : `Operational mode '${m[1].toLowerCase()}' is set`;
     }
     if (cmd === 'clear operational mode') return 'No longer controlling the operational mode. Current operational mode: \'' + (ctrl.mode === 'TEACH' ? 'manual' : 'automatic') + '\'.';
     if ((m = /^popup\s+(.*)$/i.exec(raw))) { log(`popup: ${m[1]}`, true); return 'showing popup'; }
@@ -110,26 +112,36 @@ export async function start(ctrl, opts = {}) {
 
   const make = () => net.createServer((sock) => {
     clients.add(sock);
-    log(`접속 ${sock.remoteAddress}:${sock.remotePort}`, true);
+    const peer = peerOf(sock);
+    ctrl.traffic?.connect('urDashboard', peer);
+    log(`접속 ${peer}`, true);
     sock.write('Connected: Universal Robots Dashboard Server\n');
-    let buf = '', chain = Promise.resolve();
+    const dec = new StringDecoder('utf8');
+    let buf = '', discarding = false, chain = Promise.resolve();
     sock.on('data', (d) => {
-      buf += d.toString('utf8');
+      buf += dec.write(d);
       let k;
       while ((k = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, k).replace(/\r$/, '');
         buf = buf.slice(k + 1);
+        if (discarding) { discarding = false; continue; }
         chain = chain.then(async () => {
-          let r;
-          try { r = await handle(line); } catch (e) { r = `could not understand: '${line.trim()}'`; log(`오류: ${e.message}`); }
+          if (sock.destroyed) return;
+          const t0 = performance.now();
+          if (await ctrl.traffic?.applyFault('urDashboard', peer, line.trim())) return;
+          let r, ok = true;
+          try { r = await handle(line); } catch (e) { r = `could not understand: '${line.trim()}'`; ok = false; log(`오류: ${e.message}`); }
           if (r === null || sock.destroyed) return;
+          const respStr = typeof r === 'object' ? r.quit : r;
+          if (/^(Failed|could not understand|File not found|Error )/i.test(respStr)) ok = false;
+          ctrl.traffic?.record('urDashboard', { client: peer, dir: 'req', summary: `${line.trim()} → ${respStr}`, raw: `${line.trim()}\n${respStr}`, ok, error: ok ? null : respStr, ms: performance.now() - t0 });
           if (typeof r === 'object') { sock.end(r.quit + '\n'); return; }
           sock.write(r + '\n');
         });
       }
-      if (buf.length > 65536) buf = '';
+      if (buf.length > 65536) { buf = ''; discarding = true; }
     });
-    sock.on('close', () => clients.delete(sock));
+    sock.on('close', () => { clients.delete(sock); ctrl.traffic?.disconnect('urDashboard', peer); });
     sock.on('error', () => clients.delete(sock));
   });
 

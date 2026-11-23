@@ -19,12 +19,17 @@ function md(text) {
   const parts = text.split(/```[\w-]*\n?/);
   return parts.map((p, i) => {
     if (i % 2) return `<pre>${esc(p.replace(/\n$/, ''))}</pre>`;
-    return esc(p)
-      .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+    const codeSpans = [];
+    const safe = esc(p).replace(/`([^`\n]+)`/g, (_, c) => {
+      codeSpans.push(`<code>${c}</code>`);
+      return `\x00CODE${codeSpans.length - 1}\x00`;
+    });
+    return safe
       .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
       .replace(/^#{1,4} (.+)$/gm, '<b class="h">$1</b>')
       .replace(/^[-*] (.+)$/gm, '• $1')
-      .replace(/\n/g, '<br>');
+      .replace(/\n/g, '<br>')
+      .replace(/\x00CODE(\d+)\x00/g, (_, k) => codeSpans[Number(k)]);
   }).join('');
 }
 
@@ -72,12 +77,15 @@ function showWelcome() {
 function submit() {
   const text = input.value.trim();
   if (!text || busy) return;
+  if (!wsSend({ cmd: 'chat', text })) {
+    addMsg('err').textContent = '서버에 연결되어 있지 않습니다';
+    return;
+  }
   log.querySelector('.chat-welcome')?.remove();
   addMsg('user').innerHTML = md(text);
   input.value = '';
   hadMessages = true;
   setBusy(true);
-  wsSend({ cmd: 'chat', text });
 }
 
 function setBusy(b) {

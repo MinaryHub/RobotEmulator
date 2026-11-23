@@ -81,7 +81,7 @@ export function jointFrames(model, jdeg) {
 // 역기구학: 플랜지 pose → 최대 8개 해 (제조사 관절각 deg 배열). 관절 한계 밖 해는 제외 옵션
 // ref(제조사 관절각, 선택): 손목 특이점(J5≈0)에서 J4 를 기준값으로 유지하는 해도 함께 낸다 (OPW 계열)
 export function ikFlangeAll(model, target, ref) {
-  if (isUR(model)) return urIkAll(model, target).map((q) => fromOpw(model, q.map(wrapPi)).map((v) => wrapDeg(v)));
+  if (isUR(model)) return urIkAll(model, target, ref).map((q) => fromOpw(model, q.map(wrapPi)).map((v) => wrapDeg(v)));
   const t4ref = ref ? toOpw(model, ref)[3] : null;
   const k = model.opw;
   const R = target.R;
@@ -132,7 +132,7 @@ export function ikFlangeAll(model, target, ref) {
     const m = R[0][2] * s23 * cs1 + R[1][2] * s23 * sn1 + R[2][2] * c23;
     const t5 = Math.atan2(Math.sqrt(Math.max(0, 1 - m * m)), m);
     let t4, t6;
-    if (Math.abs(Math.sin(t5)) < 1e-9) {
+    if (Math.abs(Math.sin(t5)) < 1e-6) {
       // 손목 특이점: J4·J6 의 합(또는 차)만 정해짐 → t4 = 0 으로 두고 t6 에 회전 몰기
       t4 = 0;
       const Rc = r0c(t1, t2, t3);
@@ -283,9 +283,10 @@ function urFrames(model, jdeg) {
   return F;
 }
 // 역기구학: 최대 8개 해 (내부각 rad)
-function urIkAll(model, target) {
+function urIkAll(model, target, ref) {
   const k = model.dh, R = target.R, p6 = target.p;
   const { d1, a2, a3, d4, d5, d6 } = k;
+  const t6ref = ref ? toOpw(model, ref)[5] : 0;
   const p5 = [p6[0] - d6 * R[0][2], p6[1] - d6 * R[1][2], p6[2] - d6 * R[2][2]];
   const r = Math.hypot(p5[0], p5[1]);
   if (r < Math.abs(d4) - 1e-9) return [];
@@ -299,7 +300,9 @@ function urIkAll(model, target) {
     const a5 = Math.acos(Math.max(-1, Math.min(1, c5)));
     for (const t5 of [a5, -a5]) {
       const s5 = Math.sin(t5);
-      const t6 = Math.abs(s5) < 1e-9 ? 0 : Math.atan2((-R[0][1] * s1 + R[1][1] * c1) / s5, (R[0][0] * s1 - R[1][0] * c1) / s5);
+      const t6 = Math.abs(s5) < 1e-6
+        ? (Number.isFinite(t6ref) ? t6ref : 0)
+        : Math.atan2((-R[0][1] * s1 + R[1][1] * c1) / s5, (R[0][0] * s1 - R[1][0] * c1) / s5);
       const T01 = dhT(t1, d1, 0, UR_ALPHA[0]);
       const T46 = poseMul(dhT(t5, d5, 0, UR_ALPHA[4]), dhT(t6, d6, 0, UR_ALPHA[5]));
       const T14 = poseMul(poseMul(poseInv(T01), T06), poseInv(T46));

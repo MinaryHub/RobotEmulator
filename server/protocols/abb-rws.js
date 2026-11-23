@@ -17,12 +17,13 @@
 //   /rw/elog/0 (알람 이력), /ctrl/identity, /rw/system, /rw/system/robottype
 //   /subscription (POST, DELETE /subscription/{id})
 import http from 'node:http';
-import { hostAllowed } from '../netguard.js';
+import { hostAllowed, originAllowed } from '../netguard.js';
 import crypto from 'node:crypto';
 import { WebSocketServer } from 'ws';
 import { quatFromR } from '../../shared/math.js';
 import { fkTcp } from '../../shared/kinematics.js';
 import { makeLogger, bindServer, langExt, safeReadVar, safeWriteVar, makeCycleRunner, progRunning, readBody, stripExt, fx } from './common.js';
+import { peerOf } from './traffic.js';
 
 const TAG = 'ABB-RWS';
 const RAPID_EXT = /\.(mod|modx|sys|sysx|prg|pgf)$/i;
@@ -104,7 +105,7 @@ export async function start(ctrl, opts = {}) {
       const st = { _type: 'status', code: String(e.code ?? ERR.BAD_ARG), msg: e.message };
       return { type: ctx.v2 ? 'application/hal+json;v=2.0' : 'application/json', data: JSON.stringify(ctx.v2 ? { status: st } : { _embedded: { _state: [st] } }) };
     }
-    return { type: 'application/xhtml+xml', data: `<?xml version="1.0" encoding="utf-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>Error</title></head><body><div class="status"><span class="code">${e.code ?? ERR.BAD_ARG}</span><span class="msg">${esc(e.message)}</span></div></body></html>` };
+    return { type: 'application/xhtml+xml', data: `<?xml version="1.0" encoding="utf-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>Error</title></head><body><div class="status"><span class="code">${esc(e.code ?? ERR.BAD_ARG)}</span><span class="msg">${esc(e.message)}</span></div></body></html>` };
   }
   const state = (cls, title, fields, extra = {}) => ({ items: [{ cls, title, fields }], ...extra });
 
@@ -157,13 +158,20 @@ export async function start(ctrl, opts = {}) {
     ctrl.emitState();
   }
 
-  // IO 신호: 이름 → {type, n, name}
+  // IO 신호: 이름 → {type, n, name} (조회만으로는 ioNames 를 무한히 오염시키지 않음)
   function resolveSignal(name) {
-    name = decodeURIComponent(String(name)).split('/').pop();
-    const has = (t) => Object.values(ctrl.ioNames[t]).some((x) => x.toUpperCase() === name.toUpperCase());
-    let type = has('do') ? 'do' : has('di') ? 'di' : /^(di|in|i|sdi|abb_?di)[_\d]/i.test(name) || /^di/i.test(name) ? 'di' : 'do';
-    const n = ctrl.signalNo(type, name);
-    return { type, n, name };
+    let raw = String(name);
+    try { raw = decodeURIComponent(raw); } catch {}
+    name = raw.split('/').pop();
+    const findNamed = (t) => Object.entries(ctrl.ioNames[t]).find(([, nm]) => nm.toUpperCase() === name.toUpperCase());
+    const fdo = findNamed('do'), fdi = findNamed('di');
+    if (fdo) return { type: 'do', n: Number(fdo[0]), name };
+    if (fdi) return { type: 'di', n: Number(fdi[0]), name };
+    const type = /^(di|in|i|sdi|abb_?di)[_\d]/i.test(name) || /^di/i.test(name) ? 'di' : 'do';
+    const m = /(\d+)$/.exec(name);
+    const num = m ? Number(m[1]) : 0;
+    if (num >= 1 && num <= 512) return { type, n: num, name };
+    throw new RwsError(404, `Signal not found: ${name}`, ERR.NOT_FOUND);
   }
   const signalItem = (s, single = false) => ({
     cls: single ? 'ios-signal' : 'ios-signal-li', title: `Local/DRV_1/${s.name}`, href: `Local/DRV_1/${s.name}`,
@@ -185,9 +193,17 @@ export async function start(ctrl, opts = {}) {
 
   // fileservice 경로 정규화: '$HOME/a/b.mod' | 'HOME:/a' | '$home' → {key:'a/b.mod', name:'b.mod'}
   function fsPath(p) {
-    let s = decodeURIComponent(p).replace(/\\/g, '/');
-    s = s.replace(/^\$?home:?\/?/i, '').replace(/^\/+/, '');
-    return { key: s.toLowerCase(), path: s, name: s.split('/').pop() };
+    let s = String(p);
+    try { s = decodeURIComponent(s); } catch { throw new RwsError(400, 'Invalid path encoding'); }
+    s = s.replace(/\\/g, '/').replace(/^\$?home:?\/?/i, '').replace(/^\/+/, '');
+    const parts = [];
+    for (const seg of s.split('/')) {
+      if (!seg || seg === '.') continue;
+      if (seg === '..') { if (!parts.length) throw new RwsError(400, 'Invalid path'); parts.pop(); }
+      else parts.push(seg);
+    }
+    s = parts.join('/');
+    return { key: s.toLowerCase(), path: s, name: parts[parts.length - 1] || '' };
   }
   function fsGet(rel) {
     const f = fsPath(rel);
@@ -355,7 +371,7 @@ export async function start(ctrl, opts = {}) {
     if ((m = /^\/rw\/rapid\/tasks\/([^/]+)\/pcp$/i.exec(path)) && M === 'GET') {
       const c = ctrl.vm?.current;
       const pos = c?.line ? `${c.line},1` : '';
-      const f = { beginposition: pos, endposition: pos, modulemname: c?.file ? (ctrl.files.has(c.file) ? modName(c.file) : stripExt(c.file)) : '', routinename: c?.proc ?? '', execlevel: 'Normal' };
+      const f = { beginposition: pos, endposition: pos, modulename: c?.file ? (ctrl.files.has(c.file) ? modName(c.file) : stripExt(c.file)) : '', routinename: c?.proc ?? '', execlevel: 'Normal' };
       return { items: [{ cls: 'pcp-info', title: 'progpointer', fields: f }, { cls: 'pcp-info', title: 'motionpointer', fields: f }] };
     }
     if ((m = /^\/rw\/rapid\/tasks\/([^/]+)\/modules$/i.exec(path)) && M === 'GET') {
@@ -483,6 +499,7 @@ export async function start(ctrl, opts = {}) {
       }
       if (M === 'PUT') {
         if (!f.path) throw new RwsError(400, 'File name missing');
+        if (RAPID_EXT.test(f.name) && !f.path.includes('/') && progRunning(ctrl)) throw new RwsError(409, 'Program is running', ERR.BAD_STATE);
         const existed = fsStore.has(f.key);
         let total = rawBody.length;
         for (const [k, e] of fsStore) if (k !== f.key) total += e.data.length;
@@ -494,6 +511,7 @@ export async function start(ctrl, opts = {}) {
         return { status: existed ? 200 : 201 };
       }
       if (M === 'DELETE') {
+        if (!f.path.includes('/') && RAPID_EXT.test(f.name) && progRunning(ctrl)) throw new RwsError(409, 'Program is running', ERR.BAD_STATE);
         let found = fsStore.delete(f.key);
         if (!f.path.includes('/')) {
           const k = [...ctrl.files.keys()].find((x) => x.toLowerCase() === f.key);
@@ -509,6 +527,7 @@ export async function start(ctrl, opts = {}) {
       const idx = form.getAll('resources');
       const resources = idx.map((i) => form.get(i)).filter(Boolean);
       if (!resources.length) throw new RwsError(400, 'No resources to subscribe');
+      if (resources.length > 64) throw new RwsError(400, 'Too many resources in subscription');
       if (subs.size >= MAX_SUBS) throw new RwsError(503, 'Too many subscriptions');
       const id = String(++subSeq);
       subs.set(id, { resources, ws: new Set(), last: new Map(), idleSince: Date.now() });
@@ -532,10 +551,15 @@ export async function start(ctrl, opts = {}) {
 
   // ------------------------------------------------------------ HTTP 서버
   const server = http.createServer(async (req, res) => {
+    const t0 = performance.now();
+    const peer = peerOf(req);
     let url;
     try { url = new URL(req.url, 'http://localhost'); } catch { res.writeHead(400); return res.end(); }
-    if (!hostAllowed(req)) { res.writeHead(403); return res.end(); }   // DNS 리바인딩 방어
+    if (!hostAllowed(req) || !originAllowed(req)) { res.writeHead(403); return res.end(); }   // DNS 리바인딩 · CSRF 방어
     const path = url.pathname.replace(/\/+$/, '') || '/';
+    let decodedPath;
+    try { decodedPath = decodeURI(path); } catch { res.writeHead(400); return res.end(); }
+    if (await ctrl.traffic?.applyFault('abbRws', peer, `${req.method} ${path}`)) { res.destroy(); return; }
     const ctx = ctxOf(req, url);
     const headers = {};
     // 세션 쿠키
@@ -552,10 +576,11 @@ export async function start(ctrl, opts = {}) {
     try {
       rawBody = await readBody(req);
       const form = new URLSearchParams(['POST', 'DELETE'].includes(req.method) && !/^\/fileservice/i.test(path) ? rawBody.toString('utf8') : '');
-      const out = await route(req, decodeURI(path), url, form, rawBody, ctx);
+      const out = await route(req, decodedPath, url, form, rawBody, ctx);
       const st = out.status ?? 200;
       if (req.method !== 'GET' || st >= 300) log(`${req.method} ${path}${url.search} → ${st}`, true);
       else log(`GET ${path}`);
+      ctrl.traffic?.record('abbRws', { client: peer, dir: 'req', summary: `${req.method} ${path}${url.search} → ${st}`, raw: rawBody.length ? rawBody.toString('utf8').slice(0, 200) : '', ok: st < 400, error: st >= 400 ? `HTTP ${st}` : null, ms: performance.now() - t0 });
       if (out.raw) { res.writeHead(st, { ...headers, ...out.headers }); return res.end(out.raw); }
       const body = out.items ? out : out.body;
       if (!body) { res.writeHead(st, { ...headers, ...out.headers }); return res.end(); }
@@ -563,8 +588,9 @@ export async function start(ctrl, opts = {}) {
       res.writeHead(st, { ...headers, ...out.headers, 'Content-Type': r.type });
       res.end(r.data);
     } catch (e) {
-      const st = e instanceof RwsError ? e.status : 500;
+      const st = e instanceof RwsError ? e.status : (e.status || 500);
       log(`${req.method} ${path}${url.search} → ${st} ${e.message}`, true);
+      ctrl.traffic?.record('abbRws', { client: peer, dir: 'req', summary: `${req.method} ${path}${url.search} → ${st}`, ok: false, error: e.message, ms: performance.now() - t0 });
       const r = renderError(ctx, e);
       res.writeHead(st, { ...headers, 'Content-Type': r.type });
       res.end(r.data);
@@ -580,13 +606,16 @@ export async function start(ctrl, opts = {}) {
     },
   });
   server.on('upgrade', (req, socket, head) => {
+    if (!hostAllowed(req) || !originAllowed(req)) { socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); socket.destroy(); return; }
     const m = /^\/poll\/(\d+)/.exec(req.url || '');
     const s = m && subs.get(m[1]);
     if (!s) { socket.write('HTTP/1.1 404 Not Found\r\n\r\n'); socket.destroy(); return; }
+    const peer = peerOf(req);
     wss.handleUpgrade(req, socket, head, (ws) => {
       s.ws.add(ws);
+      ctrl.traffic?.connect('abbRws', peer);
       log(`구독 WebSocket 연결 #${m[1]} (${ws.protocol || '프로토콜 없음'})`, true);
-      ws.on('close', () => s.ws.delete(ws));
+      ws.on('close', () => { s.ws.delete(ws); ctrl.traffic?.disconnect('abbRws', peer); });
       ws.on('error', () => {});
     });
   });

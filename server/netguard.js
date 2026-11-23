@@ -22,8 +22,9 @@ function hostnameOf(hostHeader) {
 }
 
 export function hostAllowed(req) {
+  if (req.headers.host === undefined) return true;   // HTTP/1.0 등 Host 없음 → 브라우저 아님
   const h = hostnameOf(req.headers.host);
-  if (h == null) return true;   // HTTP/1.0 등 Host 없음 → 브라우저 아님
+  if (h == null) return false;
   return LOCAL_NAMES.has(h) || h.endsWith('.localhost') || net.isIP(h) !== 0 || extraHosts.has(h);
 }
 

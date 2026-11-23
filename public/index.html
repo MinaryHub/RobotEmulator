@@ -23,6 +23,8 @@
     <button id="btnProject" class="projbtn" title="프로젝트 저장/불러오기">📁 프로젝트</button>
     <button id="btnChat" class="projbtn" title="Claude 채팅: 로봇 프로그램 생성·수정·검증">✦ Claude</button>
     <button id="btnUpdate" class="projbtn updbtn hidden" title="새 버전이 있습니다 — 눌러서 업데이트">⬆ 새 버전</button>
+    <button id="btnTheme" class="projbtn" title="밝은/어두운 테마 전환" aria-label="테마">☀</button>
+    <button id="btnKeys" class="projbtn" title="단축키 안내 (?)" aria-label="단축키">?</button>
     <button id="btnAbout" class="projbtn" title="정보 · 업데이트 · 문의하기 · 후원하기" aria-label="정보">ⓘ</button>
     <button id="btnEstop" class="estop" title="비상정지 (정지 범주 0: 즉시 정지 + 서보 OFF). 누르면 잠김 — 다시 눌러 해제 후 알람 리셋">비상정지</button>
     <div class="hstat">
@@ -31,6 +33,7 @@
       <span id="stServo" role="status" aria-live="polite" class="pill off">SERVO OFF</span>
       <span id="stMode" class="pill">TEACH</span>
       <span id="stProg" role="status" aria-live="polite" class="pill">IDLE</span>
+      <span id="stFault" class="pill fault hidden" title="활성 고장 주입 있음">FAULT</span>
       <span id="stColl" class="pill alarm hidden">간섭</span>
       <span id="stAlarm" role="status" aria-live="polite" class="pill alarm hidden">ALARM</span>
     </div>
@@ -38,6 +41,7 @@
 
   <main>
     <aside id="left">
+      <div class="resizer rz-r" data-rz="left" title="드래그: 왼쪽 패널 폭 조절"></div>
       <nav class="tabs" data-for="left">
         <button data-tab="tRobot" class="active">로봇</button>
         <button data-tab="tGripper">그리퍼</button>
@@ -47,6 +51,7 @@
         <button data-tab="tComm">통신</button>
         <button data-tab="tCell">셀</button>
         <button data-tab="tCamera">카메라</button>
+        <button data-tab="tFault">고장</button>
       </nav>
 
       <section id="tRobot" class="tab active">
@@ -132,6 +137,15 @@
           <label>조그 속도 <b id="jogSpVal">20%</b></label>
           <input type="range" id="jogSp" min="1" max="100" value="20">
         </div>
+        <div class="row jog-step-row">
+          <label>조그 방식</label>
+          <div class="seg small" id="segJogStep" title="연속: 누르는 동안 이동 · 0.1/1/10: 클릭마다 지정 크기(° 또는 mm)만큼 스텝 이동">
+            <button data-v="0" class="active">연속</button>
+            <button data-v="0.1">0.1</button>
+            <button data-v="1">1</button>
+            <button data-v="10">10</button>
+          </div>
+        </div>
         <h3>축 조그</h3>
         <div id="jogJoints" class="jog"></div>
         <h3>직교 조그 <div class="seg small" id="segFrame"><button data-v="base" class="active">BASE</button><button data-v="tool">TOOL</button></div></h3>
@@ -142,6 +156,11 @@
 
       <section id="tIO" class="tab">
         <div class="row io-page"><label>표시 범위</label><select id="ioPage"></select></div>
+        <div class="row io-filter">
+          <input type="text" id="ioSearch" placeholder="번호·이름 검색">
+          <label class="inl"><input type="checkbox" id="ioOnlyOn"> ON만</label>
+          <label class="inl"><input type="checkbox" id="ioOnlyLbl"> 이름만</label>
+        </div>
         <h3>디지털 출력 (DO) <small>클릭: 강제 출력 · 우클릭/✎: 이름표</small></h3>
         <div id="ioDO" class="io"></div>
         <h3>디지털 입력 (DI) <small>클릭: 입력 시뮬레이션 · 우클릭/✎: 이름표</small></h3>
@@ -168,17 +187,32 @@
         <div id="commList"></div>
         <div class="note">각 인터페이스는 실제 컨트롤러의 프로토콜을 모사합니다. 샘플 클라이언트: <code>tools/clients/</code></div>
         <h3>공용 API</h3>
-        <div class="note"><code>GET /api/state</code>, <code>POST /api/cmd</code> (JSON) — WebSocket <code>/ws</code></div>
+        <div class="note"><code>GET /api/state</code>, <code>POST /api/cmd</code> (JSON), <code>GET /api/traffic</code>, <code>GET /api/timeline.csv</code> — WebSocket <code>/ws</code></div>
       </section>
 
       <section id="tCell" class="tab"><!-- public/js/cellPanel.js 가 채움 --></section>
       <section id="tCamera" class="tab"><!-- public/js/cameraPanel.js 가 채움 --></section>
+      <section id="tFault" class="tab"><!-- public/js/faultPanel.js 가 채움 --></section>
     </aside>
 
     <section id="view">
       <div id="viewport"></div>
+      <div id="connBanner" class="conn-banner hidden">서버와 연결이 끊어졌습니다 — 재연결 중…</div>
       <div class="overlay tl" id="ovPose"></div>
       <div class="overlay tr" id="ovProg"></div>
+      <div class="overlay tc" id="ovAlarm"></div>
+      <!-- 3D 뷰 빠른 조작 HUD -->
+      <div class="view-hud" id="viewHud">
+        <button data-cam="iso" title="등각 시점 (1)">등각</button>
+        <button data-cam="top" title="위에서 보기 (2)">상면</button>
+        <button data-cam="front" title="정면 보기 (3)">정면</button>
+        <button data-cam="side" title="측면 보기 (4)">측면</button>
+        <button data-cam="tcp" title="TCP 확대 (5)">TCP</button>
+        <i class="sep"></i>
+        <button id="hudTrail" class="active" title="궤적 표시 켜기/끄기">궤적</button>
+        <button id="hudEnv" title="작업 영역 표시">영역</button>
+        <button id="hudCaps" title="간섭 모델 표시">간섭</button>
+      </div>
       <!-- 직접교시 툴바 (public/js/directTeach.js) -->
       <div class="dtbar" id="dtBar">
         <button id="dtToggle" class="dt-main" title="직접교시: TCP 핸들이나 로봇 링크를 마우스로 끌어 로봇을 움직입니다 (T)">✋ 직접교시</button>
@@ -192,16 +226,17 @@
         </div>
         <div class="dt-status" id="dtStatus"></div>
       </div>
-      <div class="overlay bl" id="ovAlarm"></div>
     </section>
 
     <aside id="right">
+      <div class="resizer rz-l" data-rz="right" title="드래그: 오른쪽 패널 폭 조절"></div>
       <div class="prog-head">
         <div class="files" id="fileTabs"></div>
         <div class="fbtns">
           <button id="btnNew" title="새 파일">＋</button>
           <button id="btnOpen" title="파일 열기">열기</button>
           <button id="btnSave" title="저장 + 컴파일 (Ctrl+S)">저장</button>
+          <button id="btnFind" title="찾기 (Ctrl+F)">🔍</button>
           <button id="btnDownload" title="다운로드">⭳</button>
           <button id="btnMain" title="메인 프로그램으로 지정">메인</button>
           <button id="btnDelete" title="파일 삭제">삭제</button>
@@ -210,7 +245,7 @@
         </div>
       </div>
       <div id="editor"></div>
-      <div id="compileMsg" class="cmsg"></div>
+      <div class="cmsg-row"><div id="compileMsg" class="cmsg"></div><span id="edCursor" class="ed-cur" data-no-i18n>Ln 1, Col 1</span></div>
       <div class="prog-ctl">
         <button id="btnStart" class="go" title="시작 / 재개 (Space: 재생·일시정지)">▶ 시작</button>
         <button id="btnStep">⏭ 단계</button>
@@ -237,15 +272,17 @@
       </div>
     </aside>
 
-    <aside id="chat"><!-- public/js/chatPanel.js 가 채움 --></aside>
+    <aside id="chat"><div class="resizer rz-l" data-rz="chat" title="드래그: 채팅 패널 폭 조절"></div><!-- public/js/chatPanel.js 가 채움 --></aside>
   </main>
 
   <footer>
+    <div class="resizer rz-t" data-rz="foot" title="드래그: 하단 패널 높이 조절"></div>
     <div class="loghead">
       <div class="ftabs" id="ftabs">
         <button data-p="pLog" class="active">로그</button>
         <button data-p="pTl">신호 타임라인</button>
         <button data-p="pVar">변수</button>
+        <button data-p="pTraffic">통신 모니터</button>
       </div>
       <span class="logopts">
         <label><input type="checkbox" data-src="system" checked> 시스템</label>
@@ -253,6 +290,9 @@
         <label><input type="checkbox" data-src="gripper" checked> 그리퍼</label>
         <label><input type="checkbox" data-src="comm" checked> 통신</label>
         <label><input type="checkbox" data-src="alarm" checked> 알람</label>
+        <input type="text" id="logSearch" class="log-q" placeholder="로그 검색">
+        <label><input type="checkbox" id="logPause"> 스크롤 고정</label>
+        <button type="button" id="btnExportLog" title="로그 텍스트 저장">⭳</button>
       </span>
       <button id="btnClearLog">지우기</button>
     </div>
@@ -264,11 +304,36 @@
         <span>신호</span>
         <input type="text" id="tlSigs" placeholder="자동 (예: DO1-4, DI1, RUN)" size="22">
         <label><input type="checkbox" id="tlPause"> 일시정지</label>
+        <button type="button" id="tlCsv" title="타임라인 CSV 다운로드">CSV</button>
         <span class="meas" id="tlMeas">클릭 2번: 두 시점 간격 측정</span>
       </div>
       <div id="tlWrap"><canvas id="tlCanvas"></canvas></div>
     </div>
-    <div class="fpanel" id="pVar"><div id="varTable"></div></div>
+    <div class="fpanel" id="pVar">
+      <div class="tlbar"><input type="text" id="varSearch" placeholder="변수 검색 (이름·범위·값)" size="26"></div>
+      <div id="varTable"></div>
+    </div>
+    <div class="fpanel" id="pTraffic">
+      <div class="tlbar">
+        <select id="trIface" title="인터페이스 필터">
+          <option value="">전체 인터페이스</option>
+          <option value="modbus">Modbus TCP</option>
+          <option value="opcua">OPC UA</option>
+          <option value="yaskawaHse">Yaskawa HSE</option>
+          <option value="kawasakiAs">Kawasaki AS</option>
+          <option value="hyundai">Hyundai Open API</option>
+          <option value="abbRws">ABB RWS</option>
+          <option value="kukaVarProxy">KUKA VarProxy</option>
+          <option value="urDashboard">UR Dashboard</option>
+        </select>
+        <input type="text" id="trSearch" placeholder="패킷 검색" size="18">
+        <label><input type="checkbox" id="trErrOnly"> 오류만</label>
+        <label><input type="checkbox" id="trPause"> 일시정지</label>
+        <button type="button" id="trCsv" title="통신 로그 CSV 다운로드">CSV</button>
+        <span class="tr-clients" id="trClients">연결된 클라이언트 없음</span>
+      </div>
+      <div id="trafficTable"></div>
+    </div>
   </footer>
 
   <dialog id="projDlg">
@@ -316,6 +381,25 @@
         <div class="prow"><a id="abSponsor" class="btnlink sponsor" target="_blank" rel="noopener">♥ 후원하기 (GitHub Sponsors)</a></div>
         <div class="note">이 프로젝트가 도움이 되었다면 후원으로 개발을 응원해 주세요.</div>
       </section>
+      <div class="prow"><button value="close" style="margin-left:auto">닫기</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="keysDlg">
+    <form method="dialog" class="projdlg keysdlg">
+      <h3>키보드 단축키</h3>
+      <table class="keys-tbl">
+        <tr><td><kbd>Space</kbd></td><td>프로그램 시작 / 홀드 / 재개</td></tr>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd></td><td>저장 및 컴파일</td></tr>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>Enter</kbd></td><td>저장 후 프로그램 시작</td></tr>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>F</kbd></td><td>에디터 내 문자열 찾기</td></tr>
+        <tr><td><kbd>-</kbd> / <kbd>+</kbd></td><td>시뮬레이션 배속 조절</td></tr>
+        <tr><td><kbd>1</kbd>~<kbd>5</kbd></td><td>3D 카메라 프리셋 (등각·상면·정면·측면·TCP)</td></tr>
+        <tr><td><kbd>T</kbd></td><td>직접교시 켜기 / 끄기</td></tr>
+        <tr><td><kbd>W</kbd> / <kbd>E</kbd> / <kbd>Q</kbd> / <kbd>X</kbd></td><td>직접교시 이동 · 회전 · 좌표계 · 스냅</td></tr>
+        <tr><td><kbd>G</kbd> / <kbd>Enter</kbd> / <kbd>Ctrl+Z</kbd></td><td>직접교시 그리퍼 · 위치 기록 · 되돌리기</td></tr>
+        <tr><td><kbd>?</kbd></td><td>단축키 안내 창 열기</td></tr>
+      </table>
       <div class="prow"><button value="close" style="margin-left:auto">닫기</button></div>
     </form>
   </dialog>
