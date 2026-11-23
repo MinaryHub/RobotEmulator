@@ -45,6 +45,10 @@ export function planJoint(model, j0, j1, speedFrac) {
 
 // 경로 함수 path(s) → TCP pose (s: 0~1). length(mm), angle(deg)
 function planPath(model, j0, path, length, angleDeg, speed, tool, base, kind) {
+  if (length < 1e-6 && angleDeg < 1e-6) {
+    const end = [...j0];
+    return { kind, duration: 0, end, prof: trapezoid(0, 0), length: 0, sample: () => [...end] };
+  }
   const vLin = Math.max(0.1, Math.min(speed.tcp ?? 250, model.tcpMaxSpeed));
   const vRot = Math.max(1, speed.rot ?? 180);
   const N = Math.max(20, Math.min(4000, Math.ceil(length / 1 + angleDeg / 0.5)));
@@ -100,11 +104,12 @@ export function planCircular(model, j0, via, target, speed, tool, base) {
   const ab = sub(B, A), ac = sub(C, A);
   const n = cross(ab, ac);
   const nn = norm(n);
-  if (nn < 1e-6) return planLinear(model, j0, target, speed, tool, base); // 일직선
-  // 외접원 중심
   const ab2 = dot(ab, ab), ac2 = dot(ac, ac);
+  if (nn < 1e-6 || nn < 1e-6 * Math.sqrt(ab2 * ac2)) return planLinear(model, j0, target, speed, tool, base); // 일직선
+  // 외접원 중심
   const center = add(A, scale(add(scale(cross(n, ab), ac2), scale(cross(ac, n), ab2)), 1 / (2 * nn * nn)));
   const r = norm(sub(A, center));
+  if (!Number.isFinite(r) || r > 1e6) return planLinear(model, j0, target, speed, tool, base);
   const nz = scale(n, 1 / nn);
   const ex = scale(sub(A, center), 1 / r);
   const ey = cross(nz, ex);

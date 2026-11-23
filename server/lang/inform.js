@@ -687,7 +687,8 @@ function planPickPlace(ctrl) {
   const r = ctrl.robot;
   const tool = toolOf(ctrl);
   const ok = (p) => !!ikNearest(r, tcpToFlange({ p, R: DOWN }, tool, null), r.home);
-  const objs = ctrl.objects;
+  const objs = ctrl.objects || [];
+  if (!objs.length) return { pts: [], ok: true };
   const s = objs[0].size[2];
   const app = Math.round(Math.max(80, s * 2.5));
   const R = r.reach;

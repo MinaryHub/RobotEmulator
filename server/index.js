@@ -133,6 +133,7 @@ async function handleCmd(m) {
     case 'override': ctrl.setOverride(m.value); return;
     case 'timeScale': ctrl.setTimeScale(m.value); return;
     case 'jog': ctrl.startJog(m.jog, 'ui'); return;
+    case 'stepJog': return ctrl.stepJog(m.jog, 'ui');
     case 'jogStop': ctrl.stopJog(); return;
     case 'setJoints': return ctrl.teachJoints(m.joints, 'ui');   // 펜던트 관절 직접 지정 = 조그와 같은 조건
     case 'teachPose': return ctrl.teachPose({ p: m.p, q: m.q }, 'ui');   // p[3] mm, q[4] 쿼터니언 — 형식 검사는 teachPose 에서   // 직접교시: TCP 핸들 드래그
@@ -153,7 +154,7 @@ async function handleCmd(m) {
         if (!Number.isInteger(n) || n < 1 || n > 512) throw new Error(`그리퍼 신호 ${k} 번호가 올바르지 않습니다: ${v} (1~512)`);
         next[k] = n;
       }
-      Object.assign(ctrl.gripperIO, next); ctrl.emitState(); return;
+      Object.assign(ctrl.gripperIO, next); ctrl._bumpRev?.('gripperIO'); ctrl.emitState(); return;
     }
     case 'saveFile':
       if (typeof m.name !== 'string' || !m.name.trim()) throw new Error('파일 이름(name)이 필요합니다');
@@ -179,6 +180,11 @@ async function handleCmd(m) {
     case 'vars': return { vars: listVars(ctrl) };
     case 'timeline': return { timeline: timeline.snapshot() };
     case 'timelineClear': timeline.clear(); return;
+    case 'setFaults': return { faults: ctrl.setFaults(m.faults ?? m.patch) };
+    case 'clearFaults': return { faults: ctrl.clearFaults() };
+    case 'injectFault': ctrl.injectFaultAction(m.kind ?? (m.action === 'alarm' ? m.code : m.action), m.msg); return;
+    case 'traffic': return { traffic: ctrl.traffic?.snapshot(m) ?? { entries: [], clients: [], stats: { total: 0, errors: 0, dropped: 0, buffered: 0 } } };
+    case 'trafficClear': ctrl.traffic?.clear(); return;
     case 'projectList': return { projects: projects.list(), current: projects.current };
     case 'projectSave': projects.save(String(m.name || '').trim()); return { projects: projects.list(), current: projects.current };
     case 'projectLoad': projects.load(m.name); return { files: filesMsg(), current: projects.current };
@@ -222,18 +228,21 @@ async function handleCmd(m) {
 
 const filesMsg = () => ({ main: ctrl.main, files: Object.fromEntries(ctrl.files) });
 
-// 바이너리 본문 읽기 (상한 초과 시 오류)
+// 바이너리 본문 읽기 (상한 초과 시 413 응답을 안전히 보낼 수 있도록 destroy 대신 pause)
 function readBody(req, max) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    let n = 0;
+    let n = 0, done = false;
+    const finish = (err, val) => { if (done) return; done = true; err ? reject(err) : resolve(val); };
     req.on('data', (c) => {
+      if (done) return;
       n += c.length;
-      if (n > max) { reject(Object.assign(new Error(`업로드 크기 상한(${Math.round(max / 1048576)} MB) 초과`), { status: 413 })); req.destroy(); return; }
+      if (n > max) { finish(Object.assign(new Error(`업로드 크기 상한(${Math.round(max / 1048576)} MB) 초과`), { status: 413 })); req.pause(); return; }
       chunks.push(c);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-    req.on('error', reject);
+    req.on('end', () => finish(null, Buffer.concat(chunks)));
+    req.on('error', (e) => finish(e));
+    req.on('close', () => { if (!req.complete) finish(new Error('요청이 중단되었습니다')); });
   });
 }
 
@@ -259,11 +268,27 @@ async function handleHttp(req, res) {
   }
   if (url.pathname.startsWith('/api/')) {
     if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
+    if (url.pathname === '/api/timeline.csv' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="timeline.csv"' });
+      return res.end(timeline.toCSV(ctrl.ioLabels));
+    }
+    if (url.pathname === '/api/traffic.csv' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="traffic.csv"' });
+      return res.end(ctrl.traffic?.toCSV() ?? 'seq,timestamp,interface,client,dir,ok,ms,summary,error,raw,hex\n');
+    }
     try {
       let out;
       if (url.pathname === '/api/state') out = ctrl.snapshot();
       else if (url.pathname === '/api/robots') out = { robots: ROBOTS, grippers: GRIPPERS, vendors: VENDORS, cameras: CAMERAS };
-      else if (url.pathname === '/api/comms') out = comms.map(({ name, proto, port }) => ({ name, proto, port }));
+      else if (url.pathname === '/api/comms') out = comms.map(({ key, name, proto, port }) => ({ key, name, proto, port }));
+      else if (url.pathname === '/api/traffic' && req.method === 'GET') {
+        out = ctrl.traffic?.snapshot({
+          limit: url.searchParams.get('limit'),
+          iface: url.searchParams.get('iface') || '',
+          errorsOnly: url.searchParams.get('errors') === '1',
+          search: url.searchParams.get('q') || '',
+        }) ?? { entries: [], clients: [], stats: { total: 0, errors: 0, dropped: 0, buffered: 0 } };
+      }
       else if (url.pathname === '/api/assets' && req.method === 'GET') out = { models: ctrl.assets.list() };
       else if (url.pathname === '/api/assets' && req.method === 'POST') {
         // 3D 모델 업로드 (server/assets.js 형식) → 메타. 같은 자산을 참조하던 모델이 있으면 간섭 메시 갱신
@@ -317,7 +342,11 @@ const wss = new WebSocketServer({
   },
 });
 const send = (ws, msg) => ws.readyState === 1 && ws.send(JSON.stringify(msg));
-const broadcast = (msg) => { const s = JSON.stringify(msg); for (const c of wss.clients) if (c.readyState === 1) c.send(s); };
+const broadcast = (msg) => {
+  if (!wss.clients.size) return;
+  const s = JSON.stringify(msg);
+  for (const c of wss.clients) if (c.readyState === 1) c.send(s);
+};
 
 // Claude 채팅: 연결(브라우저 탭)마다 대화 세션 1개. SDK 는 처음 사용할 때 불러옴
 let ChatSession = null, chatBackend = null;
@@ -337,17 +366,24 @@ function localMcpUrl() {
   return `http://${host}:${server.address()?.port ?? config.httpPort}/mcp`;
 }
 async function chatSession(ws) {
-  if (!ws.chat) {
-    const sendChat = (ev) => send(ws, { type: 'chat', ...ev });
-    if (await resolveChatBackend() === 'claude-code') {
-      const { ClaudeCodeSession } = await import('./ai/chat-cli.js');
-      ws.chat = new ClaudeCodeSession({ ctrl, config: config.ai, mcpUrl: localMcpUrl(), send: sendChat });
-    } else {
-      ChatSession ??= (await import('./ai/chat.js')).ChatSession;
-      ws.chat = new ChatSession({ ctrl, config: config.ai, send: sendChat });
-    }
+  if (ws.chat) return ws.chat;
+  if (!ws._chatPromise) {
+    ws._chatPromise = (async () => {
+      const sendChat = (ev) => send(ws, { type: 'chat', ...ev });
+      let session;
+      if (await resolveChatBackend() === 'claude-code') {
+        const { ClaudeCodeSession } = await import('./ai/chat-cli.js');
+        session = new ClaudeCodeSession({ ctrl, config: config.ai, mcpUrl: localMcpUrl(), send: sendChat });
+      } else {
+        ChatSession ??= (await import('./ai/chat.js')).ChatSession;
+        session = new ChatSession({ ctrl, config: config.ai, send: sendChat });
+      }
+      if (ws.readyState !== 1) { session.stop?.(); return null; }
+      ws.chat = session;
+      return session;
+    })().finally(() => { ws._chatPromise = null; });
   }
-  return ws.chat;
+  return ws._chatPromise;
 }
 
 wss.on('connection', (ws) => {
@@ -355,7 +391,7 @@ wss.on('connection', (ws) => {
   send(ws, {
     type: 'init', robots: ROBOTS, grippers: GRIPPERS, vendors: VENDORS, cameras: CAMERAS,
     state: ctrl.snapshot(), logs: ctrl.logs.slice(-200), files: filesMsg(),
-    comms: comms.map(({ name, proto, port }) => ({ name, proto, port })),
+    comms: comms.map(({ key, name, proto, port }) => ({ key, name, proto, port })),
     about: updater.info(),
   });
   ws.on('message', async (raw) => {
@@ -364,6 +400,7 @@ wss.on('connection', (ws) => {
     if (m.cmd === 'chat' || m.cmd === 'chatStop' || m.cmd === 'chatReset') {
       try {
         const c = await chatSession(ws);
+        if (!c || ws.readyState !== 1) return;
         if (m.cmd === 'chat') c.ask(String(m.text ?? '').slice(0, 20000)); else if (m.cmd === 'chatStop') c.stop(); else c.reset();
       } catch (e) { send(ws, { type: 'chat', ev: 'error', msg: `채팅을 시작할 수 없습니다: ${e.message}` }); }
       return;
@@ -372,7 +409,7 @@ wss.on('connection', (ws) => {
     const reqId = m.rid !== undefined ? m.rid : m.id;
     try {
       const r = await handleCmd(m);
-      if (r?.files) { broadcast({ type: 'files', ...r.files }); lastFilesSig = filesSig(); }   // 아래 폴러가 같은 내용을 다시 보내지 않게
+      if (r?.files) scheduleFilesBroadcast();
       if (reqId !== undefined) send(ws, { type: 'reply', id: reqId, ok: true, ...r });
     } catch (e) {
       ctrl.log('system', `명령 오류(${m.cmd}): ${e.message}`);
@@ -382,27 +419,34 @@ wss.on('connection', (ws) => {
 });
 
 // 상태 브로드캐스트 (최대 30Hz)
-//  자주 바뀌지 않는 큰 항목은 직전 전송과 같으면 뺀다 (클라이언트는 빠진 항목을 이전 값으로 채움 — app.js STICKY).
-//  새로 접속한 클라이언트는 init 메시지로 전체 상태를 받는다.
-const STICKY = ['sysio', 'cell', 'scene', 'safety', 'ioLabels', 'gripperIO', 'cameras'];
-const lastSticky = {};
+//  자주 바뀌지 않는 큰 항목은 리비전 카운터(ctrl._rev)로 O(1) 비교 후 직전 전송과 같으면 뺀다 (app.js STICKY).
+//  접속된 웹 클라이언트가 없으면 스냅샷 생성 자체를 생략한다.
+const STICKY = ['sysio', 'cell', 'scene', 'safety', 'ioLabels', 'gripperIO', 'cameras', 'faults'];
+const lastStickyRev = {};
 function stateDelta(st) {
+  const rev = ctrl._rev;
   for (const k of STICKY) {
     if (!(k in st)) continue;
-    const j = JSON.stringify(st[k]);
-    if (j === lastSticky[k]) delete st[k]; else lastSticky[k] = j;
+    const r = rev?.[k];
+    if (r !== undefined && lastStickyRev[k] === r) delete st[k];
+    else lastStickyRev[k] = r;
   }
   return st;
 }
 let pending = false;
 ctrl.on('state', () => {
-  if (pending) return;
+  if (pending || !wss.clients.size) return;
   pending = true;
-  setTimeout(() => { pending = false; broadcast({ type: 'state', state: stateDelta(ctrl.snapshot()) }); }, 33);
+  setTimeout(() => {
+    pending = false;
+    if (!wss.clients.size) return;
+    broadcast({ type: 'state', state: stateDelta(ctrl.snapshot()) });
+  }, 33);
 });
 // 로그는 100ms 단위로 묶어 전송 (반복문 안의 출력이 쏟아져도 클라이언트·네트워크가 버티도록, 묶음당 최대 300개)
 let logQ = [], logDropped = 0;
 ctrl.on('log', (e) => {
+  if (!wss.clients.size) return;
   if (logQ.length >= 300) { logDropped++; return; }
   logQ.push(e);
   if (logQ.length === 1) setTimeout(flushLogs, 100);
@@ -415,15 +459,45 @@ function flushLogs() {
 }
 // 타임라인 이벤트는 100ms 단위로 묶어 전송
 let tlPending = [];
-timeline.listeners.add((e) => tlPending.push(e));
+timeline.listeners.add((e) => { if (wss.clients.size) tlPending.push(e); });
 setInterval(() => { if (tlPending.length) { broadcast({ type: 'tl', events: tlPending, now: Math.round(ctrl.simMs) }); tlPending = []; } }, 100);
-// 외부 인터페이스가 파일을 바꾸면 UI 에디터 갱신
-let lastFilesSig = '';
-const filesSig = () => ctrl.main + '|' + [...ctrl.files].map(([k, v]) => k + v.length + v.slice(0, 40)).join('|');
-setInterval(() => {
-  const sig = filesSig();
-  if (sig !== lastFilesSig) { lastFilesSig = sig; broadcast({ type: 'files', ...filesMsg() }); }
-}, 500);
+
+// 이벤트 기반 파일 변경 브로드캐스트 (외부 프로토콜·REST·MCP·UI 모든 경로에서 동일 길이 수정도 즉시 반영)
+let filesTimer = null;
+function scheduleFilesBroadcast() {
+  if (filesTimer || !wss.clients.size) return;
+  filesTimer = setTimeout(() => {
+    filesTimer = null;
+    if (wss.clients.size) broadcast({ type: 'files', ...filesMsg() });
+  }, 20);
+}
+ctrl.on('files', scheduleFilesBroadcast);
+
+// 통신 트래픽 모니터 스트리밍 (150ms 배치, 최대 100건/배치)
+let trQ = [], trTimer = null;
+function attachTrafficStream() {
+  if (!ctrl.traffic || ctrl.traffic._streamBound) return;
+  ctrl.traffic._streamBound = true;
+  const flush = () => {
+    trTimer = null;
+    if (!wss.clients.size) { trQ = []; return; }
+    const entries = trQ; trQ = [];
+    broadcast({ type: 'traffic', entries, clients: ctrl.traffic.listClients(), stats: { ...ctrl.traffic.stats, buffered: ctrl.traffic._size } });
+  };
+  ctrl.traffic.on('entry', (e) => {
+    if (!wss.clients.size) return;
+    if (trQ.length < 100) trQ.push(e);
+    if (!trTimer) trTimer = setTimeout(flush, 150);
+  });
+  ctrl.traffic.on('client', () => {
+    if (!wss.clients.size) return;
+    if (!trTimer) trTimer = setTimeout(flush, 150);
+  });
+  ctrl.traffic.on('clear', () => {
+    trQ = [];
+    broadcast({ type: 'trafficClear' });
+  });
+}
 
 server.on('error', (e) => {
   console.error(`HTTP 서버 시작 실패 (${config.host ?? '*'}:${config.httpPort}): ${e.code === 'EADDRINUSE' ? '포트가 이미 사용 중입니다. config.json 의 httpPort 또는 PORT 환경변수로 바꾸세요.' : e.message}`);
@@ -431,16 +505,18 @@ server.on('error', (e) => {
 });
 
 server.listen(config.httpPort, config.host || undefined, async () => {
+  const actualPort = server.address()?.port ?? config.httpPort;
   const shown = !config.host || config.host === '0.0.0.0' || config.host === '::' ? 'localhost' : config.host;
-  console.log(`\n  산업용 로봇 에뮬레이터  →  http://${shown}:${config.httpPort}`);
+  console.log(`\n  산업용 로봇 에뮬레이터  →  http://${shown}:${actualPort}`);
   // 휴대용 꾸러미(더블클릭 실행): 브라우저 자동 열기. 업데이트 후 재시작 때는 열지 않음
-  if (process.env.ROBOT_EMU_OPEN === '1' && !process.env.ROBOT_EMU_RESTARTED) openBrowser(`http://${shown}:${server.address().port}/`);
+  if (process.env.ROBOT_EMU_OPEN === '1' && !process.env.ROBOT_EMU_RESTARTED) openBrowser(`http://${shown}:${actualPort}/`);
   console.log(config.host && /^(127\.|::1$|localhost$)/i.test(config.host) ? '  (이 PC 에서만 접속 가능)\n' : `  (바인딩: ${config.host || '모든 인터페이스'} — 인증 없음, 신뢰할 수 있는 네트워크에서만 사용)\n`);
   try {
     const { startAll } = await import('./protocols/index.js');
     comms = await startAll(ctrl, config.protocols);
+    attachTrafficStream();
     for (const c of comms) console.log(`  [통신] ${c.name.padEnd(28)} ${c.proto.padEnd(5)} ${c.port ?? '(비활성)'}`);
-    broadcast({ type: 'comms', comms: comms.map(({ name, proto, port }) => ({ name, proto, port })) });
+    broadcast({ type: 'comms', comms: comms.map(({ key, name, proto, port }) => ({ key, name, proto, port })) });
   } catch (e) {
     console.error('통신 모듈 시작 실패:', e.message);
   }

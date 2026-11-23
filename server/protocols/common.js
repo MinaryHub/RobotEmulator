@@ -72,8 +72,11 @@ export function makeCycleRunner(ctrl, log) {
   const stop = () => { remaining = 0; if (timer) clearInterval(timer); timer = null; };
   const watch = () => {
     const vm = ctrl.vm;
-    if (!vm) return;
-    if (vm !== lastVm) { lastVm = vm; lastCycle = vm.cycle; }
+    if (!vm) return stop();
+    if (vm !== lastVm) {
+      if (vm.status === 'idle') return stop();
+      lastVm = vm; lastCycle = vm.cycle;
+    }
     if (vm.status === 'done' && vm.cycle > lastCycle) {
       lastCycle = vm.cycle;
       if (remaining === 0) return stop();
@@ -136,9 +139,16 @@ export const fx = (v, d = 3) => (Math.abs(v) < 0.5 * 10 ** -d ? 0 : v).toFixed(d
 // HTTP 요청 본문 읽기 (최대 32MB)
 export function readBody(req, limit = 32 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
-    const chunks = []; let n = 0;
-    req.on('data', (c) => { n += c.length; if (n > limit) { reject(new Error('body too large')); req.destroy(); } else chunks.push(c); });
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-    req.on('error', reject);
+    const chunks = []; let n = 0, done = false;
+    const finish = (err, val) => { if (done) return; done = true; err ? reject(err) : resolve(val); };
+    req.on('data', (c) => {
+      if (done) return;
+      n += c.length;
+      if (n > limit) { finish(Object.assign(new Error('body too large'), { status: 413 })); req.pause(); }
+      else chunks.push(c);
+    });
+    req.on('end', () => finish(null, Buffer.concat(chunks)));
+    req.on('error', (e) => finish(e));
+    req.on('close', () => { if (!req.complete) finish(new Error('aborted')); });
   });
 }

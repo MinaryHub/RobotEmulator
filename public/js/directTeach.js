@@ -60,9 +60,11 @@ export class DirectTeach {
     this.tc.addEventListener('dragging-changed', (e) => {
       view.controls.enabled = !e.value;
       this._dragTcp = e.value;
+      view.markDirty?.(false);
       if (e.value) this.pushUndo();
       else this._settleUntil = performance.now() + 250;   // 마지막 응답 반영 후 핸들을 실제 TCP 로 되돌림
     });
+    this.tc.addEventListener('change', () => { view.markDirty?.(false); });
     this.tc.addEventListener('objectChange', () => { if (this._dragTcp) this._queue({ kind: 'pose' }); });
 
     // 관절 회전 링
@@ -91,12 +93,18 @@ export class DirectTeach {
     this.enabled = !!on;
     this.tc.enabled = this.enabled;
     this.helper.visible = this.enabled;
-    if (!this.enabled) { this._showRing(0); this.dom.style.cursor = ''; this.jd = null; this.view.controls.enabled = true; }
+    if (!this.enabled) {
+      if (this.jd) this._onUp();
+      this._showRing(0);
+      this.dom.style.cursor = '';
+      this.view.controls.enabled = true;
+    }
     if (this.st) this.update(this.st);
+    this.view.markDirty?.(false);
   }
-  setMode(m) { this.tc.setMode(m); }                     // 'translate' | 'rotate'
+  setMode(m) { this.tc.setMode(m); this.view.markDirty?.(false); }                     // 'translate' | 'rotate'
   get mode() { return this.tc.mode; }
-  setSpace(s) { this.space = s; this.tc.setSpace(s === 'tool' ? 'local' : 'world'); }
+  setSpace(s) { this.space = s; this.tc.setSpace(s === 'tool' ? 'local' : 'world'); this.view.markDirty?.(false); }
   setSnap(i) {
     this.snap = i;
     const s = SNAPS[i];
@@ -186,6 +194,7 @@ export class DirectTeach {
     this.ringGroup.visible = !!k && this.enabled;
     if (k && this.st) this._placeRing(k);
     this.ringMat.color.setHex(dragging ? 0x40d0ff : 0xffc040);
+    this.view.markDirty?.(false);
   }
 
   _gateOk() {

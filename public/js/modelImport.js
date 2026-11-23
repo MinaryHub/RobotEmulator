@@ -9,8 +9,9 @@ import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { simplifyMesh, encodeCol, COL_MAX_TRIS } from '/shared/meshcol.js';
+import { disposeTree } from './dispose.js';
 
-export const MODEL_ACCEPT = '.stl,.obj,.glb,.gltf,.step,.stp,.iges,.igs';
+export const MODEL_ACCEPT = '.stl,.obj,.glb,.gltf,.step,.iges,.stp,.igs';
 const DEFAULT_MAT = () => new THREE.MeshStandardMaterial({ color: 0xb4bcc6, metalness: 0.35, roughness: 0.55 });
 
 // file: File. onStatus(text): 진행 표시. 반환: 서버 메타 { id, name, format, bbox, tris, srcTris }
@@ -30,25 +31,29 @@ export async function importModelFile(file, onStatus = () => {}) {
     root = buildOcctGroup(await occtRead(format, buf));
   }
 
-  onStatus('간섭 메시 생성 중…');
-  await idle();
-  const tri = collectTriangles(root);
-  if (!tri.count) throw new Error('모델에 삼각형(면)이 없습니다');
-  const s = simplifyMesh(tri.positions, tri.indices, COL_MAX_TRIS);
-  const col = encodeCol(s.positions, s.indices);
+  try {
+    onStatus('간섭 메시 생성 중…');
+    await idle();
+    const tri = collectTriangles(root);
+    if (!tri.count) throw new Error('모델에 삼각형(면)이 없습니다');
+    const s = simplifyMesh(tri.positions, tri.indices, COL_MAX_TRIS);
+    const col = encodeCol(s.positions, s.indices);
 
-  onStatus('표시용 모델 변환 중…');
-  await idle();
-  const glb = await new GLTFExporter().parseAsync(root, { binary: true, onlyVisible: true });
+    onStatus('표시용 모델 변환 중…');
+    await idle();
+    const glb = await new GLTFExporter().parseAsync(root, { binary: true, onlyVisible: true });
 
-  onStatus(`업로드 중… (${((glb.byteLength + col.byteLength) / 1048576).toFixed(1)} MB)`);
-  const header = new TextEncoder().encode(JSON.stringify({ name: file.name, format, glbBytes: glb.byteLength, colBytes: col.byteLength, srcTris: tri.count }));
-  const pre = new Uint8Array(4);
-  new DataView(pre.buffer).setUint32(0, header.length, true);
-  const res = await fetch('/api/assets', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: new Blob([pre, header, glb, col]) });
-  const out = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-  if (!res.ok || out.error) throw new Error(out.error || `업로드 실패 (HTTP ${res.status})`);
-  return out;
+    onStatus(`업로드 중… (${((glb.byteLength + col.byteLength) / 1048576).toFixed(1)} MB)`);
+    const header = new TextEncoder().encode(JSON.stringify({ name: file.name, format, glbBytes: glb.byteLength, colBytes: col.byteLength, srcTris: tri.count }));
+    const pre = new Uint8Array(4);
+    new DataView(pre.buffer).setUint32(0, header.length, true);
+    const res = await fetch('/api/assets', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: new Blob([pre, header, glb, col]) });
+    const out = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+    if (!res.ok || out.error) throw new Error(out.error || `업로드 실패 (HTTP ${res.status})`);
+    return out;
+  } finally {
+    disposeTree(root);
+  }
 }
 
 const idle = () => new Promise((r) => setTimeout(r, 0));

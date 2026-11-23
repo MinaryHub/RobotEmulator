@@ -11,7 +11,19 @@ const DEG = Math.PI / 180;
 const glbCache = new Map();
 function loadAsset(id) {
   // 실패(파일 없음)는 캐시하지 않음 → 프로젝트 가져오기 등으로 파일이 생기면 다음 build 에서 다시 시도
-  if (!glbCache.has(id)) glbCache.set(id, new GLTFLoader().loadAsync(`/assets/models/${id}.glb`).then((g) => g.scene).catch(() => { glbCache.delete(id); return null; }));
+  if (!glbCache.has(id)) {
+    glbCache.set(id, new GLTFLoader().loadAsync(`/assets/models/${id}.glb`).then((g) => {
+      // 캐시된 지오메트리·텍스처는 인스턴스가 공유하므로 disposeTree 대상에서 제외
+      g.scene.traverse((o) => {
+        if (o.geometry) o.geometry.userData = { ...(o.geometry.userData || {}), shared: true };
+        const mats = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
+        for (const mat of mats) {
+          for (const v of Object.values(mat)) if (v?.isTexture) v.userData = { ...(v.userData || {}), shared: true };
+        }
+      });
+      return g.scene;
+    }).catch(() => { glbCache.delete(id); return null; }));
+  }
   return glbCache.get(id);
 }
 // 위쪽 축 보정 (shared/meshcol.js upMatrix 와 같은 회전)
@@ -38,33 +50,41 @@ export class CellMeshes {
     view.world.add(this.group);
     this.key = null;
     this.sceneKey = null;
+    this._lastScene = null;
     this.dyn = {};       // id → 동적 갱신 핸들
     this._t = performance.now();
-    // 벨트 무늬는 상태 수신과 무관하게 매 프레임 이동
-    const loop = () => { this.animate(); requestAnimationFrame(loop); };
-    requestAnimationFrame(loop);
   }
 
-  animate() {
-    const now = performance.now(), dt = Math.min(0.2, (now - this._t) / 1000);
+  // RobotView 메인 루프에서 호출. 벨트가 움직였으면 true 반환 (유휴 렌더 깨우기용)
+  animate(now = performance.now()) {
+    const dt = Math.min(0.2, (now - this._t) / 1000);
     this._t = now;
     const cell = this.cell;
-    if (!cell?.layout) return;
+    if (!cell?.layout) return false;
+    let moved = false;
     for (const d of cell.layout.devices) {
       const h = this.dyn[d.id], s = cell.status?.[d.id];
-      if (d.type === 'conveyor' && h?.tex && s?.running) h.tex.offset.x -= (d.speed * (s.dir || 1) * dt) / h.period;
+      if (d.type === 'conveyor' && h?.tex && s?.running) {
+        h.tex.offset.x -= (d.speed * (s.dir || 1) * dt) / h.period;
+        moved = true;
+      }
     }
+    return moved;
   }
 
   update(st) {
     const cell = st.cell;
     if (!cell?.layout) return;
-    // 메인 테이블 변경 → 기본 셀 재구성 (바닥 높이 변경 시에는 app.js 가 이미 처리)
-    const sk = JSON.stringify(st.scene);
-    if (this.sceneKey !== null && sk !== this.sceneKey) this.view.buildCell(st.scene);
-    this.sceneKey = sk;
+    // 메인 테이블 변경 → 기본 셀 재구성 (객체 참조가 같으면 JSON.stringify 생략)
+    let sk = this.sceneKey;
+    if (st.scene !== this._lastScene) {
+      this._lastScene = st.scene;
+      sk = JSON.stringify(st.scene);
+      if (this.sceneKey !== null && sk !== this.sceneKey) this.view.buildCell(st.scene);
+      this.sceneKey = sk;
+    }
     const key = cell.rev + '|' + sk;
-    if (key !== this.key) { this.key = key; this.build(cell.layout, st.scene); }
+    if (key !== this.key) { this.key = key; this.build(cell.layout, st.scene); this.view.markDirty?.(true); }
     this.cell = cell;
     // 간섭 중인 3D 모델 붉게 표시
     this.hitIds = new Set((st.collision?.pairs || []).map((p) => p.b));
@@ -124,17 +144,20 @@ export class CellMeshes {
           g.add(box(len, d.width + 20, bodyH, frameMat, len / 2, 0, d.z - bodyH - 2));
           // 다리
           const legH = d.z - bodyH - 2 - fz;
-          if (legH > 0) for (const t of [0.06, 0.5, 0.94]) for (const sy of [-1, 1]) g.add(box(30, 30, legH, std(0x3d444c), len * t, sy * (d.width / 2 - 5), fz));
+          const legMat = std(0x3d444c);
+          if (legH > 0) for (const t of [0.06, 0.5, 0.94]) for (const sy of [-1, 1]) g.add(box(30, 30, legH, legMat, len * t, sy * (d.width / 2 - 5), fz));
           // 벨트 (줄무늬 텍스처 이동)
           const tex = beltTexture();
           const period = 40;
           tex.repeat.set(len / period, 1);
-          const belt = new THREE.Mesh(new THREE.BoxGeometry(len, d.width, 2), [std(0x23272c), std(0x23272c), std(0x23272c), std(0x23272c), new THREE.MeshStandardMaterial({ map: tex, roughness: 0.9 }), std(0x23272c)]);
+          const beltSide = std(0x23272c);
+          const belt = new THREE.Mesh(new THREE.BoxGeometry(len, d.width, 2), [beltSide, beltSide, beltSide, beltSide, new THREE.MeshStandardMaterial({ map: tex, roughness: 0.9 }), beltSide]);
           belt.position.set(len / 2, 0, d.z - 1);
           belt.receiveShadow = true;
           g.add(belt);
           // 사이드 가이드
-          for (const sy of [-1, 1]) g.add(box(len, 6, 14, std(0xb8bec6, { metalness: 0.6 }), len / 2, sy * (d.width / 2 + 7), d.z - 4));
+          const guideMat = std(0xb8bec6, { metalness: 0.6 });
+          for (const sy of [-1, 1]) g.add(box(len, 6, 14, guideMat, len / 2, sy * (d.width / 2 + 7), d.z - 4));
           // 롤러 끝
           for (const x of [0, len]) { const r = new THREE.Mesh(new THREE.CylinderGeometry(bodyH / 2, bodyH / 2, d.width + 4, 20), frameMat); r.position.set(x, 0, d.z - bodyH / 2 - 2); g.add(r); }
           // 스토퍼
@@ -150,7 +173,8 @@ export class CellMeshes {
           for (const sy of [-1, 1]) g.add(box(w, 4, hh, mat, 0, sy * dd / 2, zb));
           for (const sx of [-1, 1]) g.add(box(4, dd, hh, mat, sx * w / 2, 0, zb));
           // 지지대
-          for (const sx of [-1, 1]) g.add(box(8, 8, zb - d.z + hh, std(0x3d444c), sx * (w / 2 + 6), 0, d.z));
+          const supMat = std(0x3d444c);
+          for (const sx of [-1, 1]) g.add(box(8, 8, zb - d.z + hh, supMat, sx * (w / 2 + 6), 0, d.z));
           // 내부에 대기 중인 공작물 표시
           g.add(edges(box(s[0], s[1], s[2], std(d.color), 0, 0, zb + 4)));
           G.add(place(g, d.x, d.y, d.yaw || 0));
@@ -241,15 +265,17 @@ export class CellMeshes {
     let ph = null;
     if (m.bbox) {
       const [lo, hi] = m.bbox, sz = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]].map((v) => Math.max(v, 1e-6));
-      ph = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(...sz)), new THREE.LineBasicMaterial({ color: 0xf0a020 }));
+      const tmpBox = new THREE.BoxGeometry(...sz);
+      ph = new THREE.LineSegments(new THREE.EdgesGeometry(tmpBox), new THREE.LineBasicMaterial({ color: 0xf0a020 }));
+      tmpBox.dispose();
       ph.position.set((lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2);
       inner.add(ph);
     }
     this.dyn[m.id] = { group: outer };
     loadAsset(m.asset).then((scene) => {
       if (token !== this._token) return;                 // 그 사이 다시 그림
-      if (!scene) { if (ph) ph.material.color.setHex(0xe05050); return; }   // 파일 없음 → 빨간 상자
-      if (ph) { inner.remove(ph); ph.geometry.dispose(); }
+      if (!scene) { if (ph) ph.material.color.setHex(0xe05050); this.view.markDirty?.(false); return; }   // 파일 없음 → 빨간 상자
+      if (ph) { inner.remove(ph); ph.geometry.dispose(); ph.material.dispose(); }
       const obj = scene.clone(true);
       const mats = [];
       obj.traverse((o) => {
@@ -268,6 +294,7 @@ export class CellMeshes {
       inner.add(obj);
       this.dyn[m.id] = { group: outer, mats, hit: false };
       this.tintModel(m.id);          // 불러오는 사이에 받은 간섭 상태 반영
+      this.view.markDirty?.(true);
     });
   }
 

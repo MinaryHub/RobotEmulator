@@ -133,17 +133,34 @@ export class ProjectStore {
   remove(name) { fs.unlinkSync(this.fileOf(name)); this.ctrl.log('system', `프로젝트 삭제: ${name}`); }
 
   // ---------------------------------------------------------------- 자동 저장
-  // 변경이 있을 때만 _autosave.json 기록 (종료 처리에서도 호출)
-  saveAutosave() {
+  // 변경이 있을 때만 _autosave.json 기록 (종료 처리에서는 동기 호출, 주기 저장은 비동기 원자적 기록)
+  saveAutosave({ async: isAsync = false } = {}) {
+    if (isAsync && this._autosaving) return;
     try {
       const p = this.serialize();
-      const sig = JSON.stringify({ ...p, savedAt: 0 });
-      if (sig !== this._lastSig) { this._lastSig = sig; fs.writeFileSync(path.join(this.dir, '_autosave.json'), JSON.stringify(p)); }
+      const savedAt = p.savedAt;
+      p.savedAt = 0;
+      const sig = JSON.stringify(p);
+      if (sig === this._lastSig) return;
+      this._lastSig = sig;
+      p.savedAt = savedAt;
+      const data = JSON.stringify(p);
+      const target = path.join(this.dir, '_autosave.json');
+      if (isAsync) {
+        this._autosaving = true;
+        const tmp = target + '.tmp';
+        fs.promises.writeFile(tmp, data)
+          .then(() => fs.promises.rename(tmp, target))
+          .catch(() => {})
+          .finally(() => { this._autosaving = false; });
+      } else {
+        fs.writeFileSync(target, data);
+      }
     } catch (e) { /* 자동 저장 실패는 무시 (다음 주기에 재시도) */ }
   }
 
   startAutosave() {
-    this._timer = setInterval(() => this.saveAutosave(), 2000);
+    this._timer = setInterval(() => this.saveAutosave({ async: true }), 2000);
     return () => clearInterval(this._timer);
   }
 

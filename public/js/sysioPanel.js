@@ -20,6 +20,9 @@ const PARITY = { none: '없음', odd: '홀수', even: '짝수' };
 let ctx = null;
 let sig = '';
 let presets = [];
+let lastSysRef = null;
+let lastFilesRef = null;
+const pulseMap = new Map(); // diPin -> { rest, timer }
 
 export function initSysioPanel({ cmd, getState }) {
   ctx = { cmd, getState };
@@ -52,7 +55,7 @@ export function initSysioPanel({ cmd, getState }) {
   const sys = () => getState()?.sysio;
   const pinsIn = () => Object.fromEntries(sys().inputs.map((s) => [s.key, s.n]));
   const pinsOut = () => Object.fromEntries(sys().outputs.map((s) => [s.key, s.n]));
-  const setDI = (n, v) => cmd('setDI', { n, v: !!v });
+  const setDI = (n, v) => cmd('setDI', { n, v: !!v }).catch(() => {});
 
   $('#sysEn').onchange = (e) => send({ enabled: e.target.checked });
   $('#sysPreset').onchange = (e) => send({ preset: e.target.value });
@@ -94,8 +97,13 @@ export function initSysioPanel({ cmd, getState }) {
       logic[key] = !sg.activeLow;
       send({ logic: { in: logic } });
     } else if (t.matches('button.pulse') && sg) {
-      setDI(sg.n, !sg.raw);
-      setTimeout(() => setDI(sg.n, sg.raw), 150);
+      // 빠른 연타에도 원래 평상시 상태(rest)로 복귀
+      const prev = pulseMap.get(sg.n);
+      const rest = prev ? prev.rest : sg.raw;
+      if (prev) clearTimeout(prev.timer);
+      setDI(sg.n, !rest);
+      const timer = setTimeout(() => { pulseMap.delete(sg.n); setDI(sg.n, rest); }, 150);
+      pulseMap.set(sg.n, { rest, timer });
     } else if (t.matches('button.del[data-pn]')) {
       t.closest('tr').remove();
       sendPrograms();
@@ -200,14 +208,19 @@ export function renderSysioPanel(st) {
   const s = st?.sysio;
   if (!s || !ctx) return;
   const root = $('#tSys');
+  if (!root.classList.contains('active')) return;
+  const files = st.program?.files || [];
+  if (s === lastSysRef && files === lastFilesRef && sig) return;
+  lastSysRef = s;
+  lastFilesRef = files;
   const focus = document.activeElement;
   const editing = focus && root.contains(focus) && focus.matches('input[type=number], select');
   if (focus !== $('#sysEn')) $('#sysEn').checked = s.enabled;
   if (focus !== $('#sysPreset') && presets.length) $('#sysPreset').value = s.preset;
-  $('#sysNote').textContent = s.note || '';
+  const noteTxt = s.note || '';
+  if ($('#sysNote').textContent !== noteTxt) $('#sysNote').textContent = noteTxt;
   if (focus !== $('#sysDiBase')) $('#sysDiBase').value = s.diBase;
   if (focus !== $('#sysDoBase')) $('#sysDoBase').value = s.doBase;
-  const files = st.program?.files || [];
   const nsig = JSON.stringify([s.preset, s.enabled, s.pgno, s.inputs.map((x) => [x.key, x.n, x.activeLow, x.name]), s.outputs.map((x) => [x.key, x.n, x.name]), s.programs, files]);
   if (nsig !== sig && !editing) {
     sig = nsig;
@@ -237,5 +250,6 @@ export function renderSysioPanel(st) {
     for (const x of s.inputs) if (x.kind === 'pgnoBit' && x.raw) v |= 1 << Number(x.key.slice(4));
     pv.value = v;
   }
-  $('#sysLast').textContent = s.lastPgno != null ? `마지막 선택: ${s.lastPgno} → ${st.program?.main ?? '-'}` : '';
+  const lastTxt = s.lastPgno != null ? `마지막 선택: ${s.lastPgno} → ${st.program?.main ?? '-'}` : '';
+  if ($('#sysLast').textContent !== lastTxt) $('#sysLast').textContent = lastTxt;
 }

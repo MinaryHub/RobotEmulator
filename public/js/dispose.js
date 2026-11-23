@@ -4,10 +4,10 @@
 export function disposeTree(root) {
   if (!root) return;
   root.traverse((o) => {
-    o.geometry?.dispose?.();
+    if (o.geometry && !o.geometry.userData?.shared) o.geometry.dispose?.();
     const mats = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
     for (const m of mats) {
-      for (const v of Object.values(m)) if (v?.isTexture) v.dispose();
+      for (const v of Object.values(m)) if (v?.isTexture && !v.userData?.shared) v.dispose();
       m.dispose?.();
     }
   });

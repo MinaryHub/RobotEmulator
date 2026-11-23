@@ -18,6 +18,7 @@
 import dgram from 'node:dgram';
 import { RfromZYX, poseMul } from '../../shared/math.js';
 import { makeLogger, bindServer, baseTcp, toVendorPose, fromVendorPose, startMove, busy, progRunning, findFile, makeCycleRunner } from './common.js';
+import { hexOf } from './traffic.js';
 
 const TAG = 'YASKAWA-HSE';
 const HDR = 32;
@@ -76,7 +77,9 @@ export function buildPacket({ division, ack, reqId, block = 0, sub, data = Buffe
 
 export function parsePacket(buf) {
   if (buf.length < HDR || buf.toString('ascii', 0, 4) !== 'YERC') return null;
+  const hdrSize = buf.readUInt16LE(4);
   const dataSize = buf.readUInt16LE(6);
+  if (hdrSize !== HDR || buf.length < HDR + dataSize) return null;
   return {
     division: buf[9], ack: buf[10], reqId: buf[11], block: buf.readUInt32LE(12),
     cmd: buf.readUInt16LE(24), instance: buf.readUInt16LE(26), attribute: buf[28], service: buf[29],
@@ -381,7 +384,7 @@ export async function start(ctrl, opts = {}) {
         const on = (data.length >= 4 ? data.readInt32LE(0) : 0) === 1;
         if (inst === 1) {
           st.cmdHold = on;
-          if (on) ctrl.hold(); else if (!progRunning(ctrl)) ctrl.resume();
+          if (on) ctrl.hold(); else if (ctrl.held) ctrl.resume();
           log(`HOLD ${on ? 'ON' : 'OFF'}`, true);
         } else if (inst === 2) {
           if (on && !ctrl.allow('servoOn')) throw new HseError(ctrl.lastReject.code === 1 ? AS.BAD_MODE : AS.SERVO_ON_FAIL);
@@ -453,7 +456,12 @@ export async function start(ctrl, opts = {}) {
         log(`IO 복수 읽기 #${inst} x${count}`);
         return b;
       }
-      if (svc === SVC.SET_MULTI) { for (let i = 0; i < count; i++) ioWrite(inst + i, data[4 + i] ?? 0); log(`IO 복수 쓰기 #${inst} x${count}`, true); return Buffer.alloc(0); }
+      if (svc === SVC.SET_MULTI) {
+        if (data.length < 4 + count) throw new HseError(AS.SIZE);
+        for (let i = 0; i < count; i++) ioWrite(inst + i, data[4 + i]);
+        log(`IO 복수 쓰기 #${inst} x${count}`, true);
+        return Buffer.alloc(0);
+      }
       throw new HseError(AS.UNDEF, ST.UNDEF_CMD);
     }
     const V = VARS[which];
@@ -465,6 +473,7 @@ export async function start(ctrl, opts = {}) {
       return b;
     }
     if (svc === SVC.SET_MULTI) {
+      if (data.length < 4 + count * V.size) throw new HseError(AS.SIZE);
       for (let i = 0; i < count; i++) regSet(`${V.key}:${inst + i}`, V.rd(data, 4 + i * V.size));
       log(`${V.key} 복수 쓰기 ${inst} x${count}`, true);
       return Buffer.alloc(0);
@@ -472,23 +481,48 @@ export async function start(ctrl, opts = {}) {
     throw new HseError(AS.UNDEF, ST.UNDEF_CMD);
   }
 
+  // 선형 와일드카드 매칭 (*, ?) — ReDoS 방지
+  function globMatch(pat, str) {
+    const p = pat.toLowerCase(), s = str.toLowerCase();
+    let pi = 0, si = 0, star = -1, match = 0;
+    while (si < s.length) {
+      if (pi < p.length && (p[pi] === '?' || p[pi] === s[si])) { pi++; si++; }
+      else if (pi < p.length && p[pi] === '*') { star = pi++; match = si; }
+      else if (star >= 0) { pi = star + 1; si = ++match; }
+      else return false;
+    }
+    while (pi < p.length && p[pi] === '*') pi++;
+    return pi === p.length;
+  }
+
   // ------------------------------------------------------------ 소켓 처리 공통
   function makeSocket(division, handler) {
     const sock = dgram.createSocket({ type: 'udp4', reuseAddr: false });
+    sock.on('error', (e) => log(`UDP 소켓 오류: ${e.message}`, true));
     sock.on('message', async (msg, rinfo) => {
+      const t0 = performance.now();
+      const peer = `${rinfo.address}:${rinfo.port}`;
       const q = parsePacket(msg);
       if (!q) { log(`잘못된 패킷 (${msg.length} bytes) from ${rinfo.address}`); return; }
+      const sum = division === 1
+        ? `CMD 0x${q.cmd.toString(16)} inst=${q.instance} attr=${q.attribute} svc=0x${q.service.toString(16)}`
+        : `FILE svc=0x${q.service.toString(16)} blk=${q.block & 0x7fffffff}`;
+      if (await ctrl.traffic?.applyFault('yaskawaHse', peer, sum)) return;
+      let sentPkt = null;
       const reply = (sub, data, block = 0x80000000) => {
         const pkt = buildPacket({ division, ack: 1, reqId: q.reqId, block, sub, data });
+        sentPkt = pkt;
         sock.send(pkt, rinfo.port, rinfo.address);
       };
       try {
         await handler(q, reply, rinfo);
+        ctrl.traffic?.record('yaskawaHse', { client: peer, dir: 'req', summary: `${sum} → OK`, hex: `${hexOf(msg, 24)} | ${hexOf(sentPkt, 24)}`, ok: true, ms: performance.now() - t0 });
       } catch (e) {
         const added = e instanceof HseError ? e.added : AS.UNDEF;
         const status = e instanceof HseError ? e.status : ST.ERR;
         log(`명령 0x${q.cmd.toString(16)} 오류 status=0x${status.toString(16)} added=0x${added.toString(16)} ${e.message}`, true);
         reply(respSub(q.service, status, added), Buffer.alloc(0));
+        ctrl.traffic?.record('yaskawaHse', { client: peer, dir: 'req', summary: `${sum} → ERR 0x${status.toString(16)}/0x${added.toString(16)}`, hex: hexOf(msg, 24), ok: false, error: e.message, ms: performance.now() - t0 });
       }
     });
     return sock;
@@ -577,8 +611,7 @@ export async function start(ctrl, opts = {}) {
           log(`파일 저장(전송): ${f} (${content.length} bytes)`, true);
         } else {
           const pat = bufStr(q.data) || '*.JBI';
-          const re = new RegExp('^' + pat.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$', 'i');
-          const names = [...ctrl.files.keys()].filter((n) => re.test(n));
+          const names = [...ctrl.files.keys()].filter((n) => globMatch(pat, n));
           content = Buffer.from(names.map((n) => n + '\r\n').join(''), 'latin1');
           log(`파일 목록 (${pat}): ${names.length}개`, true);
         }

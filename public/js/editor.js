@@ -14,7 +14,10 @@ export class CodeEditor {
   constructor(el) {
     this.el = el;
     el.classList.add('editor');
-    el.innerHTML = `<div class="gutter"></div><div class="code"><div class="exec-bar"></div><div class="err-bar"></div><pre class="hl" aria-hidden="true"></pre><textarea spellcheck="false" wrap="off"></textarea></div>`;
+    el.innerHTML = `<div class="ed-find hidden"><input type="text" class="ed-fq" placeholder="찾기 (Enter: 다음, Shift+Enter: 이전)"><span class="ed-fc"></span><button type="button" class="ed-fp" title="이전">▲</button><button type="button" class="ed-fn" title="다음">▼</button><button type="button" class="ed-fx" title="닫기">✕</button></div><div class="ed-body"><div class="gutter"></div><div class="code"><div class="exec-bar"></div><div class="err-bar"></div><pre class="hl" aria-hidden="true"></pre><textarea spellcheck="false" wrap="off"></textarea></div></div>`;
+    this.findBar = el.querySelector('.ed-find');
+    this.findInput = el.querySelector('.ed-fq');
+    this.findCount = el.querySelector('.ed-fc');
     this.gutter = el.querySelector('.gutter');
     this.ta = el.querySelector('textarea');
     this.hl = el.querySelector('.hl');
@@ -24,30 +27,158 @@ export class CodeEditor {
     this.kw = new Set();
     this.bpLines = new Set();
     this.onGutterClick = () => {};
+    this.onCursor = () => {};
     this.dirty = false;
     this.onChange = () => {};
-    this.ta.addEventListener('input', () => { this.dirty = true; this.render(); this.onChange(); });
+    this._matches = [];
+    this._matchIdx = -1;
+    this.ta.addEventListener('input', () => { this.dirty = true; this.render(); this.onChange(); this._emitCursor(); if (!this.findBar.classList.contains('hidden')) this._updateFind(false); });
     this.ta.addEventListener('scroll', () => this.syncScroll());
+    this.ta.addEventListener('keyup', () => this._emitCursor());
+    this.ta.addEventListener('mouseup', () => this._emitCursor());
+    this.ta.addEventListener('focus', () => this._emitCursor());
     // 라인 번호 클릭 → 브레이크포인트 토글
     this.gutter.addEventListener('click', (ev) => {
       const d = ev.target.closest('[data-ln]');
       if (d) this.onGutterClick(Number(d.dataset.ln));
     });
     this.ta.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.code === 'KeyF') {
+        e.preventDefault();
+        this.openFind();
+        return;
+      }
+      if (e.key === 'Escape' && !this.findBar.classList.contains('hidden')) {
+        e.preventDefault();
+        this.closeFind();
+        return;
+      }
       if (e.key === 'Tab') {
         e.preventDefault();
-        const s = this.ta.selectionStart;
-        this.ta.setRangeText('  ', s, this.ta.selectionEnd, 'end');
-        this.ta.dispatchEvent(new Event('input'));
+        const s = this.ta.selectionStart, end = this.ta.selectionEnd;
+        if (e.shiftKey) {
+          const val = this.ta.value;
+          const ls = val.lastIndexOf('\n', s - 1) + 1;
+          const block = val.slice(ls, end);
+          const unindented = block.replace(/^(?: {1,2}|\t)/gm, '');
+          const removed = block.length - unindented.length;
+          if (removed > 0) {
+            this.ta.setRangeText(unindented, ls, end, 'select');
+            this.ta.selectionStart = Math.max(ls, s - (val.slice(ls, s).match(/^(?: {1,2}|\t)/)?.[0].length || 0));
+            this.ta.selectionEnd = end - removed;
+            this.ta.dispatchEvent(new Event('input'));
+          }
+        } else {
+          this.ta.setRangeText('  ', s, end, 'end');
+          this.ta.dispatchEvent(new Event('input'));
+        }
+      } else if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.isComposing) {
+        const s = this.ta.selectionStart, end = this.ta.selectionEnd;
+        if (s === end) {
+          const val = this.ta.value;
+          const ls = val.lastIndexOf('\n', s - 1) + 1;
+          const curLine = val.slice(ls, s);
+          const indent = curLine.match(/^[ \t]*/)[0];
+          const extra = /:\s*$/.test(curLine) && (this.vendor === 'doosan' || this.vendor === 'ur') ? '  ' : '';
+          if (indent || extra) {
+            e.preventDefault();
+            this.ta.setRangeText('\n' + indent + extra, s, end, 'end');
+            this.ta.dispatchEvent(new Event('input'));
+          }
+        }
       }
     });
+    this.findInput.addEventListener('input', () => this._updateFind(true));
+    this.findInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); this._stepFind(e.shiftKey ? -1 : 1); }
+      else if (e.key === 'Escape') { e.preventDefault(); this.closeFind(); }
+    });
+    el.querySelector('.ed-fn').onclick = () => this._stepFind(1);
+    el.querySelector('.ed-fp').onclick = () => this._stepFind(-1);
+    el.querySelector('.ed-fx').onclick = () => this.closeFind();
     this.execLine = null;
     this.errLine = null;
+    this._metrics = null;
+  }
+
+  openFind() {
+    this.findBar.classList.remove('hidden');
+    const sel = this.ta.value.slice(this.ta.selectionStart, this.ta.selectionEnd);
+    if (sel && !sel.includes('\n') && sel.length <= 80) this.findInput.value = sel;
+    this.findInput.focus();
+    this.findInput.select();
+    this._updateFind(true);
+  }
+  closeFind() {
+    this.findBar.classList.add('hidden');
+    this.ta.focus();
+  }
+  _updateFind(jump) {
+    const q = this.findInput.value;
+    this._matches = [];
+    this._matchIdx = -1;
+    if (q) {
+      const hay = this.ta.value.toLowerCase(), needle = q.toLowerCase();
+      let i = 0;
+      while ((i = hay.indexOf(needle, i)) !== -1) {
+        this._matches.push(i);
+        i += Math.max(1, needle.length);
+      }
+    }
+    if (jump && this._matches.length) {
+      const cur = this.ta.selectionStart;
+      let idx = this._matches.findIndex((p) => p >= cur);
+      if (idx < 0) idx = 0;
+      this._selectMatch(idx, false);
+    } else {
+      this._renderFindCount();
+    }
+  }
+  _stepFind(delta) {
+    if (!this._matches.length) { this._renderFindCount(); return; }
+    const n = this._matches.length;
+    const next = this._matchIdx < 0 ? 0 : (this._matchIdx + delta + n) % n;
+    this._selectMatch(next, false);
+  }
+  _selectMatch(idx, focusTa = true) {
+    this._matchIdx = idx;
+    const start = this._matches[idx], len = this.findInput.value.length;
+    if (focusTa) this.ta.focus();
+    this.ta.setSelectionRange(start, start + len);
+    const line = this.ta.value.slice(0, start).split('\n').length;
+    const { lh } = this._getMetrics();
+    const y = (line - 1) * lh;
+    if (y < this.ta.scrollTop || y > this.ta.scrollTop + this.ta.clientHeight - lh * 2) {
+      this.ta.scrollTop = Math.max(0, y - this.ta.clientHeight / 3);
+    }
+    this.syncScroll();
+    this._renderFindCount();
+    this._emitCursor();
+  }
+  _renderFindCount() {
+    const q = this.findInput.value;
+    if (!q) { this.findCount.textContent = ''; return; }
+    this.findCount.textContent = this._matches.length ? `${this._matchIdx + 1}/${this._matches.length}` : '0/0';
+  }
+  _emitCursor() {
+    const pos = this.ta.selectionStart || 0;
+    const before = this.ta.value.slice(0, pos);
+    const nl = before.lastIndexOf('\n');
+    const line = nl === -1 ? 1 : before.split('\n').length;
+    const col = pos - nl;
+    this.onCursor({ line, col });
+  }
+  _getMetrics() {
+    if (!this._metrics) {
+      const cs = getComputedStyle(this.ta);
+      this._metrics = { lh: parseFloat(cs.lineHeight) || 19, pad: parseFloat(cs.paddingTop) || 8 };
+    }
+    return this._metrics;
   }
 
   setLanguage(vendor) { this.vendor = vendor; this.kw = new Set(KW[vendor].toUpperCase().split(/\s+/)); this.render(); }
   get text() { return this.ta.value; }
-  set text(v) { this.ta.value = v; this.dirty = false; this.render(); }
+  set text(v) { this.ta.value = v; this.dirty = false; this.render(); this._emitCursor(); }
 
   insertAtCursor(s) {
     const pos = this.ta.selectionStart;
@@ -69,18 +200,28 @@ export class CodeEditor {
 
   highlight(line) {
     const v = this.vendor;
-    // 주석 분리
+    // 주석 분리 (작은따옴표 문자열 및 이스케이프 처리)
     const cm = { yaskawa: "'", kawasaki: ';', hyundai: "'", abb: '!', kuka: ';', doosan: '#', ur: '#' }[v];
+    const hasSingleStr = v === 'doosan' || v === 'ur';
     let code = line, comment = '';
-    let inStr = false;
+    let quote = null;
     for (let i = 0; i < line.length; i++) {
-      if (line[i] === '"') inStr = !inStr;
-      if (!inStr && line.startsWith(cm, i)) { code = line.slice(0, i); comment = line.slice(i); break; }
+      const ch = line[i];
+      if (quote) {
+        if (ch === '\\' && i + 1 < line.length) { i++; continue; }
+        if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === '"' || (hasSingleStr && ch === "'")) { quote = ch; continue; }
+      if (line.startsWith(cm, i)) { code = line.slice(0, i); comment = line.slice(i); break; }
     }
     if (v === 'kawasaki' && /^\s*\.\w+/.test(code)) return `<span class="t-dir">${esc(code)}</span><span class="t-cm">${esc(comment)}</span>`;
     if (v === 'yaskawa' && /^\s*\/\/?\/?/.test(code) && code.trim().startsWith('/')) return `<span class="t-dir">${esc(code)}</span>`;
     if (v === 'kuka' && /^\s*&/.test(code)) return `<span class="t-dir">${esc(code)}</span>`;
-    const out = code.replace(/("[^"]*")|(\$?[A-Za-z_#][\w#$%!]*)|(-?\b\d+\.?\d*(?:[eE][+-]?\d+)?\b)|([^"\w$#]+)/g, (m, str, id, num, other) => {
+    const re = hasSingleStr
+      ? /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|(\$?[A-Za-z_#][\w#$%!]*)|(-?\b\d+\.?\d*(?:[eE][+-]?\d+)?\b)|([^"'\w$#]+)/g
+      : /("(?:\\.|[^"\\])*")|(\$?[A-Za-z_#][\w#$%!]*)|(-?\b\d+\.?\d*(?:[eE][+-]?\d+)?\b)|([^"\w$#]+)/g;
+    const out = code.replace(re, (m, str, id, num, other) => {
       if (str) return `<span class="t-str">${esc(str)}</span>`;
       if (id) {
         if (this.kw.has(id.toUpperCase())) return `<span class="t-kw">${esc(id)}</span>`;
@@ -103,8 +244,7 @@ export class CodeEditor {
 
   placeBar(bar, line) {
     if (!line) { bar.style.display = 'none'; return; }
-    const lh = parseFloat(getComputedStyle(this.ta).lineHeight);
-    const pad = parseFloat(getComputedStyle(this.ta).paddingTop);
+    const { lh, pad } = this._getMetrics();
     bar.style.display = 'block';
     bar.style.top = `${pad + (line - 1) * lh - this.ta.scrollTop}px`;
     bar.style.height = `${lh}px`;
@@ -115,7 +255,7 @@ export class CodeEditor {
     this.execLine = line;
     this.placeBar(this.execBar, line);
     if (line && scroll) {
-      const lh = parseFloat(getComputedStyle(this.ta).lineHeight);
+      const { lh } = this._getMetrics();
       const y = (line - 1) * lh;
       if (y < this.ta.scrollTop || y > this.ta.scrollTop + this.ta.clientHeight - lh * 2) this.ta.scrollTop = Math.max(0, y - this.ta.clientHeight / 3);
     }
@@ -127,5 +267,9 @@ export class CodeEditor {
     for (const d of this.gutter.querySelectorAll('[data-ln]')) d.classList.toggle('bp', s.has(Number(d.dataset.ln)));
   }
 
-  setErrLine(line) { this.errLine = line; this.placeBar(this.errBar, line); }
+  setErrLine(line) {
+    if (line === this.errLine) return;
+    this.errLine = line;
+    this.placeBar(this.errBar, line);
+  }
 }

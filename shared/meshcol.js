@@ -258,17 +258,26 @@ function nodeLowerBound(bvh, node, p, q, sl, sh) {
 }
 
 // 선분 PQ ↔ 메시 최소 거리. cutoff 보다 먼 부분은 탐색하지 않음 (그때 반환값 ≥ cutoff 인 하한)
-const STACK = new Int32Array(256);
+let STACK = new Int32Array(256);
+function pushPair(sp, a, b) {
+  if (sp + 2 > STACK.length) {
+    const next = new Int32Array(STACK.length * 2);
+    next.set(STACK);
+    STACK = next;
+  }
+  STACK[sp] = a;
+  STACK[sp + 1] = b;
+  return sp + 2;
+}
 export function segMeshDist(bvh, p, q, cutoff = Infinity) {
   const sl = [Math.min(p[0], q[0]), Math.min(p[1], q[1]), Math.min(p[2], q[2])];
   const sh = [Math.max(p[0], q[0]), Math.max(p[1], q[1]), Math.max(p[2], q[2])];
   let best = cutoff;
   let lowest = Infinity;                // 잘라낸 노드 하한 중 최소 (best 가 cutoff 일 때 반환)
   let sp = 0;
-  const stack = bvh.nodes * 2 > STACK.length ? new Int32Array(bvh.nodes * 2) : STACK;
-  stack[sp++] = 0;
+  STACK[sp++] = 0;
   while (sp) {
-    const node = stack[--sp];
+    const node = STACK[--sp];
     const lb = nodeLowerBound(bvh, node, p, q, sl, sh);
     if (lb >= best) { if (lb < lowest) lowest = lb; continue; }
     const l = bvh.left[node];
@@ -283,7 +292,7 @@ export function segMeshDist(bvh, p, q, cutoff = Infinity) {
       // 가까운 자식을 나중에 넣어 먼저 탐색
       const r = bvh.start[node];
       const dl = nodeLowerBound(bvh, l, p, q, sl, sh), dr = nodeLowerBound(bvh, r, p, q, sl, sh);
-      if (dl < dr) { stack[sp++] = r; stack[sp++] = l; } else { stack[sp++] = l; stack[sp++] = r; }
+      sp = dl < dr ? pushPair(sp, r, l) : pushPair(sp, l, r);
     }
   }
   return best < cutoff ? best : Math.min(cutoff, lowest === Infinity ? cutoff : Math.max(lowest, best));
@@ -291,20 +300,24 @@ export function segMeshDist(bvh, p, q, cutoff = Infinity) {
 
 // 반직선 o + t·d (t ∈ [0, tmax]) ↔ 메시 첫 교차 t (없으면 Infinity)
 export function rayMesh(bvh, o, d, tmax = Infinity) {
-  const inv = [1 / d[0], 1 / d[1], 1 / d[2]];
+  const dx = d[0], dy = d[1], dz = d[2];
+  const inv0 = dx === 0 ? 0 : 1 / dx, inv1 = dy === 0 ? 0 : 1 / dy, inv2 = dz === 0 ? 0 : 1 / dz;
+  const inv = [inv0, inv1, inv2];
   let best = tmax;
   let sp = 0;
-  const stack = bvh.nodes * 2 > STACK.length ? new Int32Array(bvh.nodes * 2) : STACK;
-  stack[sp++] = 0;
+  STACK[sp++] = 0;
   const b = bvh.bounds;
   while (sp) {
-    const node = stack[--sp], k = node * 6;
-    // 슬랩 테스트
+    const node = STACK[--sp], k = node * 6;
+    // 슬랩 테스트 (d[a] === 0 인 축은 -0/NaN 없이 범위 포함 여부로 직접 판정)
     let t0 = 0, t1 = best;
     for (let a = 0; a < 3; a++) {
+      if (d[a] === 0) {
+        if (o[a] < b[k + a] || o[a] > b[k + 3 + a]) { t0 = 1; t1 = 0; break; }
+        continue;
+      }
       let ta = (b[k + a] - o[a]) * inv[a], tb = (b[k + 3 + a] - o[a]) * inv[a];
       if (ta > tb) { const s = ta; ta = tb; tb = s; }
-      if (Number.isNaN(ta)) { ta = -Infinity; tb = Infinity; }    // 축과 평행하고 경계면 위
       if (ta > t0) t0 = ta; if (tb < t1) t1 = tb;
       if (t0 > t1) break;
     }
@@ -314,10 +327,10 @@ export function rayMesh(bvh, o, d, tmax = Infinity) {
       const s = bvh.start[node], e = s + bvh.count[node];
       for (let i = s; i < e; i++) {
         loadTri(bvh, bvh.order[i]);
-        const t = rayTri(o[0], o[1], o[2], d[0], d[1], d[2], TA, TB, TC);
+        const t = rayTri(o[0], o[1], o[2], dx, dy, dz, TA, TB, TC);
         if (t >= 0 && t < best) best = t;
       }
-    } else { stack[sp++] = l; stack[sp++] = bvh.start[node]; }
+    } else { sp = pushPair(sp, l, bvh.start[node]); }
   }
   return best < tmax ? best : Infinity;
 }

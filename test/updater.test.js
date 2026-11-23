@@ -38,7 +38,7 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'upd-'));
 const git = (cwd, ...a) => execFileSync('git', a, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const origin = path.join(tmp, 'origin.git'), seed = path.join(tmp, 'seed'), work = path.join(tmp, 'work');
 fs.mkdirSync(seed);
-git(tmp, 'init', '-q', '--bare', origin);
+git(tmp, 'init', '-q', '--bare', '-b', 'main', origin);
 git(seed, 'init', '-q', '-b', 'main');
 git(seed, 'config', 'user.email', 't@example.com'); git(seed, 'config', 'user.name', 't');
 const writePkg = (dir, v) => fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'x', version: v, repository: { url: 'https://github.com/example/emu.git' } }, null, 2));

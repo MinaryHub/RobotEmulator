@@ -15,6 +15,7 @@ import net from 'node:net';
 import { wristCenter } from '../../shared/kinematics.js';
 import { xyzrpyFromFrame } from '../../shared/poseformat.js';
 import { makeLogger, bindServer, baseTcp, toVendorPose, langExt, safeReadVar, safeWriteVar, progRunning, stripExt } from './common.js';
+import { hexOf, peerOf } from './traffic.js';
 
 const TAG = 'KUKA-KVP';
 const f3 = (v) => { const r = Math.round(v * 1e4) / 1e4; return (Object.is(r, -0) ? 0 : r).toFixed(Number.isInteger(r) ? 1 : 4).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '.0'); };
@@ -32,10 +33,13 @@ export function parseFrames(buf) {
     if (body.length < 3) { msgs.push({ msgId, bad: true }); continue; }
     const mode = body[0];
     const nl = body.readUInt16BE(1);
+    if ((mode !== 0 && mode !== 1) || 3 + nl > body.length) { msgs.push({ msgId, bad: true }); continue; }
     const name = body.subarray(3, 3 + nl).toString('latin1');
     let value = null;
-    if (mode === 1 && body.length >= 3 + nl + 2) {
+    if (mode === 1) {
+      if (body.length < 5 + nl) { msgs.push({ msgId, bad: true }); continue; }
       const vl = body.readUInt16BE(3 + nl);
+      if (5 + nl + vl > body.length) { msgs.push({ msgId, bad: true }); continue; }
       value = body.subarray(5 + nl, 5 + nl + vl).toString('latin1');
     }
     msgs.push({ msgId, mode, name, value });
@@ -114,7 +118,7 @@ export async function start(ctrl, opts = {}) {
       case '$AXIS_ACT': case '$AXIS_ACT_MEAS': case '$AXIS_ACT_MES': return e6axis();
       case '$POS_ACT': case '$POS_ACT_MES': return e6pos(true);
       case '$OV_PRO': return String(Math.round(ctrl.override));
-      case '$MODE_OP': return ctrl.mode === 'TEACH' ? '#T1' : ctrl.mode === 'REMOTE' ? '#EXT' : '#AUT';
+      case '$MODE_OP': return ctrl.mode === 'TEACH' ? '#T1' : ctrl.mode === 'REMOTE' ? '#EX' : '#AUT';
       case '$PRO_STATE': case '$PRO_STATE1': case '$PRO_STATE0': return proState();
       case '$PRO_NAME': case '$PRO_NAME1': case '$PRO_NAME[]': case '$PRO_NAME1[]': return `"${ctrl.main ? stripExt(ctrl.main).toUpperCase() : ''}"`;
       case '$PRO_IP': case '$PRO_IP1': {
@@ -193,24 +197,25 @@ export async function start(ctrl, opts = {}) {
   }
 
   async function handle(msg) {
-    if (msg.bad) return buildResponse(msg.msgId, 0, '', false);
+    if (msg.bad) return { buf: buildResponse(msg.msgId, 0, '', false), ok: false, val: '' };
     if (msg.mode === 1) {
       let ok = false;
       try { ok = msg.value !== null && await writeVar(msg.name, msg.value); } catch { ok = false; }
       log(`쓰기 ${msg.name} = ${String(msg.value).slice(0, 60)} → ${ok ? 'OK' : '실패'}`, true);
-      if (!ok) return buildResponse(msg.msgId, 1, '', false);
+      if (!ok) return { buf: buildResponse(msg.msgId, 1, '', false), ok: false, val: '' };
       const v = (await readVar(msg.name).catch(() => undefined)) ?? msg.value;
-      return buildResponse(msg.msgId, 1, v, true);
+      return { buf: buildResponse(msg.msgId, 1, v, true), ok: true, val: String(v) };
     }
     let v;
     try { v = await readVar(msg.name); } catch { v = undefined; }
     log(`읽기 ${msg.name}${v === undefined ? ' → 없음' : ''}`);
-    return buildResponse(msg.msgId, msg.mode, v ?? '', v !== undefined);
+    return { buf: buildResponse(msg.msgId, msg.mode, v ?? '', v !== undefined), ok: v !== undefined, val: String(v ?? '') };
   }
 
   const server = net.createServer((sock) => {
-    const peer = `${sock.remoteAddress}:${sock.remotePort}`;
+    const peer = peerOf(sock);
     clients.add(sock);
+    ctrl.traffic?.connect('kukaVarProxy', peer);
     sock.setNoDelay(true);
     log(`접속: ${peer}`, true);
     let buf = Buffer.alloc(0);
@@ -218,14 +223,22 @@ export async function start(ctrl, opts = {}) {
     sock.on('data', (chunk) => {
       buf = buf.length ? Buffer.concat([buf, chunk]) : chunk;
       const { msgs, rest } = parseFrames(buf);
-      buf = Buffer.from(rest);
+      buf = rest.length ? Buffer.from(rest) : Buffer.alloc(0);
       for (const m of msgs) {
         queue = queue
-          .then(async () => { const r = await handle(m); if (!sock.destroyed) sock.write(r); })
+          .then(async () => {
+            if (sock.destroyed) return;
+            const t0 = performance.now();
+            const sum = m.bad ? 'MALFORMED' : (m.mode === 1 ? `WRITE ${m.name} = ${String(m.value).slice(0, 60)}` : `READ ${m.name}`);
+            if (await ctrl.traffic?.applyFault('kukaVarProxy', peer, sum)) return;
+            const r = await handle(m);
+            ctrl.traffic?.record('kukaVarProxy', { client: peer, dir: 'req', summary: `${sum} → ${r.ok ? r.val.slice(0, 80) : 'FAIL'}`, hex: hexOf(r.buf, 32), ok: r.ok, error: r.ok ? null : 'FAIL', ms: performance.now() - t0 });
+            if (!sock.destroyed) sock.write(r.buf);
+          })
           .catch((e) => { log(`처리 오류: ${e.message}`, true); if (!sock.destroyed) sock.write(buildResponse(m.msgId ?? 0, m.mode ?? 0, '', false)); });
       }
     });
-    sock.on('close', () => { clients.delete(sock); log(`연결 종료: ${peer}`, true); });
+    sock.on('close', () => { clients.delete(sock); ctrl.traffic?.disconnect('kukaVarProxy', peer); log(`연결 종료: ${peer}`, true); });
     sock.on('error', () => {});
   });
 

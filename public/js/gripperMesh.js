@@ -31,6 +31,7 @@ export function buildGripper(def, customGeometry) {
   const addCoupling = () => { if (def.kind !== 'none') group.add(cylZ(cpl.d / 2, cpl.h, DARK(), 0)); return cpl.h; };
 
   if (def.custom && customGeometry) {
+    customGeometry.userData = { ...(customGeometry.userData || {}), shared: true };
     const mesh = new THREE.Mesh(customGeometry, M(0x9aa4ae));
     mesh.castShadow = true;
     group.add(mesh);

@@ -194,12 +194,15 @@ export async function start(ctrl, opts = {}) {
       const m = ns.addMethod(robot, { browseName: name, nodeId: `s=Robot.${name}`, inputArguments, outputArguments: OUT_ARGS });
       // 주의: node-opcua 는 인자 개수(2)로 async 형식을 판별하므로 context 인자를 반드시 선언
       m.bindMethod(async (args, _context) => {
+        const t0 = performance.now();
+        const peer = _context?.session?.sessionName || 'opcua-client';
         let ok = true, msg = 'OK';
         try {
           const r = await fn(...args.map((a) => a.value));
           if (r !== true && r !== undefined) { ok = false; msg = typeof r === 'string' ? r : '거부됨'; }
         } catch (e) { ok = false; msg = e.message; }
         log(`메서드 ${name} → ${ok ? '정상' : '거부: ' + msg}`, true);
+        ctrl.traffic?.record('opcua', { client: peer, dir: 'req', summary: `CALL ${name}(${args.map((a) => JSON.stringify(a.value)).join(', ').slice(0, 60)}) → ${ok ? 'OK' : msg}`, ok, error: ok ? null : msg, ms: performance.now() - t0 });
         return {
           statusCode: StatusCodes.Good,
           outputArguments: [{ dataType: DataType.Boolean, value: ok }, { dataType: DataType.String, value: msg }],
@@ -261,6 +264,16 @@ export async function start(ctrl, opts = {}) {
     try { await server.shutdown(0); } catch {}
     return { name: 'OPC UA Server', proto: 'opcua', port: null, close() {} };
   }
+
+  // 세션 연결/종료 추적
+  server.on('create_session', (session) => {
+    const id = session?.sessionName || String(session?.authenticationToken || 'opcua');
+    ctrl.traffic?.connect('opcua', id);
+  });
+  server.on('session_closed', (session) => {
+    const id = session?.sessionName || String(session?.authenticationToken || 'opcua');
+    ctrl.traffic?.disconnect('opcua', id);
+  });
 
   // ------------------------------------------------------------ 기동
   try {

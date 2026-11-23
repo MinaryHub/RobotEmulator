@@ -253,7 +253,7 @@ await section('KUKA KukaVarProxy (TCP)', async () => {
   ok(/^\{E6AXIS: A1 /.test(r.axis) && /A6 /.test(r.axis), '$AXIS_ACT 형식');
   ok(/^\{E6POS: X /.test(r.pos) && 'S' in r.posObj && 'T' in r.posObj, '$POS_ACT 형식 (S/T 포함)');
   ok(r.ov === '100' && r.ovSet === '50', '$OV_PRO 읽기/쓰기');
-  ok(['#T1', '#AUT', '#EXT'].includes(r.mode), '$MODE_OP');
+  ok(['#T1', '#AUT', '#EX'].includes(r.mode), '$MODE_OP');
   ok(/^#P_/.test(r.state), '$PRO_STATE1');
   ok(r.out3 === 'TRUE' && !ctrl.getDO(3), '$OUT[3] 쓰기/읽기');
   ok(r.in1 === 'TRUE' || r.in1 === 'FALSE', '$IN[1]');

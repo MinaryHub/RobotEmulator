@@ -28,13 +28,13 @@ export function tokenize(src, opts = {}) {
     const col = i;
     // KRL 16진/2진 리터럴 'H1F' 'B0101'
     if (ch === "'" && /[HhBb]/.test(src[i + 1] || '')) {
-      const m = /^'([HhBb])([0-9A-Fa-f]+)'/.exec(src.slice(i));
-      if (m) { toks.push({ k: 'num', v: parseInt(m[2], m[1].toUpperCase() === 'H' ? 16 : 2), col }); i += m[0].length; continue; }
+      const m = /^'([Hh][0-9A-Fa-f]+|[Bb][01]+)'/.exec(src.slice(i));
+      if (m) { const base = m[1][0].toUpperCase() === 'H' ? 16 : 2; toks.push({ k: 'num', v: parseInt(m[1].slice(1), base), col }); i += m[0].length; continue; }
     }
-    // Kawasaki ^H 16진
+    // Kawasaki ^H 16진 / ^B 2진
     if (ch === '^' && /[HhBb]/.test(src[i + 1] || '')) {
-      const m = /^\^([HhBb])([0-9A-Fa-f]+)/.exec(src.slice(i));
-      if (m) { toks.push({ k: 'num', v: parseInt(m[2], m[1].toUpperCase() === 'H' ? 16 : 2), col }); i += m[0].length; continue; }
+      const m = /^\^([Hh][0-9A-Fa-f]+|[Bb][01]+)/.exec(src.slice(i));
+      if (m) { const base = m[1][0].toUpperCase() === 'H' ? 16 : 2; toks.push({ k: 'num', v: parseInt(m[1].slice(1), base), col }); i += m[0].length; continue; }
     }
     if (/[0-9]/.test(ch) || (ch === '.' && /[0-9]/.test(src[i + 1] || ''))) {
       const m = /^(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?/.exec(src.slice(i));
@@ -165,8 +165,8 @@ export class Parser {
     while (!this.isOp('}')) {
       const name = this.ident();
       const save = this.opts.colonOp; this.opts.colonOp = false;
-      const v = this.expr();
-      this.opts.colonOp = save;
+      let v;
+      try { v = this.expr(); } finally { this.opts.colonOp = save; }
       fields.push([name.toUpperCase(), v]);
       if (!this.acceptOp(',')) break;
     }
@@ -286,8 +286,8 @@ export function binop(op, a, b, numericBool) {
     case '-': return a - b;
     case '*': return a * b;
     case '/': if (b === 0) throw new Error('0 으로 나눔'); return a / b;
-    case 'DIV': return Math.trunc(a / b);
-    case 'MOD': return a % b;
+    case 'DIV': if (b === 0) throw new Error('0 으로 나눔'); return Math.trunc(a / b);
+    case 'MOD': if (b === 0) throw new Error('0 으로 나눔'); return a % b;
     case '^': case '**': return a ** b;
     case '=': return B(eq(a, b));
     case '<>': return B(!eq(a, b));

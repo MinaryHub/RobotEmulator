@@ -134,28 +134,37 @@ export class Updater extends EventEmitter {
 
   // 적용 → 성공 시 'restart' 이벤트
   async apply() {
-    const why = await this.blocker();
-    if (why) throw new Error(why);
-    const tag = this.state.latest.tag;
-    const step = (msg) => { this._set({ applying: msg }); this.log('system', `[업데이트] ${msg}`); };
-    const before = await run('git', ['rev-parse', 'HEAD'], { cwd: this.root });
+    if (this._applyLock || this.state.applying) throw new Error('업데이트 진행 중입니다');
+    this._applyLock = true;
     try {
-      step(`${tag} 내려받는 중 (git fetch)`);
-      await run('git', ['fetch', '--tags', 'origin'], { cwd: this.root });
-      step(`${tag} 적용 중 (fast-forward)`);
-      try { await run('git', ['merge', '--ff-only', tag], { cwd: this.root }); }
-      catch { throw new Error(`현재 브랜치(${this.branch})를 ${tag} 로 앞당길 수 없습니다 — 로컬 커밋이 있거나 다른 브랜치입니다`); }
-      if (await depsChanged(this.root, before)) {
-        step('의존성 설치 중 (npm install)');
-        await npmInstall(this.root);
+      const why = await this.blocker();
+      if (why) throw new Error(why);
+      const tag = String(this.state.latest.tag || '');
+      if (!/^[0-9A-Za-z][0-9A-Za-z._/-]{0,127}$/.test(tag) || tag.includes('..')) {
+        throw new Error(`잘못된 릴리스 태그 형식: ${tag.slice(0, 40)}`);
       }
-      step(`v${this.version} → ${tag} 완료. 재시작합니다`);
-      this.emit('restart', tag);
-    } catch (e) {
-      try { await run('git', ['reset', '--keep', before], { cwd: this.root }); } catch {}
-      this._set({ applying: null, error: `업데이트 실패 (이전 버전 유지): ${e.message}` });
-      this.log('system', `[업데이트] 실패 — 이전 버전으로 되돌렸습니다: ${e.message}`);
-      throw e;
+      const step = (msg) => { this._set({ applying: msg }); this.log('system', `[업데이트] ${msg}`); };
+      const before = await run('git', ['rev-parse', 'HEAD'], { cwd: this.root });
+      try {
+        step(`${tag} 내려받는 중 (git fetch)`);
+        await run('git', ['fetch', '--tags', 'origin'], { cwd: this.root });
+        step(`${tag} 적용 중 (fast-forward)`);
+        try { await run('git', ['merge', '--ff-only', `refs/tags/${tag}`], { cwd: this.root }); }
+        catch { throw new Error(`현재 브랜치(${this.branch})를 ${tag} 로 앞당길 수 없습니다 — 로컬 커밋이 있거나 다른 브랜치입니다`); }
+        if (await depsChanged(this.root, before)) {
+          step('의존성 설치 중 (npm install)');
+          await npmInstall(this.root);
+        }
+        step(`v${this.version} → ${tag} 완료. 재시작합니다`);
+        this.emit('restart', tag);
+      } catch (e) {
+        try { await run('git', ['reset', '--keep', before], { cwd: this.root }); } catch {}
+        this._set({ applying: null, error: `업데이트 실패 (이전 버전 유지): ${e.message}` });
+        this.log('system', `[업데이트] 실패 — 이전 버전으로 되돌렸습니다: ${e.message}`);
+        throw e;
+      }
+    } finally {
+      this._applyLock = false;
     }
   }
 }

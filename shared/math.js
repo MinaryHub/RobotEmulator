@@ -122,7 +122,7 @@ export function ZYZfromR(R) {
   a = Math.acos(ca);
   if (Math.abs(Math.sin(a)) < 1e-7) {
     o = 0;
-    t = ca > 0 ? Math.atan2(R[1][0], R[0][0]) : Math.atan2(-R[1][0], -R[0][0]);
+    t = ca > 0 ? Math.atan2(R[1][0], R[0][0]) : Math.atan2(R[1][0], -R[0][0]);
   } else {
     o = Math.atan2(R[1][2], R[0][2]);
     t = Math.atan2(R[2][1], -R[2][0]);

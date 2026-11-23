@@ -21,6 +21,9 @@ import * as kuka from './kuka-varproxy.js';
 import * as urDash from './ur-dashboard.js';
 import * as modbus from './modbus-tcp.js';
 import * as opcua from './opcua.js';
+import { TrafficMonitor } from './traffic.js';
+
+export { TrafficMonitor };
 
 export const PROTOCOLS = [
   { key: 'yaskawaHse', mod: yaskawa, vendor: 'yaskawa', defaults: { port: 10040, filePort: 10041 } },
@@ -56,6 +59,7 @@ export function externalView(ctrl) {
 }
 
 export async function startAll(ctrl0, config = {}) {
+  if (!ctrl0.traffic) ctrl0.traffic = new TrafficMonitor(ctrl0);
   const ctrl = externalView(ctrl0);
   const out = [];
   for (const p of PROTOCOLS) {

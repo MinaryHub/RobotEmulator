@@ -7,6 +7,7 @@
 //  - SAVE 파일명: 파일 내용을 전송하고 Ctrl-Z(0x1A)로 끝을 알림
 import net from 'node:net';
 import { makeLogger, bindServer, baseTcp, toVendorPose, langExt, safeReadVar, safeWriteVar, makeCycleRunner, progRunning, findFile, stripExt, fx, lpad, pad } from './common.js';
+import { peerOf } from './traffic.js';
 import { parseExpr, evaluate } from '../lang/expr.js';
 import { VENDORS } from '../../shared/robots.js';
 
@@ -266,7 +267,7 @@ export async function start(ctrl, opts = {}) {
           const a = Math.abs(n), on = n > 0;
           if (a >= 1001 && a <= 1512) ctrl.setDI(a - 1000, on); // 입력 신호 (에뮬레이터 시뮬레이션용)
           else if (a >= 1 && a <= 512) ctrl.setDO(a, on);
-          else if (a >= 2001 && a <= 2256) ctrl.setDO(a - 2000 + 256, on); // 내부 신호 → DO 257~512 영역에 매핑
+          else if (a >= 2001 && a <= 2999) { ctrl.regs.set(`SIG:${a}`, on ? 1 : 0); ctrl.emitState(); } // 내부 신호 (as.js SIG: 와 동일)
           else return `(P1009)Signal number out of range. ${a}`;
         }
         return '';
@@ -334,9 +335,10 @@ export async function start(ctrl, opts = {}) {
 
   // ------------------------------------------------------------ 세션
   function onConnection(sock) {
-    const peer = `${sock.remoteAddress}:${sock.remotePort}`;
+    const peer = peerOf(sock);
     const sess = { state: 'login', line: [], echo: false, upload: null, lastCR: false, tn: 0, queue: Promise.resolve() };
     clients.add(sock);
+    ctrl.traffic?.connect('kawasakiAs', peer);
     sock.setNoDelay(true);
     log(`접속: ${peer}`, true);
     const write = (s) => { if (!sock.destroyed) sock.write(Buffer.from(s, 'utf8')); };
@@ -349,17 +351,23 @@ export async function start(ctrl, opts = {}) {
     };
 
     const handleLine = async (line) => {
+      if (sock.destroyed) return;
       if (sess.state === 'login') {
         sess.user = line.trim() || 'as';
         sess.state = 'cmd';
         log(`로그인: ${sess.user} (${peer})`, true);
+        ctrl.traffic?.record('kawasakiAs', { client: peer, dir: 'req', summary: `LOGIN ${sess.user}`, ok: true });
         write(`${CRLF}Kawasaki AS terminal emulator  -  ${ctrl.robot.name}${CRLF}AS system emulation. Type HELP for commands.${CRLF}${CRLF}>`);
         return;
       }
-      let out;
-      try { out = await command(sess, line); } catch (e) { out = `(P9999)${e.message}`; }
+      const t0 = performance.now();
+      if (await ctrl.traffic?.applyFault('kawasakiAs', peer, line.trim())) return;
+      let out, ok = true;
+      try { out = await command(sess, line); } catch (e) { out = `(P9999)${e.message}`; ok = false; }
       const summary = typeof out === 'string' ? out.split(/\r?\n/)[0].slice(0, 60) : out?.raw ? '(파일 전송)' : 'EXIT';
+      if (typeof out === 'string' && /^\([PE]\d+\)/.test(out)) ok = false;
       log(`${line.trim().slice(0, 60)} → ${summary || 'OK'}`, true);
+      ctrl.traffic?.record('kawasakiAs', { client: peer, dir: 'req', summary: `${line.trim().slice(0, 80)} → ${summary || 'OK'}`, raw: `${line.trim()}\n${typeof out === 'string' ? out.slice(0, 200) : ''}`, ok, error: ok ? null : summary, ms: performance.now() - t0 });
       if (out && typeof out === 'object') {
         if (out.close) { write(`${CRLF}Logout.${CRLF}`); sock.end(); return; }
         write(CRLF + out.raw + (out.noPrompt ? '' : '>'));
@@ -403,9 +411,11 @@ export async function start(ctrl, opts = {}) {
       const flushUpload = () => {
         if (!upBytes || !sess.upload) { upBytes = null; return; }
         const up = sess.upload;
+        if (up.overflow) { upBytes = null; return; }
         up.size += upBytes.length;
         if (up.size > MAX_UPLOAD) {
-          sess.upload = null;
+          up.overflow = true;
+          up.buf = [];
           log(`LOAD 중단: ${up.name} — ${MAX_UPLOAD} bytes 초과`, true);
           write(`${CRLF}(P1100)File too large${CRLF}>`);
         } else up.buf.push(Buffer.from(upBytes));
@@ -413,8 +423,15 @@ export async function start(ctrl, opts = {}) {
       };
       for (const b of bytes) {
         if (sess.upload) {
-          if (b === 0x1a) { flushUpload(); const up = sess.upload; sess.upload = null; sess.line = []; if (up) sess.queue = sess.queue.then(() => finishUpload(up)).catch((e) => { log(`LOAD 오류: ${e.message}`, true); write(`${CRLF}(P1100)${e.message}${CRLF}>`); }); continue; }
-          (upBytes ??= []).push(b);
+          if (b === 0x1a) {
+            flushUpload();
+            const up = sess.upload;
+            sess.upload = null;
+            sess.line = [];
+            if (up && !up.overflow) sess.queue = sess.queue.then(() => { if (!sock.destroyed) finishUpload(up); }).catch((e) => { log(`LOAD 오류: ${e.message}`, true); write(`${CRLF}(P1100)${e.message}${CRLF}>`); });
+            continue;
+          }
+          if (!sess.upload.overflow) (upBytes ??= []).push(b);
           continue;
         }
         if (b === 0x0d || b === 0x0a) {
@@ -424,7 +441,7 @@ export async function start(ctrl, opts = {}) {
           if (sess.echo) write(CRLF);
           // LOAD 명령: 같은 TCP 청크에 이어지는 파일 내용을 놓치지 않도록 즉시 업로드 모드로 전환
           const lm = sess.state === 'cmd' && /^\s*LOAD\s+(?:\/\w+\s+)?(\S.*)$/i.exec(line);
-          if (lm) sess.upload = { name: loadName(lm[1].trim()), buf: [], size: 0 };
+          if (lm) sess.upload = { name: loadName(lm[1].trim()), buf: [], size: 0, overflow: false };
           sess.queue = sess.queue.then(() => handleLine(line)).catch((e) => { log(`명령 처리 오류: ${e.message}`, true); write(`${CRLF}${ERR_INVALID}${CRLF}>`); });
           continue;
         }
@@ -438,7 +455,7 @@ export async function start(ctrl, opts = {}) {
       }
       flushUpload();
     });
-    sock.on('close', () => { clients.delete(sock); log(`연결 종료: ${peer}`, true); });
+    sock.on('close', () => { clients.delete(sock); ctrl.traffic?.disconnect('kawasakiAs', peer); log(`연결 종료: ${peer}`, true); });
     sock.on('error', () => {});
   }
 

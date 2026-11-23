@@ -26,7 +26,7 @@ export function setLang(l) {
   location.replace(u.toString());
 }
 
-const SKIP = '#editor, #log, #ovAlarm, .chat-msg.user, .chat-msg .txt, .chat-msg .think > div, script, style, [data-no-i18n]';
+const SKIP = '#editor, #log, #ovAlarm, #fileTabs, #projList .nm, #varTable td, #ioDO .ln, #ioDI .ln, .camlabel, #trafficTable .tr-raw, #trafficTable .sum, .chat-msg.user, .chat-msg .txt, .chat-msg .think > div, script, style, [data-no-i18n]';
 const ATTRS = ['title', 'placeholder', 'aria-label'];
 const skip = (el) => !el || el.closest?.(SKIP);
 

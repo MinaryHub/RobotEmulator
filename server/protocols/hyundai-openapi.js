@@ -26,9 +26,10 @@
 //   POST /api/move {type:'joint'|'linear', joints?:[deg], pose?:[x,y,z,rx,ry,rz], speed?, wait?}
 //        speed: joint → % (1~100), linear → mm/s
 import http from 'node:http';
-import { hostAllowed } from '../netguard.js';
+import { hostAllowed, originAllowed } from '../netguard.js';
 import { VENDORS } from '../../shared/robots.js';
 import { makeLogger, bindServer, baseTcp, toVendorPose, fromVendorPose, startMove, busy, progRunning, findFile, readBody, safeReadVar, safeWriteVar, stripExt } from './common.js';
+import { peerOf } from './traffic.js';
 
 const TAG = 'HYUNDAI-API';
 
@@ -101,24 +102,34 @@ export async function start(ctrl, opts = {}) {
     }
   };
 
-  const move = async (b) => {
+  const move = async (b, req) => {
     if (!ctrl.servo) throw new ApiError(409, '서보 OFF 상태');
     if (ctrl.alarms.length) throw new ApiError(409, '알람 상태');
     if (busy(ctrl)) throw new ApiError(409, '로봇 동작 중');
     const type = String(b.type || 'joint').toLowerCase();
     const linear = type === 'linear' || type === 'l';
     let target;
-    if (Array.isArray(b.joints)) target = { joints: b.joints.slice(0, 6).map(Number) };
-    else if (Array.isArray(b.pose)) target = { pose: fromVendorPose('hyundai', b.pose.map(Number)) };
-    else if (b.pose && typeof b.pose === 'object') target = { pose: fromVendorPose('hyundai', ['x', 'y', 'z', 'rx', 'ry', 'rz'].map((k) => Number(b.pose[k] ?? 0))) };
-    else throw new ApiError(400, 'joints 또는 pose 필요');
-    if (target.joints && target.joints.some((v) => !Number.isFinite(v))) throw new ApiError(400, 'joints 값 오류');
+    if (Array.isArray(b.joints)) {
+      if (b.joints.length !== 6) throw new ApiError(400, 'joints 는 6개 숫자 배열이어야 합니다');
+      const j = b.joints.map(Number);
+      if (!j.every(Number.isFinite)) throw new ApiError(400, 'joints 값 오류');
+      target = { joints: j };
+    } else if (Array.isArray(b.pose)) {
+      if (b.pose.length !== 6) throw new ApiError(400, 'pose 는 6개 숫자 배열이어야 합니다');
+      const p = b.pose.map(Number);
+      if (!p.every(Number.isFinite)) throw new ApiError(400, 'pose 값 오류');
+      target = { pose: fromVendorPose('hyundai', p) };
+    } else if (b.pose && typeof b.pose === 'object') {
+      const p = ['x', 'y', 'z', 'rx', 'ry', 'rz'].map((k) => Number(b.pose[k] ?? 0));
+      if (!p.every(Number.isFinite)) throw new ApiError(400, 'pose 값 오류');
+      target = { pose: fromVendorPose('hyundai', p) };
+    } else throw new ApiError(400, 'joints 또는 pose 필요');
     const speed = linear ? { tcp: Number(b.speed) || 250 } : { frac: Math.max(0.01, Math.min(1, (Number(b.speed) || 20) / 100)) };
     const err = await startMove(ctrl, { kind: linear ? 'L' : 'J', target, speed, base: null }, log);
     if (err) throw new ApiError(err.code === 'UNREACHABLE' ? 422 : 409, err.message);
     if (b.wait) {
-      const t0 = Date.now();
-      while (ctrl.segment && Date.now() - t0 < (Number(b.timeout) || 60) * 1000) await new Promise((r) => setTimeout(r, 20));
+      const t0 = Date.now(), maxMs = Math.max(100, Math.min(120000, (Number(b.timeout) || 60) * 1000));
+      while (ctrl.segment && !req?.socket?.destroyed && Date.now() - t0 < maxMs) await new Promise((r) => setTimeout(r, 20));
     }
     return { ok: true, accepted: true, done: !ctrl.segment, joints: ctrl.joints };
   };
@@ -141,7 +152,7 @@ export async function start(ctrl, opts = {}) {
     ['GET', /^\/api\/alarms$/, () => status().alarms],
     ['POST', /^\/api\/alarms\/reset$/, () => { ctrl.resetAlarms(); return { ok: true }; }],
     ['POST', /^\/api\/servo$/, (m, b) => {
-      const on = boolOf(b && 'on' in b ? b.on : b);
+      const on = boolOf(b && typeof b === 'object' && 'on' in b ? b.on : b);
       if (on && !ctrl.allow('servoOn')) throw new ApiError(409, ctrl.lastReject.reason);
       if (!ctrl.setServo(on)) throw new ApiError(409, '알람 상태에서는 서보 ON 불가');
       return { ok: true, servo: ctrl.servo };
@@ -154,11 +165,13 @@ export async function start(ctrl, opts = {}) {
       return { text: ctrl.files.get(f) };
     }],
     ['PUT', /^\/api\/files\/(.+)$/, (m, b, req, raw) => {
+      if (progRunning(ctrl)) throw new ApiError(409, '프로그램 실행 중에는 파일을 수정할 수 없습니다');
       const text = b && typeof b === 'object' && typeof b.text === 'string' ? b.text : raw.toString('utf8');
       ctrl.loadFiles({ [m[1]]: text });
       return { ok: true, name: m[1], size: text.length, main: ctrl.main, compileError: ctrl.compileError ?? null };
     }],
     ['DELETE', /^\/api\/files\/(.+)$/, (m) => {
+      if (progRunning(ctrl)) throw new ApiError(409, '프로그램 실행 중에는 파일을 삭제할 수 없습니다');
       const f = findFile(ctrl, m[1], ['.job']);
       if (!f) throw new ApiError(404, `파일 없음: ${m[1]}`);
       ctrl.deleteFile(f);
@@ -181,7 +194,7 @@ export async function start(ctrl, opts = {}) {
       if (m[1] === 'do') ctrl.setDO(ioNo(m[2]), v); else ctrl.setDI(ioNo(m[2]), v);
       return { ok: true, type: m[1], n: Number(m[2]), value: v };
     }],
-    ['POST', /^\/api\/move$/, (m, b) => move(b || {})],
+    ['POST', /^\/api\/move$/, (m, b, req) => move(b || {}, req)],
 
     // --- Hi6 Open API 스타일 (근사)
     ['GET', /^\/project\/robot\/po_cur$/, (m, b, req, raw, url) => ({ _type: 'Pose', ...pose(), crd: url.searchParams.get('crd') === '1' ? 'robot' : 'base', mechinfo: 1 })],
@@ -201,7 +214,7 @@ export async function start(ctrl, opts = {}) {
       if (!ctrl.setServo(m[1] === 'on')) throw new ApiError(409, '알람 상태에서는 모터 ON 불가');
       return { ok: true, is_motor_on: ctrl.servo };
     }],
-    ['POST', /^\/project\/robot\/move$/, (m, b) => move(b || {})],
+    ['POST', /^\/project\/robot\/move$/, (m, b, req) => move(b || {}, req)],
     ['GET', /^\/project\/control\/ios\/(dout|din)\/(\d+)$/, (m) => ({ _type: 'IoSignal', type: m[1], index: Number(m[2]), val: (m[1] === 'dout' ? ctrl.getDO(ioNo(m[2])) : ctrl.getDI(ioNo(m[2]))) ? 1 : 0 })],
     ['PUT', /^\/project\/control\/ios\/(dout|din)\/(\d+)$/, (m, b, req, raw) => {
       const v = boolOf(b ?? raw.toString('utf8'));
@@ -216,8 +229,10 @@ export async function start(ctrl, opts = {}) {
 
   // ------------------------------------------------------------ HTTP
   const server = http.createServer(async (req, res) => {
+    const t0 = performance.now();
+    const peer = peerOf(req);
     const cors = {
-      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Origin': req.headers.origin && originAllowed(req) ? req.headers.origin : '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     };
@@ -227,12 +242,14 @@ export async function start(ctrl, opts = {}) {
       res.writeHead(status, { ...cors, 'Content-Type': isText ? 'text/plain; charset=utf-8' : 'application/json; charset=utf-8' });
       res.end(data);
     };
+    if (!hostAllowed(req)) return send(403, { error: `허용되지 않은 Host: ${req.headers.host}` });   // DNS 리바인딩 방어
+    if (!originAllowed(req)) return send(403, { error: `허용되지 않은 Origin: ${req.headers.origin}` }); // 브라우저 CSRF 방어
     if (req.method === 'OPTIONS') { res.writeHead(204, cors); return res.end(); }
     let url;
     try { url = new URL(req.url, 'http://localhost'); } catch { return send(400, { error: 'bad url' }); }
-    if (!hostAllowed(req)) return send(403, { error: `허용되지 않은 Host: ${req.headers.host}` });   // DNS 리바인딩 방어
     let path;
     try { path = decodeURIComponent(url.pathname).replace(/\/+$/, '') || '/'; } catch { return send(400, { error: 'bad url' }); }
+    if (await ctrl.traffic?.applyFault('hyundai', peer, `${req.method} ${path}`)) { res.destroy(); return; }
     try {
       const raw = ['POST', 'PUT', 'PATCH'].includes(req.method) ? await readBody(req) : Buffer.alloc(0);
       let body = null;
@@ -246,6 +263,7 @@ export async function start(ctrl, opts = {}) {
         if (!m) continue;
         const out = await fn(m, body, req, raw, url);
         log(`${req.method} ${path} → 200`, req.method !== 'GET');
+        ctrl.traffic?.record('hyundai', { client: peer, dir: 'req', summary: `${req.method} ${path} → 200`, raw: raw.length ? raw.toString('utf8').slice(0, 200) : '', ok: true, ms: performance.now() - t0 });
         return send(200, out);
       }
       if (path === '/' || path === '/api') {
@@ -253,8 +271,9 @@ export async function start(ctrl, opts = {}) {
       }
       throw new ApiError(404, `경로 없음: ${req.method} ${path}`);
     } catch (e) {
-      const st = e instanceof ApiError ? e.status : 500;
+      const st = e instanceof ApiError ? e.status : (e.status || 500);
       log(`${req.method} ${path} → ${st} ${e.message}`, true);
+      ctrl.traffic?.record('hyundai', { client: peer, dir: 'req', summary: `${req.method} ${path} → ${st}`, ok: false, error: e.message, ms: performance.now() - t0 });
       send(st, { error: e.message, status: st });
     }
   });

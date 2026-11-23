@@ -327,6 +327,7 @@ export class SystemIO {
   configure(cfg = {}) {
     const c = this.ctrl;
     const wasEnabled = this.enabled;
+    const oldInNums = new Set(this.inputs.map((s) => s.n));
     if (cfg.preset && PRESETS[cfg.preset] && cfg.preset !== this.preset) { this.preset = cfg.preset; this.assign = { in: {}, out: {} }; this.logic = { in: {} }; }
     if (Number.isInteger(cfg.diBase) && cfg.diBase >= 1 && cfg.diBase <= 480) this.diBase = cfg.diBase;
     if (Number.isInteger(cfg.doBase) && cfg.doBase >= 1 && cfg.doBase <= 480) this.doBase = cfg.doBase;
@@ -343,21 +344,27 @@ export class SystemIO {
     const newOut = new Set(this.outputs.map((s) => s.n));
     for (const n of oldOut) if (!newOut.has(n) && c.getDO(n)) c.setDO(n, false);
     if (cfg.enabled !== undefined) this.enabled = !!cfg.enabled;
-    if (this.enabled && !wasEnabled) {
-      // 활성화 시 NC 입력(비상정지·펜스·$DRIVES_OFF·$MOVE_ENABLE)을 정상 상태로 두어 바로 정지하지 않게 함 (PLC 가 배선된 상태와 같음)
-      for (const s of this.inputs) if (s.activeLow && LEVEL_IN.has(s.kind) && !c.getDI(s.n)) c.io.di[s.n] = true;
-      c.log('system', `시스템 I/O 사용: ${this.def.name} (DI ${this.diBase}~, DO ${this.doBase}~)`);
+    if (this.enabled) {
+      // 활성화 시 또는 프리셋/번호 변경으로 새로 매핑된 NC 입력을 정상(ON) 상태로 초기화하여 의도치 않은 비상정지 방지
+      for (const s of this.inputs) {
+        if (s.activeLow && LEVEL_IN.has(s.kind) && (!wasEnabled || !oldInNums.has(s.n)) && !c.getDI(s.n)) {
+          c.io.di[s.n] = true;
+        }
+      }
+      if (!wasEnabled) c.log('system', `시스템 I/O 사용: ${this.def.name} (DI ${this.diBase}~, DO ${this.doBase}~)`);
     }
     if (!this.enabled && wasEnabled) {
       for (const s of this.outputs) if (c.getDO(s.n)) c.setDO(s.n, false);
       c.setEstop(false, 'ext');
-      if (c.safety.fenceOpen) c.setFence(false);
+      if (this._fenceDriven && c.safety.fenceOpen) c.setFence(false);
+      this._fenceDriven = false;
       c.log('system', '시스템 I/O 사용 안 함');
     }
     this._in.clear();
     for (const s of this.inputs) this._in.set(s.key, this._val(s));
     if (this.enabled) this._applyLevels();
     this.update();
+    c._bumpRev?.('sysio');
     c.emitState();
   }
 
@@ -377,13 +384,14 @@ export class SystemIO {
       if (LEVEL_IN.has(s.kind)) this._level(s, v, false);
       else if (v && !prev) this._rise(s);
     }
+    this.ctrl._bumpRev?.('sysio');
   }
 
   _level(s, active, initial) {
     const c = this.ctrl;
     switch (s.kind) {
       case 'estop': c.setEstop(active, 'ext'); break;
-      case 'fence': c.setFence(active); break;    // 기능 활성 = 펜스 열림 (NC: 입력 OFF = 열림)
+      case 'fence': this._fenceDriven = active; c.setFence(active); break;    // 기능 활성 = 펜스 열림 (NC: 입력 OFF = 열림)
       case 'enable': c.setEnableSwitch(active); break;
       case 'servoOff': if (active && c.servo) { c.setServo(false); c.log('system', `${s.name}: 서보 OFF`); } break;
       case 'hold':
@@ -403,7 +411,10 @@ export class SystemIO {
         if (this._active('hold')) return c.reject('start', 'ext', REJECT.HOLD_INPUT);
         await this._start(false);
         break;
-      case 'startMain': await this._start(true); break;
+      case 'startMain':
+        if (this._active('hold')) return c.reject('start', 'ext', REJECT.HOLD_INPUT);
+        await this._start(true);
+        break;
       case 'stop': c.stopProgram(); break;
       case 'alarmReset': c.resetAlarms(); break;
       case 'pgnoStrobe': this._strobe(); break;
@@ -419,6 +430,8 @@ export class SystemIO {
   async _start(fromMain) {
     const c = this.ctrl;
     if (!c.allow('start', 'ext')) return;
+    if (c.alarms.length) { c.log('system', '알람 리셋 후 시작하십시오'); c._noteReject('start', 'ext', REJECT.ALARM); return; }
+    if (!c.servo) { c.log('system', '서보 OFF — 시작 불가'); c._noteReject('start', 'ext', REJECT.SERVO_OFF); return; }
     if (fromMain && (c.vm?.status === 'running' || c.vm?.status === 'paused')) c.stopProgram();
     this._done = false;
     const ok = await c.start({ source: 'ext' });
@@ -439,6 +452,7 @@ export class SystemIO {
 
   _strobe() {
     const c = this.ctrl;
+    if (!c.allow('select', 'ext')) { this._err = true; this.update(); return; }
     this._err = false;
     const { n, ones } = this._readPgno();
     const fail = (r, extra = '') => { this._err = true; c.reject('select', 'ext', { code: r.code, reason: r.reason + extra }); this.update(); };
@@ -455,6 +469,7 @@ export class SystemIO {
     this._done = false;
     this._ack = c.simMs + 300;
     c.log('system', `프로그램 번호 ${n} → ${file} 선택`);
+    c._bumpRev?.('sysio');
     this.update();
   }
 
@@ -476,9 +491,9 @@ export class SystemIO {
     if (!this.enabled) return;
     const c = this.ctrl;
     const st = c.vm?.status;
-    if (st === 'running' || st === 'paused') this._done = false;
-    else if (st === 'done' && c.motionIdle) this._done = true;
-    const ready = c.mode === 'REMOTE' && c.servo && !c.alarms.length && !c.estopActive;
+    if (st === 'running' || st === 'paused' || st === 'aborted' || st === 'error') this._done = false;
+    else if (st === 'done' && !c.vm?._finishing && !c.vm?.aborted && c.motionIdle) this._done = true;
+    const ready = c.mode === 'REMOTE' && c.servo && !c.alarms.length && !c.estopActive && !c.safety.fenceOpen;
     const running = (st === 'running' || st === 'paused') && !c.held;
     const home = c.joints.every((v, i) => Math.abs(v - c.robot.home[i]) < 0.5);
     const val = {
@@ -488,10 +503,12 @@ export class SystemIO {
       pgnoReq: ready && !running && !c.held, pgnoAck: c.simMs < this._ack, pgnoErr: this._err,
       estopOk: !c.estopActive, estopActive: c.estopActive, fenceOk: !c.safety.fenceOpen,
     };
+    let changed = false;
     for (const s of this.outputs) {
       const v = !!val[s.kind];
-      if (c.getDO(s.n) !== v) c.setDO(s.n, v);
+      if (c.getDO(s.n) !== v) { c.setDO(s.n, v); changed = true; }
     }
+    if (changed) c._bumpRev?.('sysio');
   }
 
   snapshot() {
