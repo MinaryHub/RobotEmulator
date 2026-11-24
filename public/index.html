@@ -85,6 +85,14 @@
         <div class="row">
           <label class="chk" title="ISO 10218-1 T1 규격: TEACH 모드에서 TCP 최대 속도를 250 mm/s로 제한"><input type="checkbox" id="chkTeachLimit" checked> TEACH 속도 제한 (250 mm/s)</label>
         </div>
+        <div class="row safety-row">
+          <label for="selPathRecovery">홀드 경로 복귀</label>
+          <select id="selPathRecovery" title="홀드 중 수동 조그로 원경로에서 이탈한 뒤 재개할 때의 동작">
+            <option value="auto">자동 저속 복귀</option>
+            <option value="block">복귀 전 재개 차단</option>
+            <option value="off">끄기</option>
+          </select>
+        </div>
         <div class="note" id="safetyNote"></div>
         <div class="row">
           <label>간섭 체크</label>
@@ -94,6 +102,10 @@
         <div class="row">
           <label>오버라이드 <b id="ovVal">100%</b></label>
           <input type="range" id="ovRange" min="1" max="100" value="100">
+        </div>
+        <div class="row payload-row">
+          <label for="inpPayload" title="작업물 질량(kg)에 따라 모션 가감속 시간이 자동으로 연장됩니다">페이로드 (kg) <b id="payVal">0 kg</b></label>
+          <input type="number" id="inpPayload" min="0" max="500" step="0.5" value="0">
         </div>
         <h3>로봇 사양</h3>
         <div id="robotSpec" class="spec"></div>
@@ -264,6 +276,10 @@
       <div class="overlay tl" id="ovPose"></div>
       <div class="overlay tr" id="ovProg"></div>
       <div class="overlay tc" id="ovAlarm"></div>
+      <div id="pathRecBar" class="path-rec hidden">
+        <span id="pathRecMsg">⚠ 홀드 중 경로 이탈</span>
+        <button id="btnRecoverPath" class="primary" title="홀드 중 수동 이동으로 이탈한 로봇을 원래 홀드 위치로 저속 복귀합니다">↩ 원경로 복귀</button>
+      </div>
       <!-- 3D 뷰 빠른 조작 HUD -->
       <div class="view-hud" id="viewHud">
         <button data-cam="iso" title="등각 시점 (1)">등각</button>
@@ -283,6 +299,7 @@
           <div class="seg small" id="dtMode"><button data-v="translate" class="active" title="이동 (W)">이동</button><button data-v="rotate" title="회전 (E)">회전</button></div>
           <div class="seg small" id="dtSpace"><button data-v="world" class="active" title="로봇 베이스 좌표 (Q 로 전환)">BASE</button><button data-v="tool" title="툴 좌표 (Q 로 전환)">TOOL</button></div>
           <select id="dtSnap" title="스냅 (X 로 전환)"></select>
+          <button id="dtAlign" title="3D 표면을 클릭해 TCP +Z를 면 법선으로 정렬 (F)">⟂ 면 정렬</button>
           <button id="dtUndo" title="되돌리기 (Ctrl+Z)" disabled>↶</button>
           <button id="dtGrip" title="그리퍼 열기/닫기 (G)">그리퍼 닫기</button>
           <button id="dtRecord" class="primary" title="현재 위치를 에디터 커서 위치에 이동 명령으로 삽입 (Enter)">⌖ 위치 기록</button>
@@ -424,6 +441,10 @@
       <div id="abBuild" class="note"></div>
       <div class="prow ablang"><label for="abLang">언어 · Language</label><select id="abLang"><option value="ko">한국어</option><option value="en">English</option></select></div>
       <section>
+        <h4>폐쇄망 · AI 설정</h4>
+        <label class="chk" title="폐쇄망 현장 환경에서 Claude AI 채팅 버튼·패널을 숨깁니다"><input type="checkbox" id="chkHideChat"> AI 채팅 패널 숨기기 (폐쇄망 모드)</label>
+      </section>
+      <section>
         <h4>업데이트</h4>
         <div id="abUpd" class="abupd"></div>
         <pre id="abNotes" class="abnotes" hidden></pre>
@@ -463,7 +484,7 @@
         <tr><td><kbd>-</kbd> / <kbd>+</kbd></td><td>시뮬레이션 배속 조절</td></tr>
         <tr><td><kbd>1</kbd>~<kbd>5</kbd></td><td>3D 카메라 프리셋 (등각·상면·정면·측면·TCP)</td></tr>
         <tr><td><kbd>T</kbd></td><td>직접교시 켜기 / 끄기</td></tr>
-        <tr><td><kbd>W</kbd> / <kbd>E</kbd> / <kbd>Q</kbd> / <kbd>X</kbd></td><td>직접교시 이동 · 회전 · 좌표계 · 스냅</td></tr>
+        <tr><td><kbd>W</kbd> / <kbd>E</kbd> / <kbd>Q</kbd> / <kbd>X</kbd> / <kbd>F</kbd></td><td>직접교시 이동 · 회전 · 좌표계 · 스냅 · 면 정렬</td></tr>
         <tr><td><kbd>G</kbd> / <kbd>Enter</kbd> / <kbd>Ctrl+Z</kbd></td><td>직접교시 그리퍼 · 위치 기록 · 되돌리기</td></tr>
         <tr><td><kbd>?</kbd></td><td>단축키 안내 창 열기</td></tr>
       </table>

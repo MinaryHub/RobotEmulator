@@ -112,6 +112,26 @@ export class RobotView {
     this.trail.layers.set(HELPER_LAYER);
     this.world.add(this.trail);
 
+    // 용접 토치 아크 글로우 + 용접 비드(Bead) 누적 궤적
+    this.weldArcGroup = new THREE.Group();
+    const arcOuter = new THREE.Mesh(new THREE.SphereGeometry(15, 14, 10), new THREE.MeshBasicMaterial({ color: 0xff8c1a, transparent: true, opacity: 0.72, depthWrite: false }));
+    const arcCore = new THREE.Mesh(new THREE.SphereGeometry(6.5, 10, 8), new THREE.MeshBasicMaterial({ color: 0xfff6cc }));
+    arcOuter.layers.set(HELPER_LAYER);
+    arcCore.layers.set(HELPER_LAYER);
+    this.weldArcGroup.add(arcOuter, arcCore);
+    this.weldArcGroup.visible = false;
+    this.world.add(this.weldArcGroup);
+    this.weldBeadMax = 4000;
+    this.weldBeadPts = new Float32Array(this.weldBeadMax * 6);
+    this.weldBeadN = 0;
+    this._lastWeldPt = null;
+    const wg = new THREE.BufferGeometry();
+    wg.setAttribute('position', new THREE.BufferAttribute(this.weldBeadPts, 3));
+    this.weldBead = new THREE.LineSegments(wg, new THREE.LineBasicMaterial({ color: 0xff8c1a }));
+    this.weldBead.frustumCulled = false;
+    this.weldBead.layers.set(HELPER_LAYER);
+    this.world.add(this.weldBead);
+
     this.cameras = new CameraRig(this, el.parentElement);
 
     new ResizeObserver(() => this.resize()).observe(el);
@@ -380,6 +400,17 @@ export class RobotView {
       this.userAxes.visible = false;
     }
     if (this.trailOn && st.moving) this.pushTrail(p);
+    // 용접 아크 및 비드 궤적
+    const arcOn = !!st.weldArc;
+    this.weldArcGroup.visible = arcOn;
+    if (arcOn) {
+      this.weldArcGroup.position.set(p[0], p[1], p[2]);
+      const sc = st.moving ? (0.85 + 0.35 * Math.random()) : 1;
+      this.weldArcGroup.scale.setScalar(sc);
+      if (st.moving) this.pushWeldBead(p);
+    } else {
+      this._lastWeldPt = null;
+    }
     // 공작물
     const seen = new Set();
     for (const o of st.objects) {
@@ -487,5 +518,26 @@ export class RobotView {
     this.trail.geometry.attributes.position.needsUpdate = true;
     this.markDirty(false);
   }
-  clearTrail() { this.trailN = 0; this.trail.geometry.setDrawRange(0, 0); this.markDirty(false); }
+  pushWeldBead(p) {
+    if (!this._lastWeldPt) { this._lastWeldPt = [p[0], p[1], p[2]]; return; }
+    const a = this._lastWeldPt;
+    if (Math.hypot(a[0] - p[0], a[1] - p[1], a[2] - p[2]) < 1.5) return;
+    if (this.weldBeadN >= this.weldBeadMax) {
+      this.weldBeadPts.copyWithin(0, 6);
+      this.weldBeadN--;
+    }
+    const off = this.weldBeadN * 6;
+    this.weldBeadPts[off] = a[0]; this.weldBeadPts[off + 1] = a[1]; this.weldBeadPts[off + 2] = a[2];
+    this.weldBeadPts[off + 3] = p[0]; this.weldBeadPts[off + 4] = p[1]; this.weldBeadPts[off + 5] = p[2];
+    this.weldBeadN++;
+    this._lastWeldPt = [p[0], p[1], p[2]];
+    this.weldBead.geometry.setDrawRange(0, this.weldBeadN * 2);
+    this.weldBead.geometry.attributes.position.needsUpdate = true;
+    this.markDirty(false);
+  }
+  clearTrail() {
+    this.trailN = 0; this.trail.geometry.setDrawRange(0, 0);
+    this.weldBeadN = 0; this._lastWeldPt = null; this.weldBead.geometry.setDrawRange(0, 0);
+    this.markDirty(false);
+  }
 }

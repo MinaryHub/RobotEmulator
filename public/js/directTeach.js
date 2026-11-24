@@ -91,8 +91,9 @@ export class DirectTeach {
   // ------------------------------------------------------------ 설정
   setEnabled(on) {
     this.enabled = !!on;
-    this.tc.enabled = this.enabled;
-    this.helper.visible = this.enabled;
+    if (!this.enabled) this.alignMode = false;
+    this.tc.enabled = this.enabled && !this.alignMode;
+    this.helper.visible = this.enabled && !this.alignMode;
     if (!this.enabled) {
       if (this.jd) this._onUp();
       this._showRing(0);
@@ -101,6 +102,20 @@ export class DirectTeach {
     }
     if (this.st) this.update(this.st);
     this.view.markDirty?.(false);
+  }
+  setAlignMode(on) {
+    this.alignMode = !!on && this.enabled;
+    this.tc.enabled = this.enabled && !this.alignMode;
+    this.helper.visible = this.enabled && !this.alignMode;
+    if (this.alignMode) {
+      this._showRing(0);
+      this.dom.style.cursor = 'crosshair';
+      this.onStatus({ text: '면 정렬 모드: 3D 공작물·테이블 표면을 클릭하면 TCP +Z를 면 법선으로 정렬합니다', level: 'info' });
+    } else if (this.enabled) {
+      this.dom.style.cursor = '';
+    }
+    this.view.markDirty?.(false);
+    return this.alignMode;
   }
   setMode(m) { this.tc.setMode(m); this.view.markDirty?.(false); }                     // 'translate' | 'rotate'
   get mode() { return this.tc.mode; }
@@ -164,6 +179,38 @@ export class DirectTeach {
     if (this._pending) this._flush();
   }
 
+  // ------------------------------------------------------------ 표면 법선 정렬 (Align TCP to Face)
+  async _alignToSurface(e) {
+    if (!this._gateOk()) return;
+    const rect = this.dom.getBoundingClientRect();
+    const ndc = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+    this.raycaster.setFromCamera(ndc, this.view.camera);
+    const roots = [this.view.objGroup, this.view.cell].filter(Boolean);
+    const hits = this.raycaster.intersectObjects(roots, true).filter((h) => h.object?.isMesh && h.face && h.object.visible);
+    const hit = hits[0];
+    if (!hit) { this.onStatus({ text: '클릭한 위치에 정렬할 3D 표면이 없습니다', level: 'warn' }); return; }
+    const pt = this.view.world.worldToLocal(hit.point.clone());
+    const n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+    const camPos = this.view.world.worldToLocal(this.view.camera.position.clone());
+    if (n.dot(camPos.sub(pt)) < 0) n.negate();
+    const ez = n.clone().negate(); // TCP +Z = 면을 향하는 방향
+    // 현재 TCP X 축을 접평면에 투영해 손목 회전 최소화
+    const curX = new THREE.Vector3(1, 0, 0).applyQuaternion(this.handle.quaternion);
+    let ex = curX.clone().addScaledVector(ez, -curX.dot(ez));
+    if (ex.lengthSq() < 1e-4) {
+      const ref = Math.abs(ez.z) < 0.9 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0);
+      ex = new THREE.Vector3().crossVectors(ref, ez);
+    }
+    ex.normalize();
+    const ey = new THREE.Vector3().crossVectors(ez, ex).normalize();
+    const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(ex, ey, ez));
+    const p = [pt.x + n.x * 2, pt.y + n.y * 2, pt.z + n.z * 2]; // 2mm 스탠드오프
+    this.pushUndo();
+    const r = await this.send('teachPose', { p, q: [q.w, q.x, q.y, q.z], allowJump: true });
+    if (r?.ok) this.onStatus({ text: `면 법선 정렬 완료 [${p.map((v) => v.toFixed(1)).join(', ')}]`, level: 'info' });
+    else this.onStatus({ text: r?.reason || r?.error || '면 정렬 불가', level: r?.collision ? 'warn' : 'err' });
+  }
+
   // ------------------------------------------------------------ 링크 픽킹 · 관절 드래그
   _pick(e) {
     const rect = this.dom.getBoundingClientRect();
@@ -201,12 +248,13 @@ export class DirectTeach {
     const st = this.st;
     if (!st) return false;
     if (!st.servo) { this.onStatus({ text: '서보 OFF — 서보를 켜야 직접교시가 됩니다', level: 'err' }); return false; }
-    if (st.program?.status === 'running') { this.onStatus({ text: '프로그램 실행 중에는 직접교시 불가', level: 'err' }); return false; }
+    if (st.program?.status === 'running' && !st.held) { this.onStatus({ text: '프로그램 실행 중에는 직접교시 불가', level: 'err' }); return false; }
     return true;
   }
 
   _onHover(e) {
     if (!this.enabled || this.jd || this._dragTcp || e.buttons) return;
+    if (this.alignMode) { this.dom.style.cursor = 'crosshair'; return; }
     if (this.tc.axis) { this._showRing(0); this.dom.style.cursor = 'pointer'; return; }
     const k = this._pick(e);
     if (k !== this._ringK) this._showRing(k);
@@ -215,7 +263,14 @@ export class DirectTeach {
   }
 
   _onDown(e) {
-    if (!this.enabled || e.button !== 0 || this.tc.axis) return;
+    if (!this.enabled || e.button !== 0) return;
+    if (this.alignMode) {
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      this._alignToSurface(e);
+      return;
+    }
+    if (this.tc.axis) return;
     const k = this._pick(e);
     if (!k) return;
     e.stopImmediatePropagation();

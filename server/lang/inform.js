@@ -374,6 +374,9 @@ function compileJob(prog, proc, job, need) {
         const pl = numTag(tags, 'PL', file, line);
         if (pl !== undefined && !(pl >= 0 && pl <= 8)) throw new CompileError('PL 은 0~8 이어야 합니다', file, line);
         const zone = pl ? PL_MM[Math.round(pl)] : 0;
+        const acc = numTag(tags, 'ACC', file, line);
+        if (acc !== undefined && !(acc >= 1 && acc <= 100)) throw new CompileError('ACC 는 1~100 이어야 합니다', file, line);
+        const accelOpt = acc !== undefined ? { accelScale: acc } : {};
         const resolveMoveFrames = (ctrl, rawPos) => {
           const out = {};
           if (job.toolNo > 0 && ctrl.getToolFrame) out.tool = ctrl.getToolFrame(job.toolNo);
@@ -394,12 +397,12 @@ function compileJob(prog, proc, job, need) {
             const rawP = pos(vm, f);
             const frames = resolveMoveFrames(vm.ctrl, rawP);
             const cur = applyShift(vm.ctrl, rawP, f.locals.get('$SFT'));
-            if (k === 0) return void await vm.move({ kind: 'L', target: targetOf(cur), speed, zone, ...frames });
+            if (k === 0) return void await vm.move({ kind: 'L', target: targetOf(cur), speed, zone, ...accelOpt, ...frames });
             const tri = k + 1 < n ? [k - 1, k, k + 1] : [k - 2, k - 1, k];
             const P = tri.map((j) => poseOf(vm.ctrl, applyShift(vm.ctrl, run.pts[j](vm, f), f.locals.get('$SFT'))));
             const [A, B, X] = k + 1 < n ? P : [P[1], P[2], P[0]];
             const mid = arcMid(A.p, B.p, X.p);
-            await vm.move({ kind: 'C', via: { pose: { p: mid, R: B.R } }, target: targetOf(cur), speed, zone, ...frames });
+            await vm.move({ kind: 'C', via: { pose: { p: mid, R: B.R } }, target: targetOf(cur), speed, zone, ...accelOpt, ...frames });
           }));
           ins.movcRun = run;
           break;
@@ -408,7 +411,7 @@ function compileJob(prog, proc, job, need) {
           const rawP = pos(vm, f);
           const frames = resolveMoveFrames(vm.ctrl, rawP);
           const p = applyShift(vm.ctrl, rawP, f.locals.get('$SFT'));
-          await vm.move({ kind: op === 'MOVJ' ? 'J' : 'L', target: targetOf(p), speed, zone, ...frames });
+          await vm.move({ kind: op === 'MOVJ' ? 'J' : 'L', target: targetOf(p), speed, zone, ...accelOpt, ...frames });
         }));
         break;
       }

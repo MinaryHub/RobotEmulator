@@ -52,6 +52,7 @@ export const REJECT = {
   BUSY: { code: 12, reason: '프로그램 실행 중에는 프로그램을 선택할 수 없습니다' },
   HOLD_INPUT: { code: 13, reason: '외부 홀드 입력이 걸려 있습니다' },
   SERVO_OFF_INPUT: { code: 14, reason: '서보 OFF 입력이 걸려 있습니다' },
+  PATH_DEVIATED: { code: 15, reason: '홀드 중 수동 이동으로 원경로에서 이탈했습니다 (원경로 복귀 필요)' },
 };
 const OP_NAME = { start: '시작', resume: '재개', servoOn: '서보 ON', move: '이동', jog: '조그', mode: '모드 변경', select: '프로그램 선택' };
 const SRC_NAME = { internal: '내부', ui: '펜던트', ext: '외부' };
@@ -73,7 +74,11 @@ export class Controller extends EventEmitter {
     this.servo = false;
     this.mode = 'TEACH';       // TEACH | PLAY | REMOTE
     this.override = 100;       // %
+    this.accelScale = 100;     // % (5~100, AccSet / ACC 전역 가감속 배율)
+    this.payload = { mass: 0, cog: [0, 0, 0] }; // kg, [x,y,z] mm (가감속 관성 보정)
     this.held = false;
+    this.holdAnchor = null;    // HOLD 진입 시 관절 위치 (경로 이탈 감지 및 원경로 복귀용)
+    this._recoverSeg = null;   // HOLD 중 원경로 복귀 세그먼트
     this.alarms = [];
     this.logs = [];
     this.segs = [];            // 실행 중 모션 구간 (블렌딩 시 2개 이상 겹침)
@@ -120,7 +125,7 @@ export class Controller extends EventEmitter {
     // 운전 모드 인터록 · 안전 (docs/ROADMAP-SI.md P0-1, P0-3)
     //  명령 출처 source: 'internal'(로봇 프로그램·테스트·AI 도구) | 'ui'(펜던트에 해당: 웹 UI·/api/cmd) | 'ext'(통신 인터페이스·시스템 I/O)
     this.interlock = true;       // false → 모드에 따른 외부/펜던트 명령 제한을 끔 (안전 신호는 항상 적용)
-    this.safety = { estopUI: false, estopExt: false, fenceOpen: false, enable: false, requireEnable: false, fenceStop: 'stop1', teachSpeedLimit: true };
+    this.safety = { estopUI: false, estopExt: false, fenceOpen: false, enable: false, requireEnable: false, fenceStop: 'stop1', teachSpeedLimit: true, pathRecovery: 'auto' };
     this.lastReject = null;      // { op, source, code, reason, t } 마지막으로 거부된 명령
     this.ioLabels = { do: {}, di: {} };  // 사용자 I/O 이름표 { n: { name, desc } } (P1-3)
     this.timeScale = 1;        // 배속: 시뮬레이션 시간 / 실제 시간 (모션·대기·타이머·주변기기 모두 적용, 조그는 실시간)
@@ -398,9 +403,12 @@ export class Controller extends EventEmitter {
       aio: { ai: this.aio.ai.slice(1), ao: this.aio.ao.slice(1), config: this.aioConfig },
       ioGroups: this.ioGroups.map((g) => ({ ...g, value: this.readGroupIO(g.id) })),
       servo: this.servo, mode: this.mode, override: this.override, held: this.held,
+      accelScale: this.accelScale, payload: this.payload,
+      weldArc: this.gripper.kind === 'torch' && this.getDO(this.gripperIO.close),
+      pathRecovery: this.getPathRecovery(),
       interlock: this.interlock, safety: { ...this.safety, estop: this.estopActive }, lastReject: this.lastReject,
       ioLabels: this.ioLabels, sysio: this.sysio.snapshot(), faults: this.faults,
-      moving: this.segs.length > 0 || !!this.jog, blendEnabled: this.blendEnabled,
+      moving: this.segs.length > 0 || !!this.jog || !!this._recoverSeg, blendEnabled: this.blendEnabled,
       collision: this.collision, collisionMode: this.collisionMode, autoResetScene: this.autoResetScene,
       zones: this.zones.map((z) => ({ ...z, active: !!this.zoneStates[z.id] })),
       breakpoints: [...this.breakpoints], simMs: Math.round(this.simMs), timeScale: this.timeScale,
@@ -421,6 +429,44 @@ export class Controller extends EventEmitter {
       cell: this.cell.snapshot(),
       cameras: this.cameras,
       vision: this.vision?.results || {},
+    };
+  }
+
+  // ------------------------------------------------------------ 페이로드 · 가감속 · 경로 복귀 상태
+  setPayload(mass, cog) {
+    const m = Number(mass);
+    if (!Number.isFinite(m) || m < 0) throw new Error(`페이로드 질량이 올바르지 않습니다: ${mass}`);
+    const maxAllowed = Math.max(1, (this.robot?.payload || 10) * 1.5);
+    const clamped = Math.min(maxAllowed, +m.toFixed(3));
+    const nextCog = Array.isArray(cog) && cog.length === 3 && cog.every((v) => Number.isFinite(Number(v)))
+      ? cog.map((v) => +Number(v).toFixed(2))
+      : [...(this.payload?.cog || [0, 0, 0])];
+    this.payload = { mass: clamped, cog: nextCog };
+    const over = this.robot?.payload > 0 && clamped > this.robot.payload;
+    this.log('system', `페이로드 설정: ${clamped} kg${over ? ` (⚠ 정격 ${this.robot.payload} kg 초과)` : ''}`);
+    this.emitState();
+    return this.payload;
+  }
+
+  setAccelScale(pct) {
+    const v = Number(pct);
+    if (!Number.isFinite(v)) return this.accelScale;
+    this.accelScale = Math.max(5, Math.min(100, Math.round(v)));
+    this.emitState();
+    return this.accelScale;
+  }
+
+  getPathRecovery() {
+    if (!this.held || !this.holdAnchor) {
+      return { active: false, deviated: false, maxDeg: 0, anchor: null, recovering: !!this._recoverSeg };
+    }
+    const maxDeg = Math.max(...this.joints.map((v, i) => Math.abs(v - this.holdAnchor[i])));
+    return {
+      active: true,
+      deviated: maxDeg > 0.5,
+      maxDeg: +maxDeg.toFixed(2),
+      anchor: this.holdAnchor,
+      recovering: !!this._recoverSeg,
     };
   }
 
@@ -475,7 +521,11 @@ export class Controller extends EventEmitter {
   // 동작 중이면 HOLD 로 동결 (hold() 와 달리 동작이 없어도 조용히 통과)
   _freeze() {
     const active = this.segment || this.vm?.status === 'running' || this.vm?.status === 'paused';
-    if (active && !this.held) { this.held = true; this._heldSince = performance.now(); }
+    if (active && !this.held) {
+      this.held = true;
+      this._heldSince = performance.now();
+      if (!this.holdAnchor) this.holdAnchor = [...this.joints];
+    }
     this.jog = null;
   }
   // 서보 OFF (모션은 취소하지 않고 동결 → 복귀 후 시작 신호로 같은 위치에서 재개)
@@ -530,6 +580,10 @@ export class Controller extends EventEmitter {
     if (o.teachSpeedLimit !== undefined) {
       this.safety.teachSpeedLimit = !!o.teachSpeedLimit;
       this.log('system', `TEACH 속도 제한 (${TEACH_TCP_MAX} mm/s) ${this.safety.teachSpeedLimit ? 'ON' : 'OFF'}`);
+    }
+    if (o.pathRecovery === 'auto' || o.pathRecovery === 'block' || o.pathRecovery === 'off') {
+      this.safety.pathRecovery = o.pathRecovery;
+      this.log('system', `홀드 경로 복귀 모드: ${o.pathRecovery}`);
     }
     if (o.interlock !== undefined) { this.interlock = !!o.interlock; this.log('system', `모드 인터록 ${this.interlock ? 'ON' : 'OFF'}`); }
     this._bumpRev('safety');
@@ -901,11 +955,17 @@ export class Controller extends EventEmitter {
       for (const k of ['frac', 'tcp', 'rot']) {
         if (sp[k] !== undefined && !(Number.isFinite(sp[k]) && sp[k] > 0)) throw new MotionError('BAD_SPEED', `속도 값이 올바르지 않습니다 (${k}=${sp[k]})`);
       }
+      const accelScale = cmd.accelScale !== undefined ? Number(cmd.accelScale) : this.accelScale;
+      const payloadRatio = this.robot?.payload > 0 ? (this.payload?.mass || 0) / this.robot.payload : 0;
+      const planOpts = { accelScale, payloadRatio };
       if (cmd.kind === 'J') {
         let frac = sp.frac;
         if (frac === undefined) frac = Math.min(1, (sp.tcp ?? 250) / this.robot.tcpMaxSpeed);
         const jEnd = toJoints(cmd.target);
-        seg = planJoint(this.robot, j0, jEnd, frac);
+        if (cmd.target?.cfgStrict && cmd.target?.cfgFilter && cmd.target.cfgFilter(jEnd) > 0) {
+          throw new MotionError('CONFIG', `목표 관절 자세(Configuration)가 지정된 설정과 일치하지 않습니다`);
+        }
+        seg = planJoint(this.robot, j0, jEnd, frac, planOpts);
         // ISO 10218-1 T1(TEACH) TCP 250 mm/s 상한: 관절 이동도 평균 TCP 속도가 250 mm/s를 넘지 않도록 감속
         if (Number.isFinite(teachCap) && seg.duration > 1e-4) {
           const p0 = fkTcp(this.robot, j0, tool, null).p;
@@ -913,15 +973,15 @@ export class Controller extends EventEmitter {
           const dist = norm(sub(p1, p0));
           const avgTcp = dist / seg.duration;
           if (avgTcp > teachCap) {
-            seg = planJoint(this.robot, j0, jEnd, Math.max(0.01, frac * (teachCap / avgTcp)));
+            seg = planJoint(this.robot, j0, jEnd, Math.max(0.01, frac * (teachCap / avgTcp)), planOpts);
           }
         }
       } else if (cmd.kind === 'L') {
         const reqTcp = sp.tcp ?? (sp.frac ?? 0.1) * this.robot.tcpMaxSpeed;
-        seg = planLinear(this.robot, j0, toPose(cmd.target), { tcp: Math.min(reqTcp, teachCap), rot: sp.rot }, tool, base);
+        seg = planLinear(this.robot, j0, toPose(cmd.target), { tcp: Math.min(reqTcp, teachCap), rot: sp.rot }, tool, base, { ...planOpts, cfgFilter: cmd.target?.cfgFilter });
       } else if (cmd.kind === 'C') {
         const reqTcp = sp.tcp ?? (sp.frac ?? 0.1) * this.robot.tcpMaxSpeed;
-        seg = planCircular(this.robot, j0, toPose(cmd.via), toPose(cmd.target), { tcp: Math.min(reqTcp, teachCap), rot: sp.rot }, tool, base);
+        seg = planCircular(this.robot, j0, toPose(cmd.via), toPose(cmd.target), { tcp: Math.min(reqTcp, teachCap), rot: sp.rot }, tool, base, { ...planOpts, cfgFilter: cmd.target?.cfgFilter });
       } else throw new Error(`알 수 없는 이동 종류 ${cmd.kind}`);
     } catch (e) {
       return Promise.reject(e);
@@ -929,18 +989,21 @@ export class Controller extends EventEmitter {
     this.jog = null;
     this.motionStats.moves++;
     const zone = this.blendEnabled ? Math.max(0, Number(cmd.zone) || 0) : 0;
+    const segLen = seg.length ?? norm(sub(fkFlange(this.robot, seg.end).p, fkFlange(this.robot, j0).p));
     seg.blendAt = seg.duration;
     if (zone > 0 && seg.prof?.tAcc > 0) {
       // 남은 TCP 이동거리가 zone 이하가 되는 시점 (감속 구간 안에서만) → 다음 구간 시작
-      const L = seg.length ?? norm(sub(fkFlange(this.robot, seg.end).p, fkFlange(this.robot, j0).p));
       const lo0 = Math.max(0, seg.duration - seg.prof.tAcc);
       let lo = lo0, hi = seg.duration;
-      if ((1 - seg.prof.s(lo0)) * L <= zone) hi = lo0;
-      else for (let i = 0; i < 30; i++) { const m = (lo + hi) / 2; if ((1 - seg.prof.s(m)) * L <= zone) hi = m; else lo = m; }
+      if ((1 - seg.prof.s(lo0)) * segLen <= zone) hi = lo0;
+      else for (let i = 0; i < 30; i++) { const m = (lo + hi) / 2; if ((1 - seg.prof.s(m)) * segLen <= zone) hi = m; else lo = m; }
       seg.blendAt = hi;
     }
+    const triggers = Array.isArray(cmd.triggers) && cmd.triggers.length
+      ? cmd.triggers.map((t) => ({ ...t, fired: false }))
+      : null;
     return new Promise((resolve, reject) => {
-      this.segs.push({ ...seg, j0, zone, t: 0, resolve, reject, resolved: false });
+      this.segs.push({ ...seg, _length: segLen, triggers, j0, zone, t: 0, resolve, reject, resolved: false });
     });
   }
 
@@ -951,6 +1014,12 @@ export class Controller extends EventEmitter {
     const ss = this.segs;
     this.segs = [];
     this.jog = null;
+    if (this._recoverSeg) {
+      const rs = this._recoverSeg;
+      this._recoverSeg = null;
+      rs.reject?.(Object.assign(new Error('recovery cancelled'), { aborted: true }));
+    }
+    this.holdAnchor = null;
     for (const s of ss) if (!s.resolved) s.reject?.(Object.assign(new Error('motion cancelled'), { aborted: true }));
   }
 
@@ -988,10 +1057,10 @@ export class Controller extends EventEmitter {
     if (!this.servo) { this.log('system', '조그: 서보 OFF'); return; }
     const r = this.checkCommand('jog', source);
     if (r) { if (this.lastReject?.op !== 'jog' || Date.now() - this.lastReject.t > 2000) this.reject('jog', source, r); return; }
-    if (this.segment || (this.vm && this.vm.status === 'running')) {
+    if (this._recoverSeg || (!this.held && (this.segment || (this.vm && this.vm.status === 'running')))) {
       if (!this._jogBusyLog || Date.now() - this._jogBusyLog > 2000) {
         this._jogBusyLog = Date.now();
-        this.log('system', this.held ? '조그 불가: 정지로 중단된 이동이 남아 있습니다 (재개하거나 프로그램 리셋)' : '조그 불가: 이동 또는 프로그램 실행 중');
+        this.log('system', this._recoverSeg ? '조그 불가: 원경로 복귀 이동 중' : '조그 불가: 이동 또는 프로그램 실행 중');
       }
       return;
     }
@@ -1051,7 +1120,7 @@ export class Controller extends EventEmitter {
 
   // 티칭용: 관절각 직접 지정 (모션 없이 즉시)
   setJointsDirect(j) {
-    if (this.segment || this.vm?.status === 'running') return false;
+    if (!this.held && (this.segment || this.vm?.status === 'running')) return false;
     if (!withinLimits(this.robot, j)) return false;
     this.joints = [...j];
     this.updateHeld();
@@ -1062,11 +1131,12 @@ export class Controller extends EventEmitter {
   }
 
   // ------------------------------------------------------------ 직접교시 (핸드 가이딩)
-  // 3D 화면에서 TCP 핸들이나 링크를 끌어 로봇을 즉시 움직인다. 조그와 같은 조건(서보 ON, 정지 상태, TEACH 모드·인에이블 — 인터록 설정 시)을 따른다.
+  // 3D 화면에서 TCP 핸들이나 링크를 끌어 로봇을 즉시 움직인다. 조그와 같은 조건(서보 ON, 정지/홀드 상태, TEACH 모드·인에이블 — 인터록 설정 시)을 따른다.
   // 결과: { ok, joints?, reason? }  — 도달 불가·자세 급변·간섭(정지 모드)은 로그 없이 사유만 돌려줌 (드래그 중 초당 수십 번 호출되므로)
   _teachGate(source) {
     if (!this.servo) return { ok: false, reason: '서보 OFF — 서보를 켜야 직접교시가 됩니다' };
-    if (this.segment || this.vm?.status === 'running') return { ok: false, reason: '프로그램·모션 실행 중' };
+    if (this._recoverSeg) return { ok: false, reason: '원경로 복귀 이동 중' };
+    if (!this.held && (this.segment || this.vm?.status === 'running')) return { ok: false, reason: '프로그램·모션 실행 중' };
     const r = this.checkCommand('jog', source);
     if (r) {
       if (this.lastReject?.op !== 'jog' || Date.now() - this.lastReject.t > 2000) this.reject('jog', source, r);
@@ -1101,7 +1171,7 @@ export class Controller extends EventEmitter {
     return { ok: true, joints: this.joints };
   }
   // TCP 목표 자세 (로봇 베이스 좌표, mm / 쿼터니언 [w,x,y,z]) — 현재 그리퍼 TCP 기준
-  teachPose({ p, q, R }, source = 'ui') {
+  teachPose({ p, q, R, allowJump = false }, source = 'ui') {
     const g = this._teachGate(source);
     if (g) return g;
     if (!Array.isArray(p) || p.length !== 3 || (!R && !(Array.isArray(q) && q.length === 4 && q.every(Number.isFinite)))) return { ok: false, reason: '위치 p[3] 와 자세 q[4](쿼터니언)가 필요합니다' };
@@ -1110,7 +1180,8 @@ export class Controller extends EventEmitter {
     const j = ikNearest(this.robot, tcpToFlange(target, this.gripperTcp, null), this.joints);
     if (!j) return { ok: false, reason: '도달 불가 (작업 영역·관절 한계 밖)' };
     const jump = Math.max(...j.map((v, i) => Math.abs(v - this.joints[i])));
-    if (jump > 30) return { ok: false, reason: `자세 급변 ${jump.toFixed(0)}° — 특이점 부근 (관절을 직접 끌어 자세를 바꾸십시오)` };
+    const maxJump = allowJump ? 120 : 30;
+    if (jump > maxJump) return { ok: false, reason: `자세 급변 ${jump.toFixed(0)}° — 특이점 부근 (관절을 직접 끌어 자세를 바꾸십시오)` };
     return this._teachApply(j);
   }
   // 관절각 직접 지정 (관절 드래그·되돌리기)
@@ -1216,8 +1287,8 @@ export class Controller extends EventEmitter {
     const dt = Math.min(0.1, (now - this._last) / 1000);
     this._last = now;
     let moved = false;
-    // 조그는 사람이 조작하므로 배속과 무관하게 실시간
-    if (this.jog && this.servo && !this.segs.length) {
+    // 조그는 사람이 조작하므로 배속과 무관하게 실시간 (HOLD 중 경로 이탈 조그 허용)
+    if (this.jog && this.servo && !this._recoverSeg && (!this.segs.length || this.held)) {
       if (now > this.jog.until) this.jog = null;
       else { this.applyJog(dt); moved = true; this.updateHeld(); this.checkCollisionNow(); this.checkZonesNow(); }
     }
@@ -1243,6 +1314,28 @@ export class Controller extends EventEmitter {
   _step(dt) {
     if (!this.held) this.simMs += dt * 1000;
     let moved = false;
+    // HOLD 중 원경로 복귀 이동 (동결된 프로그램 세그먼트는 그대로 유지)
+    if (this.held && this._recoverSeg && this.servo && !this.alarms.length) {
+      const rs = this._recoverSeg;
+      rs.t = Math.min(rs.duration, rs.t + dt * this.override / 100);
+      this.joints = rs.t >= rs.duration ? [...rs.end] : rs.sample(rs.t);
+      moved = true;
+      if (rs.t >= rs.duration) {
+        this._recoverSeg = null;
+        rs.resolve?.();
+        if (rs.thenResume && this.held && !this.alarms.length) {
+          this.heldMs += performance.now() - this._heldSince;
+          this.held = false;
+          this.holdAnchor = null;
+          this.emit('resume');
+          this.log('system', '원경로 복귀 완료 — 재개');
+          this.emitState();
+        } else {
+          this.log('system', '원경로(홀드 위치) 복귀 완료');
+          this.emitState();
+        }
+      }
+    }
     if (this.segs.length && this.servo && !this.held) {
       // 구간 합성: q = seg0(t0) + Σ_k (seg_k(t_k) − seg_k.j0)  (seg_k.j0 = seg_{k-1}.end)
       const step = dt * this.override / 100;
@@ -1250,10 +1343,39 @@ export class Controller extends EventEmitter {
       let prev = null;
       for (const s of this.segs) {
         // 앞 구간이 블렌딩 시작점에 도달하기 전이면 대기 (블렌딩 없이 연속 호출된 경우 순차 실행)
-        if (!prev || prev.resolved) s.t = Math.min(s.duration, s.t + step);
+        const advanced = !prev || prev.resolved;
+        if (advanced) s.t = Math.min(s.duration, s.t + step);
         prev = s;
         const v = s.t >= s.duration ? s.end : s.sample(s.t);
         q = q ? q.map((x, i) => x + v[i] - s.j0[i]) : [...v];
+        // 경로 선독 트리거 평가 (KRL TRIGGER WHEN DISTANCE/PATH, ABB TriggL/TriggJ)
+        if (advanced && s.triggers?.length) {
+          const prog = s.duration > 1e-9 ? s.prof.s(s.t) : 1;
+          const L = s._length || 0;
+          const done = s.t >= s.duration - 1e-9;
+          for (const tr of s.triggers) {
+            if (tr.fired) continue;
+            const dMs = Number(tr.delayMs) || 0;
+            let hit = false;
+            if (tr.mode === 'progress') {
+              if (tr.value >= 1 && dMs < 0) hit = (s.duration - s.t) <= (-dMs / 1000) + 1e-9;
+              else hit = prog >= tr.value - 1e-9 || done;
+            } else if (tr.mode === 'distFromStart') {
+              hit = (prog * L) >= (tr.value - 1e-9) || done;
+            } else if (tr.mode === 'distFromEnd') {
+              hit = ((1 - prog) * L) <= (tr.value + 1e-9) || done;
+            } else if (tr.mode === 'timeFromStart') {
+              hit = s.t >= (tr.value - 1e-9) || done;
+            } else if (tr.mode === 'timeFromEnd') {
+              hit = (s.duration - s.t) <= (tr.value + 1e-9) || done;
+            }
+            if (hit) {
+              tr.fired = true;
+              if (dMs > 0) this.after(dMs / 1000, tr.fn);
+              else { try { tr.fn(); } catch {} }
+            }
+          }
+        }
         if (!s.resolved && s.t >= s.blendAt - 1e-9) { s.resolved = true; s.resolve(); }
       }
       this.joints = q;
@@ -1410,9 +1532,11 @@ export class Controller extends EventEmitter {
     if (!this.allow('start', source)) return false;
     if (this.alarms.length) { this.log('system', '알람 리셋 후 시작하십시오'); this._noteReject('start', source, REJECT.ALARM); return false; }
     if (!this.servo) { this.log('system', '서보 OFF — 시작 불가'); this._noteReject('start', source, REJECT.SERVO_OFF); return false; }
-    if (this.vm && this.vm.status === 'running' && this.held) { this.resume(); return true; }
+    if (this.vm && this.vm.status === 'running' && this.held) { return this.resume(source); }
     if (this.vm && this.vm.status === 'paused') {
-      if (this.held) { this.heldMs += performance.now() - this._heldSince; this.held = false; this.emit('resume'); }
+      if (this.held) {
+        if (!this.resume(source)) return false;
+      }
       this.vm.stepResume(step);
       this.emitState();
       return true;
@@ -1426,6 +1550,8 @@ export class Controller extends EventEmitter {
     if (!this.vm) return false;
     if (this.vm.status !== 'idle') this.vm.reset();
     this.held = false;
+    this.holdAnchor = null;
+    this._recoverSeg = null;
     const ppCustom = !!this.vm._ppCustom;
     if (this.autoResetScene && !step && !ppCustom) {
       // 중간 정지로 공작물을 쥔 채 남아 있으면 그리퍼를 열고 셀을 초기 배치로
@@ -1440,12 +1566,58 @@ export class Controller extends EventEmitter {
     // 실행 중인 프로그램/모션이 없으면 HOLD 는 의미가 없음 (이후 이동이 멈춘 채 남지 않도록)
     const active = this.segment || this.vm?.status === 'running' || this.vm?.status === 'paused';
     if (!active) { this.log('system', 'HOLD: 실행 중인 동작 없음'); return; }
-    if (!this.held) { this.held = true; this._heldSince = performance.now(); this.log('system', 'HOLD'); this.emitState(); } }
+    if (!this.held) {
+      this.held = true;
+      this._heldSince = performance.now();
+      if (!this.holdAnchor) this.holdAnchor = [...this.joints];
+      this.log('system', 'HOLD');
+      this.emitState();
+    }
+  }
+  // HOLD 중 수동 이동으로 이탈한 로봇을 홀드 위치(원경로)로 저속 복귀
+  recoverPath(source = 'ui', { thenResume = false, wait = false } = {}) {
+    if (!this.held || !this.holdAnchor) return { ok: false, reason: '홀드 상태가 아니거나 복귀 기준점이 없습니다' };
+    if (!this.servo) return { ok: false, reason: '서보 OFF — 서보를 켠 뒤 원경로 복귀하십시오' };
+    if (this.alarms.length) return { ok: false, reason: '알람 리셋 후 원경로 복귀하십시오' };
+    const r = this.checkCommand('move', source);
+    if (r) { this.reject('move', source, r); return { ok: false, reason: r.reason, code: r.code }; }
+    const pr = this.getPathRecovery();
+    if (!pr.deviated) return { ok: true, recovering: false, alreadyAtAnchor: true };
+    if (this._recoverSeg) {
+      if (thenResume) this._recoverSeg.thenResume = true;
+      return wait ? this._recoverSeg.promise : { ok: true, recovering: true };
+    }
+    const seg = planJoint(this.robot, [...this.joints], [...this.holdAnchor], 0.15, { accelScale: Math.min(50, this.accelScale) });
+    this.jog = null;
+    let resolveFn, rejectFn;
+    const promise = new Promise((res, rej) => { resolveFn = res; rejectFn = rej; });
+    this._recoverSeg = { ...seg, t: 0, thenResume: !!thenResume, resolve: () => resolveFn({ ok: true }), reject: rejectFn, promise };
+    this.log('system', `⚠ 경로 이탈 ${pr.maxDeg}° 감지 — 홀드 위치(원경로)로 저속 복귀 시작${thenResume ? ' (완료 후 자동 재개)' : ''}`);
+    this.emitState();
+    return wait ? promise : { ok: true, recovering: true, duration: +seg.duration.toFixed(2) };
+  }
   resume(source = 'internal') {
     if (!this.held) return true;
     if (!this.allow('resume', source)) return false;
     if (!this.servo && (this.segment || this.vm?.status === 'running')) { this.log('system', '재개 불가: 서보 OFF'); this._noteReject('resume', source, REJECT.SERVO_OFF); return false; }
-    if (this.held) { this.heldMs += performance.now() - this._heldSince; this.held = false; this.emit('resume'); this.log('system', '재개'); this.emitState(); }
+    const pr = this.getPathRecovery();
+    const mode = this.safety?.pathRecovery || 'auto';
+    if (pr.deviated && mode === 'block') {
+      return this.reject('resume', source, REJECT.PATH_DEVIATED);
+    }
+    if (pr.deviated && mode === 'auto') {
+      const rec = this.recoverPath(source, { thenResume: true });
+      return !!rec?.ok;
+    }
+    if (this.held) {
+      this.heldMs += performance.now() - this._heldSince;
+      this.held = false;
+      this.holdAnchor = null;
+      this._recoverSeg = null;
+      this.emit('resume');
+      this.log('system', '재개');
+      this.emitState();
+    }
     return true;
   }
   heldNow() { return this.heldMs + (this.held ? performance.now() - this._heldSince : 0); }
@@ -1467,6 +1639,8 @@ export class Controller extends EventEmitter {
     if (this.vm && (this.vm.status === 'running' || this.vm.status === 'paused' || this.vm._finishing)) { this.vm.abort(); this.log('system', '프로그램 정지'); }
     if (this.held) this.heldMs += performance.now() - this._heldSince;
     this.held = false;
+    this.holdAnchor = null;
+    this._recoverSeg = null;
     this.emit('resume');
     this.cancelMotion();
   }

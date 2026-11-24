@@ -111,8 +111,26 @@ function cmd(name, args = {}) {
 // 이벤트 핸들러에서 쓰는 형태: 오류는 이미 표시했으므로 처리되지 않은 거부로 남기지 않음
 const run = (name, args) => cmd(name, args).catch(() => undefined);
 
+function applyChatVisibility() {
+  let prefHide = false;
+  try { prefHide = localStorage.getItem('hideChat') === '1'; } catch {}
+  const serverOff = app.aiEnabled === false;
+  const hidden = serverOff || prefHide;
+  $('#btnChat')?.classList.toggle('hidden', hidden);
+  $('#chat')?.classList.toggle('hidden', hidden);
+  if (hidden) document.querySelector('main')?.classList.remove('chat-open');
+  const chk = $('#chkHideChat');
+  if (chk) { chk.checked = hidden; chk.disabled = serverOff; }
+}
+$('#chkHideChat')?.addEventListener('change', (e) => {
+  try { localStorage.setItem('hideChat', e.target.checked ? '1' : '0'); } catch {}
+  applyChatVisibility();
+});
+applyChatVisibility();
+
 function onInit(m) {
-  Object.assign(app, { robots: m.robots, grippers: m.grippers, vendors: m.vendors, comms: m.comms, protocolMode: m.protocolMode || 'vendor' });
+  Object.assign(app, { robots: m.robots, grippers: m.grippers, vendors: m.vendors, comms: m.comms, protocolMode: m.protocolMode || 'vendor', aiEnabled: m.aiEnabled !== false });
+  applyChatVisibility();
   $('#log').innerHTML = '';
   m.logs.forEach(addLog);
   buildSelectors();
@@ -170,6 +188,21 @@ function onState(st) {
   setText($('#ovAlarm'), alarmTxt);
   if (document.activeElement !== $('#ovRange')) { $('#ovRange').value = st.override; }
   setText($('#ovVal'), `${st.override}%`);
+  const payMass = st.payload?.mass ?? 0;
+  if (document.activeElement !== $('#inpPayload')) $('#inpPayload').value = String(payMass);
+  const payOver = model.payload > 0 && payMass > model.payload;
+  setText($('#payVal'), `${payMass} kg${payOver ? ' ⚠' : ''}`);
+  // 홀드 중 경로 이탈 경고 배너
+  const pr = st.pathRecovery;
+  const prBar = $('#pathRecBar');
+  if (prBar) {
+    const showPr = !!(pr?.deviated || pr?.recovering);
+    prBar.classList.toggle('hidden', !showPr);
+    if (showPr) {
+      setText($('#pathRecMsg'), pr.recovering ? '↩ 원경로(홀드 위치)로 저속 복귀 중…' : `⚠ 홀드 중 경로 이탈 (${pr.maxDeg}°)`);
+      $('#btnRecoverPath').disabled = !!pr.recovering;
+    }
+  }
 
   renderPose(st, model);
   renderFrames(st);
@@ -224,6 +257,7 @@ function renderSafety(st) {
   if (document.activeElement !== $('#chkInterlock')) $('#chkInterlock').checked = !!st.interlock;
   if (document.activeElement !== $('#chkReqEnable')) $('#chkReqEnable').checked = !!sf.requireEnable;
   if (document.activeElement !== $('#chkTeachLimit')) $('#chkTeachLimit').checked = sf.teachSpeedLimit !== false;
+  if (document.activeElement !== $('#selPathRecovery')) $('#selPathRecovery').value = sf.pathRecovery || 'auto';
   if (document.activeElement !== $('#selFenceStop')) $('#selFenceStop').value = sf.fenceStop || 'stop1';
   const fb = $('#btnFence');
   setText(fb, `안전 펜스: ${sf.fenceOpen ? '열림' : '닫힘'}`);
@@ -250,6 +284,9 @@ $('#btnEstop').onclick = () => run('safety', { estop: !app.st?.safety?.estopUI }
 $('#chkInterlock').onchange = (e) => run('safety', { interlock: e.target.checked });
 $('#chkReqEnable').onchange = (e) => run('safety', { requireEnable: e.target.checked });
 $('#chkTeachLimit').onchange = (e) => run('safety', { teachSpeedLimit: e.target.checked });
+$('#selPathRecovery').onchange = (e) => run('safety', { pathRecovery: e.target.value });
+$('#inpPayload').onchange = (e) => run('setPayload', { mass: Math.max(0, Number(e.target.value) || 0) });
+$('#btnRecoverPath').onclick = () => run('recoverPath');
 $('#selFenceStop').onchange = (e) => run('safety', { fenceStop: e.target.value });
 $('#btnFence').onclick = () => run('safety', { fence: !app.st?.safety?.fenceOpen });
 $('#btnEnable').onclick = () => run('safety', { enable: !app.st?.safety?.enable });
@@ -1013,20 +1050,31 @@ async function setDirectTeach(on) {
   const st = app.st;
   if (on && st) {
     // 직접교시는 TEACH 모드 + 서보 ON 에서 동작 (실제 협동로봇의 핸드 가이딩과 같은 조건)
-    if (st.program?.status === 'running') { dtStatus({ text: '프로그램 실행 중에는 직접교시를 켤 수 없습니다', level: 'err' }); return; }
+    if (st.program?.status === 'running' && !st.held) { dtStatus({ text: '프로그램 실행 중에는 직접교시를 켤 수 없습니다', level: 'err' }); return; }
     if (st.safety?.estop) { dtStatus({ text: '비상정지 중', level: 'err' }); return; }
     if (st.mode !== 'TEACH') { const r = await cmdChecked('mode', { mode: 'TEACH' }); if (r?.ok === false) return; }
     if (!st.servo) { const r = await cmdChecked('servo', { on: true }); if (r?.ok === false) return; }
   }
   dt.setEnabled(on);
   $('#dtBar').classList.toggle('on', on);
+  $('#dtAlign')?.classList.toggle('active', !!dt.alignMode);
   setText($('#dtToggle'), on ? '✋ 직접교시 ON' : '✋ 직접교시');
   if (on) dtStatus({ text: 'TCP 핸들을 끌어 이동·회전, 로봇 링크를 끌어 관절 회전', level: 'info' });
 }
 $('#dtToggle').onclick = () => setDirectTeach(!dt.enabled);
-$$('#dtMode button').forEach((b) => { b.onclick = () => { dt.setMode(b.dataset.v); dtSeg('dtMode', b.dataset.v); }; });
+$$('#dtMode button').forEach((b) => {
+  b.onclick = () => {
+    if (dt.alignMode) { dt.setAlignMode(false); $('#dtAlign')?.classList.remove('active'); }
+    dt.setMode(b.dataset.v);
+    dtSeg('dtMode', b.dataset.v);
+  };
+});
 $$('#dtSpace button').forEach((b) => { b.onclick = () => { dt.setSpace(b.dataset.v); dtSeg('dtSpace', b.dataset.v); }; });
 $('#dtSnap').onchange = (e) => { dt.setSnap(Number(e.target.value)); e.target.blur(); };
+$('#dtAlign')?.addEventListener('click', () => {
+  const on = dt.setAlignMode(!dt.alignMode);
+  $('#dtAlign').classList.toggle('active', on);
+});
 $('#dtUndo').onclick = () => dt.undoLast();
 $('#dtGrip').onclick = () => {
   if (!app.st) return;
@@ -1040,17 +1088,17 @@ $('#dtRecord').onclick = () => { $('#btnTeach').onclick(); dtStatus({ text: '현
 // 상태에 맞춰 툴바 갱신 (모드·실행·비상정지로 조건이 깨지면 자동으로 끔)
 function syncDirectTeachBar(st) {
   setText($('#dtGrip'), st.grip.closed ? '그리퍼 열기' : '그리퍼 닫기');
-  if (dt.enabled && (st.mode !== 'TEACH' || st.program?.status === 'running' || st.safety?.estop)) {
+  if (dt.enabled && (st.mode !== 'TEACH' || (st.program?.status === 'running' && !st.held) || st.safety?.estop)) {
     setDirectTeach(false);
     dtStatus({ text: '직접교시 해제 (모드 변경·실행·비상정지)', level: 'warn' });
   }
 }
 
-// 단축키 (입력칸 밖): T 켜기/끄기 — 켜진 동안 W 이동, E 회전, Q BASE/TOOL, X 스냅, G 그리퍼, Enter 위치 기록, Ctrl/Cmd+Z 되돌리기, Esc 끄기
+// 단축키 (입력칸 밖): T 켜기/끄기 — 켜진 동안 W 이동, E 회전, Q BASE/TOOL, X 스냅, F 면 정렬, G 그리퍼, Enter 위치 기록, Ctrl/Cmd+Z 되돌리기, Esc 끄기
 document.addEventListener('keydown', (e) => {
   if (e.altKey || !app.st) return;
   if (e.target.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"])') || document.querySelector('dialog[open]')) return;
-  const k = { KeyT: 't', KeyZ: 'z', KeyW: 'w', KeyE: 'e', KeyQ: 'q', KeyX: 'x', KeyG: 'g', Enter: 'enter', NumpadEnter: 'enter', Escape: 'escape' }[e.code] ?? e.key.toLowerCase();
+  const k = { KeyT: 't', KeyZ: 'z', KeyW: 'w', KeyE: 'e', KeyQ: 'q', KeyX: 'x', KeyF: 'f', KeyG: 'g', Enter: 'enter', NumpadEnter: 'enter', Escape: 'escape' }[e.code] ?? e.key.toLowerCase();
   if (dt.enabled && (e.ctrlKey || e.metaKey) && k === 'z') { e.preventDefault(); dt.undoLast(); return; }
   if (e.ctrlKey || e.metaKey) return;
   if (k === 't') { e.preventDefault(); setDirectTeach(!dt.enabled); return; }
@@ -1060,6 +1108,7 @@ document.addEventListener('keydown', (e) => {
     e: () => $('#dtMode button[data-v="rotate"]').click(),
     q: () => $(`#dtSpace button[data-v="${dt.space === 'world' ? 'tool' : 'world'}"]`).click(),
     x: () => { const i = (dt.snap + 1) % SNAPS.length; $('#dtSnap').value = String(i); dt.setSnap(i); dtStatus({ text: SNAPS[i].label, level: 'info' }); },
+    f: () => $('#dtAlign')?.click(),
     g: () => $('#dtGrip').click(),
     enter: () => $('#dtRecord').click(),
     escape: () => setDirectTeach(false),

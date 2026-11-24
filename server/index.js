@@ -49,9 +49,10 @@ function loadConfig() {
     host: '127.0.0.1',
     allowedHosts: [],
     robot: null, gripper: null,
-    // Claude 채팅. backend: 'auto'(API 키 환경변수가 있으면 api, 없으면 claude-code) | 'api'(ANTHROPIC_API_KEY 또는 ant auth login)
+    // Claude 채팅. enabled: false 면 폐쇄망 환경용으로 UI/WS 채팅을 완전히 비활성화
+    //   backend: 'auto'(API 키 환경변수가 있으면 api, 없으면 claude-code) | 'api'(ANTHROPIC_API_KEY 또는 ant auth login)
     //   | 'claude-code'(설치된 Claude Code CLI 의 구독 로그인 사용, API 키 불필요). 환경변수 AI_BACKEND 로도 지정
-    ai: { backend: 'auto', model: 'claude-opus-5-5', effort: 'high', fallbacks: true, cliModel: null },
+    ai: { enabled: true, backend: 'auto', model: 'claude-opus-5-5', effort: 'high', fallbacks: true, cliModel: null },
     // 업데이트: enabled(새 버전 자동 확인), intervalHours(확인 주기), allowApply(화면에서 원클릭 업데이트 허용),
     //   repo('owner/name', 기본 package.json repository), sponsorUrl(후원 링크, 기본 package.json funding)
     update: { enabled: true, intervalHours: 24, allowApply: true },
@@ -135,6 +136,8 @@ async function handleCmd(m) {
     case 'servo': return { ok: ctrl.setServo(m.on, 'ui') !== false, reject: ctrl.lastReject };
     case 'mode': return { ok: ctrl.setMode(m.mode, 'ui') !== false };
     case 'override': ctrl.setOverride(m.value); return;
+    case 'setPayload': return { payload: ctrl.setPayload(m.mass, m.cog) };
+    case 'setAccelScale': return { accelScale: ctrl.setAccelScale(m.value) };
     case 'timeScale': ctrl.setTimeScale(m.value); return;
     case 'timeScaleLock': ctrl.setTimeScaleLock(m.on); return;
     case 'jog': ctrl.startJog(m.jog, 'ui'); return;
@@ -151,7 +154,7 @@ async function handleCmd(m) {
       return { protocolMode: protoMgr.mode, comms: commsPayload() };
     }
     case 'setJoints': return ctrl.teachJoints(m.joints, 'ui');   // 펜던트 관절 직접 지정 = 조그와 같은 조건
-    case 'teachPose': return ctrl.teachPose({ p: m.p, q: m.q }, 'ui');   // p[3] mm, q[4] 쿼터니언 — 형식 검사는 teachPose 에서   // 직접교시: TCP 핸들 드래그
+    case 'teachPose': return ctrl.teachPose({ p: m.p, q: m.q, allowJump: !!m.allowJump }, 'ui');   // p[3] mm, q[4] 쿼터니언 — 형식 검사는 teachPose 에서
     case 'teachJoints': return ctrl.teachJoints(m.joints, 'ui');      // 직접교시: 관절 드래그 · 되돌리기
     case 'moveJoints':
       ctrl.move({ kind: 'J', target: { joints: m.joints }, speed: { frac: m.speed ?? 0.3 }, source: 'ui' }).catch((e) => !e.aborted && !String(e.code).startsWith('REJECT') && ctrl.alarm(e.code || 'MOTION', e.message));
@@ -187,7 +190,8 @@ async function handleCmd(m) {
     case 'start': return { ok: await ctrl.start({ step: false, source: 'ui' }), reject: ctrl.lastReject };
     case 'step': return { ok: await ctrl.start({ step: true, source: 'ui' }), reject: ctrl.lastReject };
     case 'hold': ctrl.hold(); return;
-    case 'resume': return { ok: ctrl.resume('ui') !== false };
+    case 'resume': return { ok: ctrl.resume('ui') !== false, reject: ctrl.lastReject };
+    case 'recoverPath': return ctrl.recoverPath('ui');
     case 'stop': ctrl.stopProgram(); return;
     case 'reset': ctrl.resetProgram(); return;
     case 'resetAlarms': ctrl.resetAlarms(); return;
@@ -414,12 +418,17 @@ wss.on('connection', (ws) => {
     type: 'init', robots: ROBOTS, grippers: GRIPPERS, vendors: VENDORS, cameras: CAMERAS,
     state: ctrl.snapshot(), logs: ctrl.logs.slice(-200), files: filesMsg(),
     comms: commsPayload(), protocolMode: protoMgr?.mode ?? (config.allProtocols ? 'all' : config.protocolMode || 'vendor'),
+    aiEnabled: config.ai?.enabled !== false,
     about: updater.info(),
   });
   ws.on('message', async (raw) => {
     let m;
     try { m = JSON.parse(raw); } catch { return; }
     if (m.cmd === 'chat' || m.cmd === 'chatStop' || m.cmd === 'chatReset') {
+      if (config.ai?.enabled === false) {
+        send(ws, { type: 'chat', ev: 'error', msg: '폐쇄망 설정(config.ai.enabled=false)으로 AI 채팅이 비활성화되어 있습니다.' });
+        return;
+      }
       try {
         const c = await chatSession(ws);
         if (!c || ws.readyState !== 1) return;

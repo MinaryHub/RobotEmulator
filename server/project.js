@@ -44,7 +44,7 @@ export class ProjectStore {
       robotId: c.robot.id,
       gripper: c.gripper.custom ? { custom: { ...c.gripper } } : { id: c.gripper.id },
       gripperIO: { ...c.gripperIO },
-      settings: { override: c.override, timeScale: c.timeScale, lockTimeScaleOnExt: c.lockTimeScaleOnExt, interlock: c.interlock, requireEnable: c.safety.requireEnable, fenceStop: c.safety.fenceStop, teachSpeedLimit: c.safety.teachSpeedLimit, mode: c.mode, blendEnabled: c.blendEnabled, collisionMode: c.collisionMode, autoResetScene: c.autoResetScene },
+      settings: { override: c.override, accelScale: c.accelScale, payload: c.payload ? { mass: c.payload.mass, cog: [...(c.payload.cog || [0, 0, 0])] } : null, timeScale: c.timeScale, lockTimeScaleOnExt: c.lockTimeScaleOnExt, interlock: c.interlock, requireEnable: c.safety.requireEnable, fenceStop: c.safety.fenceStop, teachSpeedLimit: c.safety.teachSpeedLimit, pathRecovery: c.safety.pathRecovery, mode: c.mode, blendEnabled: c.blendEnabled, collisionMode: c.collisionMode, autoResetScene: c.autoResetScene },
       frames: c.frames ? { activeTool: c.frames.activeTool, activeUser: c.frames.activeUser, tools: c.frames.tools.map((x) => ({ ...x, pose: [...x.pose] })), users: c.frames.users.map((x) => ({ ...x, pose: [...x.pose] })) } : null,
       ioGroups: (c.ioGroups || []).map((g) => ({ ...g })),
       aio: c.aio ? { ai: c.aio.ai.slice(1), ao: c.aio.ao.slice(1), config: c.aioConfig } : null,
@@ -93,10 +93,12 @@ export class ProjectStore {
     Object.assign(c.gripperIO, p.gripperIO || {});
     const st = p.settings || {};
     if (st.override) c.setOverride(st.override);
+    if (st.accelScale !== undefined) c.setAccelScale?.(st.accelScale);
+    if (st.payload && Number.isFinite(Number(st.payload.mass))) c.setPayload?.(st.payload.mass, st.payload.cog);
     if (st.lockTimeScaleOnExt !== undefined) c.lockTimeScaleOnExt = !!st.lockTimeScaleOnExt;
     if (st.timeScale) c.setTimeScale(st.timeScale);
-    if (st.interlock !== undefined || st.requireEnable !== undefined || st.fenceStop || st.teachSpeedLimit !== undefined) {
-      c.setSafetyOptions({ interlock: st.interlock, requireEnable: st.requireEnable, fenceStop: st.fenceStop, teachSpeedLimit: st.teachSpeedLimit });
+    if (st.interlock !== undefined || st.requireEnable !== undefined || st.fenceStop || st.teachSpeedLimit !== undefined || st.pathRecovery) {
+      c.setSafetyOptions({ interlock: st.interlock, requireEnable: st.requireEnable, fenceStop: st.fenceStop, teachSpeedLimit: st.teachSpeedLimit, pathRecovery: st.pathRecovery });
     }
     if (c.setFramesData) c.setFramesData(p.frames || null);
     if (Array.isArray(p.ioGroups) && c.setIoGroups) c.setIoGroups(p.ioGroups);
