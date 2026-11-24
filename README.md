@@ -16,13 +16,14 @@ A virtual robot controller that emulates Yaskawa, Kawasaki, Hyundai, ABB, KUKA, 
 
 The UI is available in English and Korean. It follows the browser language, and you can switch in the About (ⓘ) dialog or with `?lang=en` / `?lang=ko`.
 
-![KUKA KR 6 R900 running a KRL pick & place program with the signal timeline](screenshots/main.png)
+![KUKA KR 6 R900 running a KRL pick & place cycle in real time with TCP trail and signal timeline](screenshots/demo.gif)
 
 | | |
 |---|---|
-| ![Conveyor cell preset with an ABB IRB 1200 running RAPID](screenshots/cell-conveyor.png) **Cell layout** — conveyor, feeder and sensor preset (ABB RAPID) | ![System I/O: a PLC-style external start of a Yaskawa INFORM job in REMOTE mode](screenshots/system-io.png) **System I/O** — PLC handshake signals, external start in REMOTE (Yaskawa INFORM) |
-| ![Direct teach gizmo on a UR5e](screenshots/direct-teach.png) **Direct teach** — drag the TCP or a link (Universal Robots) | ![Flange-mounted depth camera and a fixed monitoring camera with live previews](screenshots/vision-camera.png) **Vision cameras** — flange and fixed cameras with live previews |
-| ![Claude chat panel next to a Doosan DRL program](screenshots/claude-chat.png) **Claude chat** — write, compile and test-run programs (Doosan DRL) | ![About dialog with version, update check, issue links and sponsor link](screenshots/about.png) **About** — version, one-click update, contact, sponsor |
+| ![KUKA KR 6 R900 running a KRL pick & place program with Touch-Up, Go To, Set PP, and payload/recovery controls](screenshots/main.png) **Main controller** — KRL execution, Touch-Up / Go To / Set PP, payload & path recovery (KUKA) | ![Conveyor cell preset with SafeZone and Interference Zone overlays on an ABB IRB 1200](screenshots/cell-conveyor.png) **Cell layout & zones** — conveyor, feeder, SafeZone & Interference Zone overlays (ABB RAPID) |
+| ![System I/O: a PLC-style external start of a Yaskawa INFORM job in REMOTE mode](screenshots/system-io.png) **System I/O** — PLC handshake signals, external start in REMOTE (Yaskawa INFORM) | ![Direct teach gizmo with Align Face, Step Jog, and User Frame on a UR5e](screenshots/direct-teach.png) **Direct teach & frames** — TCP/link drag, Align Face, Step Jog & User Frame (Universal Robots) |
+| ![Flange-mounted depth camera, overhead monitoring camera, and Virtual Vision Sensor detection](screenshots/vision-camera.png) **Vision cameras & sensor** — live depth/color PiPs and DO-triggered Virtual Vision Sensor | ![Claude chat panel next to a Doosan DRL program](screenshots/claude-chat.png) **Claude chat** — write, compile and test-run programs (Doosan DRL) |
+| ![About dialog v1.4.0 with Air-gapped AI toggle, update check, issue links and sponsor link](screenshots/about.png) **About & Air-gapped mode** — version, air-gapped AI hide toggle, one-click update | |
 
 ## Download
 
