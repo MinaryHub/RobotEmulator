@@ -29,6 +29,7 @@ const app = {
   files: {}, buffers: {}, dirty: new Set(), main: null, openFile: null, cursorLine: 1,
   customGeom: null, jogFrame: 'base', jogStep: 0, ioBase: 1,
   frameEditKind: 'user', uf3pt: { origin: null, xPoint: null, xyPoint: null }, framesSig: '',
+  aioKind: 'ai', ioGroupSig: '', aioSig: '',
 };
 
 const view = new RobotView($('#viewport'));
@@ -86,7 +87,7 @@ function connect() {
   };
 }
 // 서버가 바뀌지 않았다고 생략한 상태 항목은 직전 값으로 채움 (server/index.js STICKY 와 같은 목록)
-const STICKY = ['sysio', 'cell', 'scene', 'safety', 'ioLabels', 'gripperIO', 'cameras', 'faults', 'frames'];
+const STICKY = ['sysio', 'cell', 'scene', 'safety', 'ioLabels', 'gripperIO', 'cameras', 'faults', 'frames', 'zones', 'vision'];
 function withSticky(st) {
   if (app.st) for (const k of STICKY) if (!(k in st) && k in app.st) st[k] = app.st[k];
   return st;
@@ -646,6 +647,8 @@ function renderIO(st) {
   };
   draw($('#ioDO'), st.io.do, 'do');
   draw($('#ioDI'), st.io.di, 'di');
+  renderIoGroups(st);
+  renderAnalogIO(st);
 }
 for (const id of ['#ioDO', '#ioDI']) {
   $(id).onclick = (e) => {
@@ -715,6 +718,82 @@ $('#lblFile').onchange = async (e) => {
   addLog({ t: Date.now(), src: 'system', msg: `I/O 이름표 ${count}개 가져옴${bad ? ` (형식 오류 ${bad}행 건너뜀)` : ''}` });
   showToast(`이름표 ${count}개 가져옴${bad ? ` · 형식 오류 ${bad}행` : ''}`, 'ok');
 };
+
+// ---------------------------------------------------------------- 그룹 I/O (GI/GO) · 아날로그 I/O (AI/AO)
+function renderIoGroups(st) {
+  const el = $('#ioGroupList');
+  if (!el) return;
+  const groups = st.ioGroups || [];
+  const sig = JSON.stringify(groups);
+  if (sig === app.ioGroupSig) return;
+  if (el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
+  app.ioGroupSig = sig;
+  el.innerHTML = groups.length ? groups.map((g, i) => {
+    const end = g.start + g.bits - 1;
+    const hex = '0x' + ((g.value >>> 0) & ((1 << g.bits) - 1)).toString(16).toUpperCase().padStart(Math.ceil(g.bits / 4), '0');
+    const tag = g.dir === 'out' ? 'DO' : 'DI';
+    return `<div class="iogrp-row" data-gi="${i}">
+      <span class="iogrp-id ${g.dir}">${escHtml(g.id)}</span>
+      <span class="iogrp-meta"><b>${escHtml(g.name)}</b><small>${tag}${g.start}..${end} (${g.bits}b · ${hex})</small></span>
+      <input type="number" class="iogrp-val" data-id="${escHtml(g.id)}" value="${g.value}" title="Enter 또는 포커스 해제 시 비트에 반영">
+      <button type="button" class="mini" data-gdel="${i}" title="그룹 삭제">✕</button>
+    </div>`;
+  }).join('') : '<div class="note">정의된 그룹 I/O가 없습니다.</div>';
+  $$('.iogrp-val', el).forEach((inp) => (inp.onchange = () => run('writeGroupIO', { id: inp.dataset.id, value: Number(inp.value) || 0 })));
+  $$('[data-gdel]', el).forEach((b) => (b.onclick = () => {
+    const idx = Number(b.dataset.gdel);
+    const next = (app.st?.ioGroups || []).filter((_, k) => k !== idx).map(({ value, ...g }) => g);
+    run('ioGroups', { list: next });
+  }));
+}
+$('#btnAddGroup').onclick = () => $('#ioGroupForm').classList.toggle('hidden');
+$('#grpCancel').onclick = () => $('#ioGroupForm').classList.add('hidden');
+$('#grpSave').onclick = () => {
+  const dir = $('#grpDir').value === 'out' ? 'out' : 'in';
+  const start = Math.max(1, Math.min(512, Number($('#grpStart').value) || 1));
+  const bits = Math.max(1, Math.min(16, Number($('#grpBits').value) || 8));
+  const cur = (app.st?.ioGroups || []).map(({ value, ...g }) => g);
+  const pfx = dir === 'out' ? 'GO' : 'GI';
+  let n = 1; while (cur.some((g) => g.id === `${pfx}${n}`)) n++;
+  const id = `${pfx}${n}`;
+  const name = $('#grpName').value.trim() || id;
+  cur.push({ id, name, dir, start, bits, signed: false });
+  run('ioGroups', { list: cur });
+  $('#grpName').value = '';
+  $('#ioGroupForm').classList.add('hidden');
+};
+
+function renderAnalogIO(st) {
+  const el = $('#ioAnalog');
+  if (!el || !st.aio) return;
+  const k = app.aioKind;
+  const vals = st.aio[k] || [];
+  const cfg = st.aio.config?.[k] || {};
+  const sig = k + '|' + JSON.stringify(vals) + '|' + JSON.stringify(cfg);
+  if (sig === app.aioSig) return;
+  if (el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
+  app.aioSig = sig;
+  const T = k.toUpperCase();
+  el.innerHTML = vals.map((v, i) => {
+    const ch = i + 1;
+    const c = cfg[ch] || {};
+    const unit = c.unit || 'V';
+    return `<div class="aio-cell" title="${escHtml(c.name || `${T}${ch}`)} (${escHtml(unit)})">
+      <span class="ch">${T}${ch}</span>
+      <input type="number" step="0.1" data-ak="${k}" data-ch="${ch}" value="${Number(v).toFixed(2)}">
+      <span class="u">${escHtml(unit)}</span>
+    </div>`;
+  }).join('');
+  $$('input[data-ch]', el).forEach((inp) => (inp.onchange = () => {
+    run(inp.dataset.ak === 'ao' ? 'setAO' : 'setAI', { n: Number(inp.dataset.ch), v: Number(inp.value) || 0 });
+  }));
+}
+$$('#segAioKind button').forEach((b) => (b.onclick = () => {
+  app.aioKind = b.dataset.v === 'ao' ? 'ao' : 'ai';
+  $$('#segAioKind button').forEach((x) => x.classList.toggle('active', x === b));
+  app.aioSig = '';
+  app.st && renderAnalogIO(app.st);
+}));
 
 // ---------------------------------------------------------------- 통신
 const COMM_INFO = {

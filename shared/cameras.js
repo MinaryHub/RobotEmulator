@@ -63,6 +63,24 @@ export const getCamera = (id) => CAMERAS.find((c) => c.id === id);
 const num = (v, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
 const vec3 = (v, d = [0, 0, 0]) => [0, 1, 2].map((i) => num(Array.isArray(v) ? v[i] : undefined, d[i]));
 
+const clampInt = (v, lo, hi, d) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : d; };
+const clampNum = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : d; };
+
+export function normalizeVision(v, idx = 0) {
+  const s = v && typeof v === 'object' ? v : {};
+  return {
+    enabled: !!s.enabled,
+    triggerDO: clampInt(s.triggerDO, 0, 512, 20 + idx * 4),
+    doneDI: clampInt(s.doneDI, 0, 512, 20 + idx * 4),
+    foundDI: clampInt(s.foundDI, 0, 512, 21 + idx * 4),
+    regBase: clampInt(s.regBase, 0, 240, idx * 10),
+    frame: s.frame === 'user' ? 'user' : 'base',
+    noiseMm: clampNum(s.noiseMm, 0, 50, 0.5),
+    noiseDeg: clampNum(s.noiseDeg, 0, 45, 0.2),
+    latencyMs: clampInt(s.latencyMs, 0, 5000, 80),
+  };
+}
+
 // 외부(UI·프로젝트 파일)에서 받은 카메라 목록을 검증·보정. 모르는 type 은 제외
 export function normalizeCameras(list) {
   if (!Array.isArray(list)) return [];
@@ -74,7 +92,7 @@ export function normalizeCameras(list) {
     let id = String(c.id || '').replace(/[^\w-]/g, '').slice(0, 24) || `cam${out.length + 1}`;
     while (used.has(id)) id += '_';
     used.add(id);
-    out.push({
+    const entry = {
       id,
       type: def.id,
       name: String(c.name || def.name).slice(0, 40),
@@ -84,7 +102,9 @@ export function normalizeCameras(list) {
       mode: def.modes.includes(c.mode) ? c.mode : def.modes[0],
       view: c.view !== false,
       frustum: c.frustum !== false,
-    });
+    };
+    if (c.vision && typeof c.vision === 'object') entry.vision = normalizeVision(c.vision, out.length);
+    out.push(entry);
   }
   return out;
 }

@@ -60,6 +60,9 @@ export const COMMANDS = { 1: 'servoOn', 2: 'servoOff', 3: 'start', 4: 'hold', 5:
 export const IR_SIZE = 100;
 export const HR_USER_BASE = 100;
 export const HR_USER_COUNT = 256;
+export const HR_AI_BASE = 356;   // 356..371: AI 1..16 (int16 = value × 100)
+export const HR_AO_BASE = 372;   // 372..387: AO 1..16 (int16 = value × 100)
+export const HR_TOTAL = HR_AO_BASE + 16;
 
 // 예외 코드
 const EX_FUNC = 1, EX_ADDR = 2, EX_VALUE = 3, EX_FAIL = 4;
@@ -124,6 +127,11 @@ export function inputRegisters(ctrl, needPose = true) {
   putU32(r, 52, (Number(ctrl.cycleStats?.current?.elapsed) || 0) * 1000);
   r[60] = Math.round(Math.max(0, Math.min(1, Number(ctrl.grip?.pos) || 0)) * 100);
   r[61] = ctrl.grip?.holding ? 1 : 0;
+  // 아날로그 출력 AO 1..16 (IR 64..79), 아날로그 입력 AI 1..16 (IR 80..95) — int16 (값 × 100)
+  for (let i = 0; i < 16; i++) {
+    r[64 + i] = toInt16((ctrl.getAO?.(i + 1) ?? 0) * 100) & 0xFFFF;
+    r[80 + i] = toInt16((ctrl.getAI?.(i + 1) ?? 0) * 100) & 0xFFFF;
+  }
   return r;
 }
 
@@ -178,12 +186,14 @@ export async function start(ctrl, opts = {}) {
 
   // --- 레지스터 영역
   const readHolding = (addr, qty) => {
-    checkRange(addr, qty, 125, HR_USER_BASE + HR_USER_COUNT);
+    checkRange(addr, qty, 125, HR_TOTAL);
     const out = [];
     for (let a = addr; a < addr + qty; a++) {
       if (a === 0) out.push(state.lastCmd);
       else if (a === 1) out.push(Math.round(ctrl.override) & 0xFFFF);
       else if (a === 2) out.push(state.lastResult);
+      else if (a >= HR_AI_BASE && a < HR_AO_BASE) out.push(toInt16((ctrl.getAI?.(a - HR_AI_BASE + 1) ?? 0) * 100) & 0xFFFF);
+      else if (a >= HR_AO_BASE && a < HR_TOTAL) out.push(toInt16((ctrl.getAO?.(a - HR_AO_BASE + 1) ?? 0) * 100) & 0xFFFF);
       else if (a >= HR_USER_BASE) out.push(toInt16(ctrl.regs.get(`MB:${a - HR_USER_BASE}`)) & 0xFFFF);
       else out.push(0);
     }
@@ -193,7 +203,7 @@ export async function start(ctrl, opts = {}) {
   const writeHolding = async (addr, vals) => {
     for (let a = addr; a < addr + vals.length; a++) {
       if (a >= 3 && a < HR_USER_BASE) throw new MbEx(EX_ADDR, `예약 주소 쓰기 ${a}`);
-      if (a >= HR_USER_BASE + HR_USER_COUNT) throw new MbEx(EX_ADDR, `주소 범위 오류 ${a}`);
+      if (a >= HR_TOTAL) throw new MbEx(EX_ADDR, `주소 범위 오류 ${a}`);
       if (a === 0 && !(vals[a - addr] in COMMANDS) && vals[a - addr] !== 0) throw new MbEx(EX_VALUE, `알 수 없는 명령 코드 ${vals[a - addr]}`);
     }
     let regsChanged = false, pendingCmd = null;
@@ -202,6 +212,8 @@ export async function start(ctrl, opts = {}) {
       if (a === 0) pendingCmd = v;
       else if (a === 1) ctrl.setOverride(Math.max(1, Math.min(100, v)));
       else if (a === 2) { /* 결과 레지스터: 쓰기 무시 */ }
+      else if (a >= HR_AI_BASE && a < HR_AO_BASE) ctrl.setAI?.(a - HR_AI_BASE + 1, toInt16(v) / 100);
+      else if (a >= HR_AO_BASE && a < HR_TOTAL) ctrl.setAO?.(a - HR_AO_BASE + 1, toInt16(v) / 100);
       else { ctrl.regs.set(`MB:${a - HR_USER_BASE}`, toInt16(v)); regsChanged = true; }
     }
     if (regsChanged) ctrl.emitState();
@@ -247,7 +259,7 @@ export async function start(ctrl, opts = {}) {
       case 6: {
         need(5);
         const addr = pdu.readUInt16BE(1), v = pdu.readUInt16BE(3);
-        if (addr >= HR_USER_BASE + HR_USER_COUNT) throw new MbEx(EX_ADDR, `주소 범위 오류 ${addr}`);
+        if (addr >= HR_TOTAL) throw new MbEx(EX_ADDR, `주소 범위 오류 ${addr}`);
         await writeHolding(addr, [v]);
         return Buffer.from(pdu.subarray(0, 5));
       }
@@ -265,7 +277,7 @@ export async function start(ctrl, opts = {}) {
         need(6);
         const addr = pdu.readUInt16BE(1), qty = pdu.readUInt16BE(3), bc = pdu[5];
         if (qty < 1 || qty > 123 || bc !== qty * 2 || pdu.length < 6 + bc) throw new MbEx(EX_VALUE, '수량/바이트 수 오류');
-        if (addr + qty > HR_USER_BASE + HR_USER_COUNT) throw new MbEx(EX_ADDR, `주소 범위 오류 ${addr}+${qty}`);
+        if (addr + qty > HR_TOTAL) throw new MbEx(EX_ADDR, `주소 범위 오류 ${addr}+${qty}`);
         const vals = []; for (let i = 0; i < qty; i++) vals.push(pdu.readUInt16BE(6 + i * 2));
         await writeHolding(addr, vals);
         return Buffer.from(pdu.subarray(0, 5));
@@ -275,7 +287,7 @@ export async function start(ctrl, opts = {}) {
         const rAddr = pdu.readUInt16BE(1), rQty = pdu.readUInt16BE(3);
         const wAddr = pdu.readUInt16BE(5), wQty = pdu.readUInt16BE(7), bc = pdu[9];
         if (rQty < 1 || rQty > 125 || wQty < 1 || wQty > 121 || bc !== wQty * 2 || pdu.length < 10 + bc) throw new MbEx(EX_VALUE, '수량/바이트 수 오류');
-        if (wAddr + wQty > HR_USER_BASE + HR_USER_COUNT || rAddr + rQty > HR_USER_BASE + HR_USER_COUNT) throw new MbEx(EX_ADDR, '주소 범위 오류');
+        if (wAddr + wQty > HR_TOTAL || rAddr + rQty > HR_TOTAL) throw new MbEx(EX_ADDR, '주소 범위 오류');
         const vals = []; for (let i = 0; i < wQty; i++) vals.push(pdu.readUInt16BE(10 + i * 2));
         await writeHolding(wAddr, vals); // 규격: 쓰기 먼저, 읽기 나중
         return regsResp(fc, readHolding(rAddr, rQty));

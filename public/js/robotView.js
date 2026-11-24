@@ -85,6 +85,10 @@ export class RobotView {
     this.userAxes.visible = false;
     this.userAxes.layers.set(HELPER_LAYER);
     this.world.add(this.userAxes);
+    this.zoneGroup = new THREE.Group();
+    this.zoneGroup.layers.set(HELPER_LAYER);
+    this.world.add(this.zoneGroup);
+    this._zoneSig = '';
     this.objMeshes = new Map();
 
     // 프레임당 할당을 줄이기 위한 재사용 벡터·행렬
@@ -405,6 +409,7 @@ export class RobotView {
     }
     for (const [id, mesh] of this.objMeshes) if (!seen.has(id)) { this.objGroup.remove(mesh); disposeTree(mesh); this.objMeshes.delete(id); movedShadow = true; }
     if (st.cell) this.updateCell(st);
+    if (st.zones) this.updateZones(st.zones);
     this.markDirty(movedShadow);
   }
 
@@ -412,6 +417,32 @@ export class RobotView {
   updateCell(st) {
     if (!this.cellDevices) this.cellDevices = new CellMeshes(this);
     this.cellDevices.update(st);
+  }
+
+  // 안전 영역(SafeZone) · 간섭 구역(Interference Zone) 3D 표시 (HELPER_LAYER → 비전 영상 제외)
+  updateZones(zones) {
+    const list = Array.isArray(zones) ? zones : [];
+    const sig = JSON.stringify(list.map((z) => [z.id, z.kind, z.shape, z.enabled, z.p, z.size, !!z.active]));
+    if (sig === this._zoneSig) return;
+    this._zoneSig = sig;
+    clearGroup(this.zoneGroup);
+    for (const z of list) {
+      if (!z.enabled) continue;
+      const isSafe = z.kind === 'safe';
+      const col = isSafe ? 0xff3b30 : (z.active ? 0xf59e0b : 0x38bdf8);
+      const geo = z.shape === 'cylinder'
+        ? (() => { const g = new THREE.CylinderGeometry(z.size[0] / 2, z.size[0] / 2, z.size[2], 24); g.rotateX(Math.PI / 2); return g; })()
+        : new THREE.BoxGeometry(z.size[0], z.size[1], z.size[2]);
+      const mat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: z.active ? 0.24 : 0.10, depthWrite: false, side: THREE.DoubleSide });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(z.p[0], z.p[1], z.p[2]);
+      mesh.layers.set(HELPER_LAYER);
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: z.active ? 0.95 : 0.6 }));
+      edges.layers.set(HELPER_LAYER);
+      mesh.add(edges);
+      this.zoneGroup.add(mesh);
+    }
+    this.markDirty(false);
   }
 
   // 작업 영역: 관절 한계 내 무작위 자세의 손목 중심(P점) 분포 — 데이터시트의 동작 범위도와 같은 기준

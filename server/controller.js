@@ -16,8 +16,11 @@ import { LANGS } from './lang/index.js';
 import { Cell } from './cell.js';
 import { localizeFiles } from './lang/examples-en.js';
 import { vendorAlarm } from '../shared/alarms.js';
+import { normalizeZones, robotInZone } from '../shared/zones.js';
+import { VisionEngine } from './vision.js';
 
 const NIO = 512;
+export const NAIO = 16;
 const TICK_MS = 8;
 const SUB_MAX_S = 0.010;   // 배속 시 한 서브스텝의 최대 시뮬레이션 시간 (간섭 체크·블렌딩 정확도 유지)
 const MAX_SUB = 100;
@@ -29,6 +32,10 @@ const defaultFrames = () => ({
   tools: Array.from({ length: N_FRAMES }, (_, i) => ({ id: i + 1, name: `Tool ${i + 1}`, pose: [0, 0, 0, 0, 0, 0] })),
   users: Array.from({ length: N_FRAMES }, (_, i) => ({ id: i + 1, name: `User ${i + 1}`, pose: [0, 0, 0, 0, 0, 0] })),
 });
+const defaultIoGroups = () => ([
+  { id: 'GI1', name: '품종 코드', dir: 'in', start: 17, bits: 8, signed: false },
+  { id: 'GO1', name: '공정 코드', dir: 'out', start: 17, bits: 8, signed: false },
+]);
 // 명령 거부 사유 (code 는 Modbus 입력 레지스터 7 / OPC UA LastRejectCode 로도 노출)
 export const REJECT = {
   NOT_REMOTE: { code: 1, reason: '외부 명령은 REMOTE 모드에서만 허용됩니다' },
@@ -58,6 +65,9 @@ export class Controller extends EventEmitter {
     super();
     this.setMaxListeners(100);
     this.io = { do: new Array(NIO + 1).fill(false), di: new Array(NIO + 1).fill(false) };
+    this.aio = { ai: new Array(NAIO + 1).fill(0), ao: new Array(NAIO + 1).fill(0) };
+    this.aioConfig = { ai: {}, ao: {} }; // { n: { name, unit, min, max } }
+    this.ioGroups = defaultIoGroups();
     this.ioNames = { do: {}, di: {} };
     this.gripperIO = { close: 1, open: 2, fbClosed: 1, fbOpen: 2, fbPart: 3 };
     this.servo = false;
@@ -72,7 +82,9 @@ export class Controller extends EventEmitter {
     this.autoResetScene = true; // 프로그램을 처음부터 시작할 때 공작물 초기 배치로 복원
     this.collisionMode = 'stop'; // off | warn(표시만) | stop(알람 정지)
     this.collision = { hit: false, pairs: [] };
-    this.cameras = [];         // 장착 비전 카메라 (shared/cameras.js normalizeCameras 형식) — 렌더링은 브라우저
+    this.zones = [];           // 안전 영역(SafeZone) · 간섭 구역(Interference Zone)
+    this.zoneStates = {};      // zoneId → boolean (로봇 진입 여부)
+    this.cameras = [];         // 장착 비전 카메라 (shared/cameras.js normalizeCameras 형식)
     this.jog = null;
     this.files = new Map();    // 가상 컨트롤러 저장소: 파일명 → 내용
     this.main = null;          // 메인 프로그램(잡) 이름
@@ -88,7 +100,7 @@ export class Controller extends EventEmitter {
     this._heldSince = 0;
     this._dirty = true;
     // WebSocket stateDelta 최적화용 필드별 리비전 카운터 (매 틱 JSON.stringify 회피)
-    this._rev = { sysio: 1, cell: 1, scene: 1, safety: 1, ioLabels: 1, gripperIO: 1, cameras: 1, faults: 1, frames: 1 };
+    this._rev = { sysio: 1, cell: 1, scene: 1, safety: 1, ioLabels: 1, gripperIO: 1, cameras: 1, faults: 1, frames: 1, zones: 1, vision: 1 };
     // 고장 주입 상태 (ROADMAP-SI P1-1)
     this.faults = {
       gripperFail: false,
@@ -99,7 +111,8 @@ export class Controller extends EventEmitter {
       commDropPct: 0,
     };
     this.cell = new Cell(this);
-    this.sysio = new SystemIO(this);  // 시스템 I/O (전용 입출력, 기본 사용 안 함)  // 셀 레이아웃 + 주변기기 (resetScene 보다 먼저)
+    this.sysio = new SystemIO(this);  // 시스템 I/O (전용 입출력, 기본 사용 안 함)
+    this.vision = new VisionEngine(this); // 가상 비전 센서 (DO 트리거 → 프러스텀 공작물 검출)
     this.setGripper('robotiq-2f85');
     this.setRobot('yaskawa-gp7');
     this._last = performance.now();
@@ -382,11 +395,14 @@ export class Controller extends EventEmitter {
       activeUserFrame: effBase ? { p: effBase.p, q: quatFromR(effBase.R) } : null,
       grip: { pos: this.grip.pos, closed: this.grip.closed, holding: this.grip.holding?.id ?? null },
       io: { do: doOn, di: diOn, names: this.ioNames }, gripperIO: this.gripperIO,
+      aio: { ai: this.aio.ai.slice(1), ao: this.aio.ao.slice(1), config: this.aioConfig },
+      ioGroups: this.ioGroups.map((g) => ({ ...g, value: this.readGroupIO(g.id) })),
       servo: this.servo, mode: this.mode, override: this.override, held: this.held,
       interlock: this.interlock, safety: { ...this.safety, estop: this.estopActive }, lastReject: this.lastReject,
       ioLabels: this.ioLabels, sysio: this.sysio.snapshot(), faults: this.faults,
       moving: this.segs.length > 0 || !!this.jog, blendEnabled: this.blendEnabled,
       collision: this.collision, collisionMode: this.collisionMode, autoResetScene: this.autoResetScene,
+      zones: this.zones.map((z) => ({ ...z, active: !!this.zoneStates[z.id] })),
       breakpoints: [...this.breakpoints], simMs: Math.round(this.simMs), timeScale: this.timeScale,
       lockTimeScaleOnExt: this.lockTimeScaleOnExt, extClients,
       alarms: this.alarms,
@@ -404,6 +420,7 @@ export class Controller extends EventEmitter {
       scene: this.scene,
       cell: this.cell.snapshot(),
       cameras: this.cameras,
+      vision: this.vision?.results || {},
     };
   }
 
@@ -634,6 +651,121 @@ export class Controller extends EventEmitter {
     if (!n || names[n]) { n = 101; while (names[n]) n++; }
     names[n] = key;
     return n;
+  }
+
+  // ------------------------------------------------------------ 아날로그 I/O (AI/AO 1..16)
+  getAI(n) { const k = Number(n); return k >= 1 && k <= NAIO ? Number(this.aio.ai[k]) || 0 : 0; }
+  getAO(n) { const k = Number(n); return k >= 1 && k <= NAIO ? Number(this.aio.ao[k]) || 0 : 0; }
+  setAI(n, val) {
+    const k = Number(n), v = Number(val);
+    if (!Number.isInteger(k) || k < 1 || k > NAIO) throw new Error(`AI 채널 범위 초과: ${n} (1~${NAIO})`);
+    if (!Number.isFinite(v)) throw new Error(`AI 값이 올바르지 않습니다: ${val}`);
+    const clamped = Math.max(-327.68, Math.min(327.67, +v.toFixed(4)));
+    if (this.aio.ai[k] === clamped) return;
+    this.aio.ai[k] = clamped;
+    this.emit('aio', { type: 'ai', n: k, v: clamped });
+    this.emitState();
+  }
+  setAO(n, val) {
+    const k = Number(n), v = Number(val);
+    if (!Number.isInteger(k) || k < 1 || k > NAIO) throw new Error(`AO 채널 범위 초과: ${n} (1~${NAIO})`);
+    if (!Number.isFinite(v)) throw new Error(`AO 값이 올바르지 않습니다: ${val}`);
+    const clamped = Math.max(-327.68, Math.min(327.67, +v.toFixed(4)));
+    if (this.aio.ao[k] === clamped) return;
+    this.aio.ao[k] = clamped;
+    this.emit('aio', { type: 'ao', n: k, v: clamped });
+    this.emitState();
+  }
+  setAioConfig(type, n, cfg = {}) {
+    if (type !== 'ai' && type !== 'ao') throw new Error('type 은 ai 또는 ao');
+    const k = Number(n);
+    if (!Number.isInteger(k) || k < 1 || k > NAIO) throw new Error(`채널 범위 초과: ${n}`);
+    const name = String(cfg?.name ?? '').trim().slice(0, 32);
+    const unit = String(cfg?.unit ?? 'V').trim().slice(0, 12) || 'V';
+    const min = Number.isFinite(Number(cfg?.min)) ? Number(cfg.min) : 0;
+    const max = Number.isFinite(Number(cfg?.max)) ? Number(cfg.max) : 10;
+    if (!name && unit === 'V' && min === 0 && max === 10) delete this.aioConfig[type][k];
+    else this.aioConfig[type][k] = { name, unit, min, max: max > min ? max : min + 1 };
+    this.emitState();
+  }
+
+  // ------------------------------------------------------------ 그룹 I/O (GI/GO — DI/DO 비트 매핑)
+  setIoGroups(list) {
+    if (!Array.isArray(list)) return this.ioGroups;
+    const out = [], used = new Set();
+    for (const g of list.slice(0, 32)) {
+      if (!g || typeof g !== 'object') continue;
+      const dir = g.dir === 'out' ? 'out' : 'in';
+      let id = String(g.id || '').replace(/[^\w-]/g, '').slice(0, 16) || `${dir === 'in' ? 'GI' : 'GO'}${out.length + 1}`;
+      while (used.has(id)) id += '_';
+      used.add(id);
+      const bits = Math.max(1, Math.min(16, Math.round(Number(g.bits) || 8)));
+      const start = Math.max(1, Math.min(NIO - bits + 1, Math.round(Number(g.start) || 1)));
+      out.push({ id, name: String(g.name || id).trim().slice(0, 32), dir, start, bits, signed: !!g.signed });
+    }
+    this.ioGroups = out;
+    this.emitState();
+    return this.ioGroups;
+  }
+  readGroupIO(id) {
+    const g = this.ioGroups.find((x) => x.id === id);
+    if (!g) return 0;
+    let v = 0;
+    for (let b = 0; b < g.bits; b++) {
+      const bit = g.dir === 'out' ? this.getDO(g.start + b) : this.getDI(g.start + b);
+      if (bit) v |= 1 << b;
+    }
+    if (g.signed && g.bits < 32 && (v & (1 << (g.bits - 1)))) v -= 1 << g.bits;
+    return v;
+  }
+  writeGroupIO(id, value) {
+    const g = this.ioGroups.find((x) => x.id === id);
+    if (!g) throw new Error(`알 수 없는 그룹 I/O: ${id}`);
+    const n = Math.trunc(Number(value));
+    if (!Number.isFinite(n)) throw new Error(`그룹 I/O 값이 숫자가 아닙니다: ${value}`);
+    const mask = (1 << g.bits) - 1;
+    const u = n & mask;
+    if (g.dir === 'out') {
+      for (let b = 0; b < g.bits; b++) this.setDO(g.start + b, !!(u & (1 << b)));
+    } else {
+      const batch = [];
+      for (let b = 0; b < g.bits; b++) batch.push([g.start + b, !!(u & (1 << b))]);
+      this.setDIBatch(batch);
+    }
+    return this.readGroupIO(id);
+  }
+
+  // ------------------------------------------------------------ 안전 영역(SafeZone) · 간섭 구역(World Zone)
+  setZones(list) {
+    this.zones = normalizeZones(list);
+    this.zoneStates = {};
+    this._bumpRev('zones');
+    this.checkZonesNow(true);
+    this.log('system', `안전/간섭 구역 ${this.zones.length}개 설정`);
+    this.emitState();
+    return this.zones;
+  }
+  checkZonesNow(initSync = false) {
+    if (!this.zones?.length || !this.robot || !this.joints) return;
+    let changed = false;
+    for (const z of this.zones) {
+      const prev = !!this.zoneStates[z.id];
+      const inside = z.enabled ? robotInZone(this.robot, this.joints, this.tool, z) : false;
+      if (inside !== prev) { this.zoneStates[z.id] = inside; changed = true; }
+      if (z.outDO > 0 && z.enabled && (inside !== prev || initSync)) {
+        this.setDO(z.outDO, z.invertDO ? !inside : inside);
+      }
+      if (z.kind === 'safe' && z.enabled && inside && !prev && !initSync) {
+        this.alarm('SAFE_ZONE', `안전 영역 진입 금지: ${z.name} (${z.id})`);
+        if (this.vm && (this.vm.status === 'running' || this.vm.status === 'paused' || this.vm._finishing)) this.vm.abort();
+      }
+    }
+    if (changed) { this._bumpRev('zones'); this.emitState(); }
+  }
+
+  // ------------------------------------------------------------ 가상 비전 센서 트리거
+  triggerVision(camId, opts = {}) {
+    return this.vision.trigger(camId, opts);
   }
 
   // ------------------------------------------------------------ 그리퍼
@@ -924,6 +1056,7 @@ export class Controller extends EventEmitter {
     this.joints = [...j];
     this.updateHeld();
     this.checkCollisionNow();
+    this.checkZonesNow();
     this.emitState();
     return true;
   }
@@ -946,6 +1079,12 @@ export class Controller extends EventEmitter {
       const ax = j.findIndex((v, i) => v < this.robot.limits[i][0] || v > this.robot.limits[i][1]);
       return { ok: false, reason: `소프트 리밋: ${ax + 1}축 (${j[ax].toFixed(1)}°)` };
     }
+    // SafeZone 진입 금지 사전 검사 (이미 내부에 있는 경우 빠져나오는 이동은 허용)
+    for (const z of this.zones || []) {
+      if (z.kind === 'safe' && z.enabled && !this.zoneStates[z.id] && robotInZone(this.robot, j, this.tool, z)) {
+        return { ok: false, reason: `안전 영역 진입 금지: ${z.name}` };
+      }
+    }
     let preCol = null;
     if (this.collisionMode === 'stop') {
       const held = this.grip?.holding?.id;
@@ -957,6 +1096,7 @@ export class Controller extends EventEmitter {
     this.updateHeld();
     if (preCol) this.collision = { hit: false, pairs: [] };
     else this.checkCollisionNow();
+    this.checkZonesNow();
     this.emitState();
     return { ok: true, joints: this.joints };
   }
@@ -1079,7 +1219,7 @@ export class Controller extends EventEmitter {
     // 조그는 사람이 조작하므로 배속과 무관하게 실시간
     if (this.jog && this.servo && !this.segs.length) {
       if (now > this.jog.until) this.jog = null;
-      else { this.applyJog(dt); moved = true; this.updateHeld(); this.checkCollisionNow(); }
+      else { this.applyJog(dt); moved = true; this.updateHeld(); this.checkCollisionNow(); this.checkZonesNow(); }
     }
     const simDt = dt * this.timeScale;
     const n = Math.max(1, Math.min(MAX_SUB, Math.ceil(simDt / SUB_MAX_S - 1e-9)));
@@ -1135,7 +1275,7 @@ export class Controller extends EventEmitter {
       this.syncGripperFeedback();
     }
     if (this.cell.tick(dt)) moved = true;   // 주변기기 (컨베이어/피더/센서/실린더/배출구)
-    if (moved) { this.updateHeld(); this.checkCollisionNow(); }
+    if (moved) { this.updateHeld(); this.checkCollisionNow(); this.checkZonesNow(); }
     this._processWaiters();
     this.sysio.update();
     return moved;

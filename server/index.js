@@ -161,6 +161,13 @@ async function handleCmd(m) {
       return;
     case 'setDO': ctrl.setDO(m.n, m.v); return;
     case 'setDI': ctrl.setDI(m.n, m.v); return;
+    case 'setAI': ctrl.setAI(m.n, m.v); return;
+    case 'setAO': ctrl.setAO(m.n, m.v); return;
+    case 'aioConfig': ctrl.setAioConfig(m.type, m.n, m); return;
+    case 'ioGroups': return { ioGroups: ctrl.setIoGroups(m.list) };
+    case 'writeGroupIO': return { value: ctrl.writeGroupIO(m.id, m.value) };
+    case 'zones': return { zones: ctrl.setZones(m.list) };
+    case 'visionTrigger': return ctrl.triggerVision(m.camId, { deterministic: !!m.deterministic });
     case 'gripperIO': {   // { map: { close, open, fbClosed, fbOpen, fbPart } } — 번호는 정수 1~512
       const next = { ...ctrl.gripperIO };
       for (const [k, v] of Object.entries(m.map || {})) {
@@ -436,7 +443,7 @@ wss.on('connection', (ws) => {
 // 상태 브로드캐스트 (최대 30Hz)
 //  자주 바뀌지 않는 큰 항목은 리비전 카운터(ctrl._rev)로 O(1) 비교 후 직전 전송과 같으면 뺀다 (app.js STICKY).
 //  접속된 웹 클라이언트가 없으면 스냅샷 생성 자체를 생략한다.
-const STICKY = ['sysio', 'cell', 'scene', 'safety', 'ioLabels', 'gripperIO', 'cameras', 'faults', 'frames'];
+const STICKY = ['sysio', 'cell', 'scene', 'safety', 'ioLabels', 'gripperIO', 'cameras', 'faults', 'frames', 'zones', 'vision'];
 const lastStickyRev = {};
 function stateDelta(st) {
   const rev = ctrl._rev;

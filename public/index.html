@@ -215,6 +215,22 @@
           <input type="file" id="lblFile" accept=".csv,text/csv" hidden>
         </div>
         <div class="note">이름표는 신호 타임라인에도 표시되고 프로젝트에 저장됩니다. 시스템 I/O 에 할당된 번호는 시스템 신호 이름이 우선 표시됩니다.</div>
+        <h3>그룹 I/O (GI / GO) <button id="btnAddGroup" class="mini" type="button">＋ 그룹 추가</button></h3>
+        <div id="ioGroupList" class="iogrp-list"></div>
+        <div id="ioGroupForm" class="ioedit hidden">
+          <div class="grid3">
+            <label>방향<select id="grpDir"><option value="in">GI (입력 DI)</option><option value="out">GO (출력 DO)</option></select></label>
+            <label>시작 번호<input id="grpStart" type="number" min="1" max="512" value="25"></label>
+            <label>비트 수<input id="grpBits" type="number" min="1" max="16" value="8"></label>
+          </div>
+          <input id="grpName" type="text" placeholder="그룹 이름 (예: 품종 번호)" maxlength="32">
+          <div class="btns"><button id="grpSave" class="primary" type="button">추가</button><button id="grpCancel" type="button">취소</button></div>
+        </div>
+        <h3>아날로그 I/O (AI / AO) <small>Modbus HR 356~387 · OPC UA</small></h3>
+        <div class="row io-page">
+          <div class="seg small" id="segAioKind"><button data-v="ai" class="active">AI 1..16 (입력)</button><button data-v="ao">AO 1..16 (출력)</button></div>
+        </div>
+        <div id="ioAnalog" class="aio-grid"></div>
       </section>
 
       <section id="tSys" class="tab"><!-- public/js/sysioPanel.js 가 채움 --></section>

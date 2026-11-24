@@ -81,6 +81,12 @@ export function initCellPanel(opts) {
     <div class="row btns addbtns">
       ${['obstacle', 'sensor', 'conveyor', 'feeder', 'cylinder', 'sink', 'pallet', 'table', 'workpiece'].map((k) => `<button data-add="${k}">＋ ${KIND_NAME[k]}</button>`).join('')}
     </div>
+    <h3>안전·간섭 구역 (SafeZone / World Zone)</h3>
+    <div class="row btns addbtns">
+      <button id="zoneAddInterf" title="로봇이 구역에 진입하면 지정 DO를 자동 ON (프레스·컨베이어 인터록)">＋ 간섭 구역 (DO)</button>
+      <button id="zoneAddSafe" title="로봇 진입 금지 구역 — 진입 시 즉시 정지 + SAFE_ZONE 알람">＋ 안전 영역 (정지)</button>
+    </div>
+    <div id="zoneList"></div>
     <h3>장치 / 항목 <small>값 변경 시 즉시 적용 (사용자 정의 레이아웃)</small></h3>
     <div id="cellList"></div>
     <div class="note">좌표는 로봇 베이스 기준 mm (Z 위쪽). 프리셋은 로봇 도달거리에 맞춰 배치되며 로봇을 바꾸면 다시 계산됩니다. 값을 수정하면 사용자 정의 레이아웃(절대 좌표)이 됩니다.
@@ -88,6 +94,23 @@ export function initCellPanel(opts) {
 
   const cmd = (op, args = {}) => ctx.cmd('cell', { op, ...args }).catch(() => { force = true; const st = ctx.getState(); st && renderCellPanel(st); });
   $('#cellApply', root).onclick = () => cmd('preset', { id: $('#cellPreset', root).value });
+  const addZone = (kind) => {
+    const cur = (ctx.getState()?.zones || []).map(({ active, ...z }) => ({ ...z, p: [...z.p], size: [...z.size] }));
+    const n = cur.length + 1;
+    const t = ctx.getState()?.scene?.table || { x: 400, y: 0, z: 0 };
+    cur.push({
+      id: `zone${n}`,
+      name: kind === 'safe' ? `금지 구역 ${n}` : `간섭 구역 ${n}`,
+      kind, shape: 'box', enabled: true,
+      p: [Math.round(t.x || 400), kind === 'safe' ? -300 : 250, 200],
+      size: [300, 300, 350],
+      outDO: kind === 'interference' ? 30 + cur.length : 0,
+      invertDO: false,
+    });
+    ctx.cmd('zones', { list: cur }).catch(() => {});
+  };
+  $('#zoneAddInterf', root).onclick = () => addZone('interference');
+  $('#zoneAddSafe', root).onclick = () => addZone('safe');
   $('#cellReset', root).onclick = () => cmd('resetObjects');
   $('#cellExport', root).onclick = () => {
     const L = ctx.getState()?.cell?.layout;
@@ -213,9 +236,65 @@ function modelStatus(m, hit) {
 
 let lastCellRef = null;
 let lastHitSig = '';
+let lastZoneSig = '';
+function renderZones(st) {
+  const zEl = $('#zoneList', root);
+  if (!zEl) return;
+  const zones = st.zones || [];
+  const sig = JSON.stringify(zones);
+  if (sig === lastZoneSig) return;
+  const editing = zEl.contains(document.activeElement) && /INPUT|SELECT/.test(document.activeElement.tagName);
+  if (editing) return;
+  lastZoneSig = sig;
+  if (!zones.length) {
+    zEl.innerHTML = '<div class="note">등록된 안전·간섭 구역이 없습니다.</div>';
+    return;
+  }
+  const sendZones = (next) => ctx.cmd('zones', { list: next.map(({ active, ...z }) => z) }).catch(() => {});
+  const copy = zones.map((z) => ({ ...z, p: [...z.p], size: [...z.size] }));
+  zEl.innerHTML = copy.map((z, i) => `
+    <div class="cell-item ${z.kind === 'safe' ? 'zone-safe' : 'zone-interf'} ${z.active ? 'zone-active' : ''}">
+      <div class="hd">
+        <input type="checkbox" data-zi="${i}" data-zk="enabled" ${z.enabled ? 'checked' : ''} title="구역 활성화">
+        <span class="k">${z.kind === 'safe' ? '안전 정지' : '간섭 DO'}</span>
+        <b>${esc(z.name)}</b>
+        <span class="st">${z.active ? '<span class="on">● 진입</span>' : '○ 외부'}</span>
+        <button data-zi="${i}" data-za="del" title="삭제">삭제</button>
+      </div>
+      <div class="grid3">
+        <label>이름<input type="text" data-zi="${i}" data-zk="name" value="${esc(z.name)}" maxlength="32"></label>
+        <label>종류<select data-zi="${i}" data-zk="kind"><option value="interference" ${z.kind === 'interference' ? 'selected' : ''}>간섭 DO</option><option value="safe" ${z.kind === 'safe' ? 'selected' : ''}>안전 정지</option></select></label>
+        <label>모양<select data-zi="${i}" data-zk="shape"><option value="box" ${z.shape === 'box' ? 'selected' : ''}>박스</option><option value="cylinder" ${z.shape === 'cylinder' ? 'selected' : ''}>원통</option></select></label>
+        <label>중심 X<input type="number" step="10" data-zi="${i}" data-zk="p" data-j="0" value="${z.p[0]}"></label>
+        <label>중심 Y<input type="number" step="10" data-zi="${i}" data-zk="p" data-j="1" value="${z.p[1]}"></label>
+        <label>중심 Z<input type="number" step="10" data-zi="${i}" data-zk="p" data-j="2" value="${z.p[2]}"></label>
+        <label>${z.shape === 'cylinder' ? '지름' : '폭 W'}<input type="number" step="10" min="20" data-zi="${i}" data-zk="size" data-j="0" value="${z.size[0]}"></label>
+        <label>${z.shape === 'cylinder' ? '지름 Y' : '깊이 D'}<input type="number" step="10" min="20" data-zi="${i}" data-zk="size" data-j="1" value="${z.size[1]}" ${z.shape === 'cylinder' ? 'disabled' : ''}></label>
+        <label>높이 H<input type="number" step="10" min="20" data-zi="${i}" data-zk="size" data-j="2" value="${z.size[2]}"></label>
+        <label>출력 DO<input type="number" min="0" max="512" data-zi="${i}" data-zk="outDO" value="${z.outDO || 0}"></label>
+        <label>반전(밖=ON)<input type="checkbox" data-zi="${i}" data-zk="invertDO" ${z.invertDO ? 'checked' : ''}></label>
+      </div>
+    </div>`).join('');
+  $$('[data-zk]', zEl).forEach((el) => (el.onchange = () => {
+    const z = copy[Number(el.dataset.zi)], k = el.dataset.zk;
+    if (k === 'p' || k === 'size') {
+      z[k][Number(el.dataset.j)] = Number(el.value) || 0;
+      if (k === 'size' && z.shape === 'cylinder' && el.dataset.j === '0') z.size[1] = z.size[0];
+    } else if (el.type === 'checkbox') z[k] = el.checked;
+    else if (el.type === 'number') z[k] = Number(el.value) || 0;
+    else z[k] = el.value;
+    sendZones(copy);
+  }));
+  $$('button[data-za="del"]', zEl).forEach((b) => (b.onclick = () => {
+    const i = Number(b.dataset.zi);
+    sendZones(copy.filter((_, idx) => idx !== i));
+  }));
+}
+
 export function renderCellPanel(st) {
   if (!root || !st?.cell?.layout) return;
   if (!root.classList.contains('active')) return;
+  renderZones(st);
   const hitArr = (st.collision?.pairs || []).map((p) => p.b);
   const hitSig = hitArr.join(',');
   if (!force && st.cell === lastCellRef && hitSig === lastHitSig) return;
