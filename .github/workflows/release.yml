@@ -1,0 +1,84 @@
+name: release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '대상 릴리스 태그 (예: v1.3.0, 비우면 현재 package.json 버전)'
+        required: false
+        default: ''
+      include_android:
+        description: 'Android APK 포함 (서명 시크릿 미설정 시 디버그 키 서명)'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  package-and-upload:
+    name: Build & upload release assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Resolve target tag
+        id: meta
+        env:
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ -n "$EVENT_TAG" ]; then
+            TAG="$EVENT_TAG"
+          elif [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG=""
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.meta.outputs.tag || github.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Verify release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER=$(node -p "require('./package.json').version")
+          TAG="v${VER}"
+          echo "TARGET_TAG=${TAG}" >> "$GITHUB_ENV"
+          gh release view "$TAG" --json tagName >/dev/null
+
+      - name: Build desktop portable packages
+        run: npm run package:desktop
+
+      - name: Setup Android SDK/NDK & build APK (optional)
+        env:
+          INCLUDE_ANDROID: ${{ inputs.include_android }}
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PROPS: ${{ secrets.ANDROID_KEYSTORE_PROPS }}
+        run: |
+          if [ "$INCLUDE_ANDROID" != "true" ] && [ -z "$ANDROID_KEYSTORE_B64" ]; then
+            echo "Android APK 빌드 건너뜀 (정식 서명 시크릿 미설정)"
+            exit 0
+          fi
+          if [ -n "$ANDROID_KEYSTORE_B64" ] && [ -n "$ANDROID_KEYSTORE_PROPS" ]; then
+            echo "$ANDROID_KEYSTORE_B64" | base64 -d > android/release.jks
+            printf '%s\n' "$ANDROID_KEYSTORE_PROPS" > android/keystore.properties
+          fi
+          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "ndk;28.2.13676358" >/dev/null
+          npm run package:android
+
+      - name: Upload assets and SHA256SUMS to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run package:upload
