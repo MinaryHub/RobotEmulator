@@ -13,6 +13,9 @@ import { initSysioPanel, renderSysioPanel, loadSysioPresets } from './sysioPanel
 import { initFaultPanel, renderFaultPanel } from './faultPanel.js';
 import { ioLabelMap, escHtml, labelsToCsv, csvToLabels } from './ioLabels.js';
 import { initAboutPanel, onAbout, onRestarting } from './aboutPanel.js';
+import { extractPointAtLine, touchUpAtLine } from '/shared/teachOps.js';
+import { xyzrpyFromFrame } from '/shared/poseformat.js';
+import { RfromQuat } from '/shared/math.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -21,16 +24,17 @@ const f2 = (v, d = 2) => (Math.abs(v) < 0.5 * 10 ** -d ? 0 : v).toFixed(d);
 const setText = (el, s) => { if (el && el.textContent !== s) el.textContent = s; };
 
 const app = {
-  robots: [], grippers: [], vendors: {}, comms: [],
+  robots: [], grippers: [], vendors: {}, comms: [], protocolMode: 'vendor',
   st: null, robotId: null, gripperKey: null,
-  files: {}, buffers: {}, dirty: new Set(), main: null, openFile: null,
+  files: {}, buffers: {}, dirty: new Set(), main: null, openFile: null, cursorLine: 1,
   customGeom: null, jogFrame: 'base', jogStep: 0, ioBase: 1,
+  frameEditKind: 'user', uf3pt: { origin: null, xPoint: null, xyPoint: null }, framesSig: '',
 };
 
 const view = new RobotView($('#viewport'));
 const editor = new CodeEditor($('#editor'));
 editor.onChange = () => { if (app.openFile) { app.buffers[app.openFile] = editor.text; app.dirty.add(app.openFile); renderFileTabs(); } };
-editor.onCursor = ({ line, col }) => setText($('#edCursor'), `Ln ${line}, Col ${col}`);
+editor.onCursor = ({ line, col }) => { app.cursorLine = line; setText($('#edCursor'), `Ln ${line}, Col ${col}`); };
 
 // ---------------------------------------------------------------- WebSocket (지수 백오프 재연결)
 let ws, reqId = 0, reconnectMs = 1000, reconnectTimer = null;
@@ -70,7 +74,7 @@ function connect() {
     else if (m.type === 'log') addLog(m.entry);
     else if (m.type === 'logs') m.entries.forEach(addLog);
     else if (m.type === 'files') onFiles(m);
-    else if (m.type === 'comms') { app.comms = m.comms; renderComms(); }
+    else if (m.type === 'comms') { app.comms = m.comms; if (m.protocolMode) app.protocolMode = m.protocolMode; renderComms(); }
     else if (m.type === 'tl') dbg.onTimeline(m);
     else if (m.type === 'traffic') dbg.onTraffic(m);
     else if (m.type === 'trafficClear') dbg.onTrafficClear();
@@ -82,7 +86,7 @@ function connect() {
   };
 }
 // 서버가 바뀌지 않았다고 생략한 상태 항목은 직전 값으로 채움 (server/index.js STICKY 와 같은 목록)
-const STICKY = ['sysio', 'cell', 'scene', 'safety', 'ioLabels', 'gripperIO', 'cameras', 'faults'];
+const STICKY = ['sysio', 'cell', 'scene', 'safety', 'ioLabels', 'gripperIO', 'cameras', 'faults', 'frames'];
 function withSticky(st) {
   if (app.st) for (const k of STICKY) if (!(k in st) && k in app.st) st[k] = app.st[k];
   return st;
@@ -107,7 +111,7 @@ function cmd(name, args = {}) {
 const run = (name, args) => cmd(name, args).catch(() => undefined);
 
 function onInit(m) {
-  Object.assign(app, { robots: m.robots, grippers: m.grippers, vendors: m.vendors, comms: m.comms });
+  Object.assign(app, { robots: m.robots, grippers: m.grippers, vendors: m.vendors, comms: m.comms, protocolMode: m.protocolMode || 'vendor' });
   $('#log').innerHTML = '';
   m.logs.forEach(addLog);
   buildSelectors();
@@ -167,6 +171,7 @@ function onState(st) {
   setText($('#ovVal'), `${st.override}%`);
 
   renderPose(st, model);
+  renderFrames(st);
   renderProgram(st);
   renderIO(st);
   renderGripIO(st);
@@ -211,9 +216,13 @@ function renderSafety(st) {
   eb.classList.toggle('on', !!sf.estopUI);
   setText(eb, sf.estopUI ? '비상정지 해제' : '비상정지');
   $('#stEstop').classList.toggle('hidden', !sf.estopExt);
-  setText($('#modeNote'), MODE_NOTE[st.mode] ?? '');
+  const modeNote = st.mode === 'TEACH' && sf.teachSpeedLimit !== false
+    ? `${MODE_NOTE.TEACH} · TCP 250 mm/s 제한`
+    : (MODE_NOTE[st.mode] ?? '');
+  setText($('#modeNote'), modeNote);
   if (document.activeElement !== $('#chkInterlock')) $('#chkInterlock').checked = !!st.interlock;
   if (document.activeElement !== $('#chkReqEnable')) $('#chkReqEnable').checked = !!sf.requireEnable;
+  if (document.activeElement !== $('#chkTeachLimit')) $('#chkTeachLimit').checked = sf.teachSpeedLimit !== false;
   if (document.activeElement !== $('#selFenceStop')) $('#selFenceStop').value = sf.fenceStop || 'stop1';
   const fb = $('#btnFence');
   setText(fb, `안전 펜스: ${sf.fenceOpen ? '열림' : '닫힘'}`);
@@ -239,6 +248,7 @@ async function cmdChecked(name, args) {
 $('#btnEstop').onclick = () => run('safety', { estop: !app.st?.safety?.estopUI });
 $('#chkInterlock').onchange = (e) => run('safety', { interlock: e.target.checked });
 $('#chkReqEnable').onchange = (e) => run('safety', { requireEnable: e.target.checked });
+$('#chkTeachLimit').onchange = (e) => run('safety', { teachSpeedLimit: e.target.checked });
 $('#selFenceStop').onchange = (e) => run('safety', { fenceStop: e.target.value });
 $('#btnFence').onclick = () => run('safety', { fence: !app.st?.safety?.fenceOpen });
 $('#btnEnable').onclick = () => run('safety', { enable: !app.st?.safety?.enable });
@@ -273,6 +283,9 @@ function renderCycle(st) {
   setText($('#cycNow'), cy.elapsed != null ? `${cy.elapsed.toFixed(2)} s ▶` : last ? `${last.total.toFixed(2)} s` : '-');
   if (document.activeElement !== $('#chkBlend')) $('#chkBlend').checked = st.blendEnabled !== false;
   syncSpeed(st.timeScale ?? 1);
+  if (document.activeElement !== $('#chkSpeedLock')) $('#chkSpeedLock').checked = !!st.lockTimeScaleOnExt;
+  const speedMismatch = (st.timeScale ?? 1) !== 1 && ((st.extClients || 0) > 0 || st.mode === 'REMOTE');
+  $('#speedWarn')?.classList.toggle('hidden', !speedMismatch);
   const sig = last ? last.at : 0;
   if (app.cycSig === sig) return;
   app.cycSig = sig;
@@ -292,6 +305,7 @@ function renderCycle(st) {
   }));
 }
 $('#chkAutoScene').onchange = (e) => run('autoResetScene', { on: e.target.checked });
+$('#chkSpeedLock').onchange = (e) => run('timeScaleLock', { on: e.target.checked });
 // 배속 표시: 목록에 없는 값(외부 API 로 지정)은 임시 항목으로 표시
 function syncSpeed(v) {
   const sel = $('#selSpeed');
@@ -323,7 +337,9 @@ function renderPose(st, model) {
   const jointsTxt = st.joints.map((v, i) => `${jn[i].padEnd(5)} ${f2(v, 3).padStart(9)}°`).join('\n');
   const rad = vd.rotUnit === 'rad';   // UR: 회전 벡터 (rad)
   const poseTxt = st.tcp.map((v, i) => `${pn[i].padEnd(3)} ${f2(v, i < 3 ? 2 : (pn.length === 7 || rad ? 5 : 3)).padStart(10)}${i < 3 ? 'mm' : pn.length === 7 ? '' : rad ? 'r' : '°'}`).join('\n');
-  setText($('#ovPose'), `${vd.name} ${model.name}\n${jointsTxt}\n────────────────\n${poseTxt}\n그리퍼 ${(st.grip.pos * 100).toFixed(0)}% ${st.grip.holding ? '· ' + st.grip.holding : ''}`);
+  const fr = st.frames;
+  const frTag = fr && (fr.activeTool > 0 || fr.activeUser > 0) ? `\nT#${fr.activeTool} · U#${fr.activeUser}` : '';
+  setText($('#ovPose'), `${vd.name} ${model.name}\n${jointsTxt}\n────────────────\n${poseTxt}\n그리퍼 ${(st.grip.pos * 100).toFixed(0)}% ${st.grip.holding ? '· ' + st.grip.holding : ''}${frTag}`);
   if ($('#tJog').classList.contains('active')) {
     setText($('#posView'), `${jointsTxt}\n\n${poseTxt}`);
     st.joints.forEach((v, i) => {
@@ -347,7 +363,7 @@ function renderProgram(st) {
   const bpPrefix = `${app.openFile}:`;
   editor.setBreakpoints((st.breakpoints || []).filter((b) => b.startsWith(bpPrefix)).map((b) => Number(b.slice(bpPrefix.length))));
   const running = p.status === 'running' || p.status === 'paused';
-  editor.setExecLine(running && cur && cur.file === app.openFile ? cur.line : null, true);
+  editor.setExecLine((running || p.ppCustom) && cur && cur.file === app.openFile ? cur.line : null, running);
   if (running && cur?.file && cur.file !== app.openFile && app.files[cur.file] !== undefined && !app.dirty.has(app.openFile)) openFile(cur.file);
   const ce = p.compileError;
   const cm = $('#compileMsg');
@@ -468,6 +484,109 @@ window.addEventListener('blur', stopJog);
 $('#jogSp').oninput = (e) => setText($('#jogSpVal'), `${e.target.value}%`);
 $$('#segFrame button').forEach((b) => (b.onclick = () => { app.jogFrame = b.dataset.v; $$('#segFrame button').forEach((x) => x.classList.toggle('active', x === b)); }));
 $$('#segJogStep button').forEach((b) => (b.onclick = () => { app.jogStep = Number(b.dataset.v) || 0; $$('#segJogStep button').forEach((x) => x.classList.toggle('active', x === b)); }));
+
+// ---------------------------------------------------------------- Tool / User 좌표계 관리 & 3점 티칭
+function loadFrameEditFields() {
+  const fr = app.st?.frames;
+  if (!fr) return;
+  const kind = app.frameEditKind;
+  const id = Number($('#selEditFrameId').value) || 1;
+  const arr = kind === 'tool' ? fr.tools : fr.users;
+  const entry = arr?.[id - 1];
+  if (!entry) return;
+  $('#inpFrameName').value = entry.name || '';
+  const ids = ['#frX', '#frY', '#frZ', '#frRx', '#frRy', '#frRz'];
+  ids.forEach((sel, i) => { $(sel).value = Number((entry.pose?.[i] ?? 0).toFixed(3)); });
+  $('#uf3ptBox').classList.toggle('hidden', kind !== 'user');
+}
+function renderFrames(st) {
+  const fr = st?.frames;
+  if (!fr) return;
+  const sig = JSON.stringify(fr);
+  if (app.framesSig === sig) return;
+  app.framesSig = sig;
+  const tSel = $('#selToolFrame');
+  const uSel = $('#selUserFrame');
+  const eSel = $('#selEditFrameId');
+  if (tSel && document.activeElement !== tSel) {
+    tSel.innerHTML = `<option value="0">#0 그리퍼 기본</option>` + fr.tools.map((x) => `<option value="${x.id}">#${x.id} ${escHtml(x.name)}</option>`).join('');
+    tSel.value = String(fr.activeTool || 0);
+  }
+  if (uSel && document.activeElement !== uSel) {
+    uSel.innerHTML = `<option value="0">#0 로봇 베이스</option>` + fr.users.map((x) => `<option value="${x.id}">#${x.id} ${escHtml(x.name)}</option>`).join('');
+    uSel.value = String(fr.activeUser || 0);
+  }
+  if (eSel && !eSel.options.length) {
+    eSel.innerHTML = fr.users.map((x) => `<option value="${x.id}">#${x.id}</option>`).join('');
+    eSel.value = '1';
+  }
+  if (!$('#frameEditor').classList.contains('hidden')) loadFrameEditFields();
+}
+$('#selToolFrame').onchange = (e) => run('setActiveFrames', { activeTool: Number(e.target.value) });
+$('#selUserFrame').onchange = (e) => run('setActiveFrames', { activeUser: Number(e.target.value) });
+$('#btnFrameEdit').onclick = (e) => {
+  const ed = $('#frameEditor');
+  ed.classList.toggle('hidden');
+  setText(e.target, ed.classList.contains('hidden') ? '편집 ▾' : '편집 ▴');
+  if (!ed.classList.contains('hidden')) {
+    const fr = app.st?.frames;
+    if (fr) {
+      const active = app.frameEditKind === 'tool' ? fr.activeTool : fr.activeUser;
+      if (active > 0) $('#selEditFrameId').value = String(active);
+    }
+    loadFrameEditFields();
+  }
+};
+$$('#segFrameKind button').forEach((b) => (b.onclick = () => {
+  app.frameEditKind = b.dataset.v;
+  $$('#segFrameKind button').forEach((x) => x.classList.toggle('active', x === b));
+  loadFrameEditFields();
+}));
+$('#selEditFrameId').onchange = () => loadFrameEditFields();
+$('#btnFrameSave').onclick = async () => {
+  const id = Number($('#selEditFrameId').value) || 1;
+  const pose = ['#frX', '#frY', '#frZ', '#frRx', '#frRy', '#frRz'].map((s) => Number($(s).value) || 0);
+  const name = $('#inpFrameName').value.trim();
+  const r = await cmd('setFrame', { kind: app.frameEditKind, id, name, pose }).catch(() => null);
+  if (r?.ok) showToast(`${app.frameEditKind === 'tool' ? 'Tool' : 'User'} #${id} 저장됨`, 'ok');
+};
+$('#btnFrameCopyTcp').onclick = () => {
+  const tw = app.st?.tcpWorld;
+  if (!tw) return;
+  const pose = xyzrpyFromFrame({ p: tw.p, R: RfromQuat(tw.q) });
+  ['#frX', '#frY', '#frZ', '#frRx', '#frRy', '#frRz'].forEach((s, i) => { $(s).value = Number(pose[i].toFixed(3)); });
+};
+function syncUf3pt() {
+  const u = app.uf3pt;
+  $('#btnUfP0').classList.toggle('done', !!u.origin);
+  $('#btnUfPx').classList.toggle('done', !!u.xPoint);
+  $('#btnUfPxy').classList.toggle('done', !!u.xyPoint);
+  $('#btnUfApply').disabled = !(u.origin && u.xPoint && u.xyPoint);
+  const fmt = (p) => (p ? `[${p.map((v) => f2(v, 1)).join(', ')}]` : '-');
+  setText($('#uf3ptStatus'), `O:${fmt(u.origin)}  +X:${fmt(u.xPoint)}  +XY:${fmt(u.xyPoint)}`);
+}
+const captureUfPt = (key, label) => () => {
+  const p = app.st?.tcpWorld?.p;
+  if (!p) return;
+  app.uf3pt[key] = [...p];
+  syncUf3pt();
+  showToast(`User Frame ${label} 캡처: [${p.map((v) => f2(v, 1)).join(', ')}]`, 'ok');
+};
+$('#btnUfP0').onclick = captureUfPt('origin', '원점');
+$('#btnUfPx').onclick = captureUfPt('xPoint', '+X 점');
+$('#btnUfPxy').onclick = captureUfPt('xyPoint', '+XY 점');
+$('#btnUfApply').onclick = async () => {
+  const id = Number($('#selEditFrameId').value) || 1;
+  const name = $('#inpFrameName').value.trim() || undefined;
+  const u = app.uf3pt;
+  const r = await cmd('teachUserFrame3Pt', { id, origin: u.origin, xPoint: u.xPoint, xyPoint: u.xyPoint, name, activate: true }).catch(() => null);
+  if (r?.ok) {
+    app.uf3pt = { origin: null, xPoint: null, xyPoint: null };
+    syncUf3pt();
+    loadFrameEditFields();
+    showToast(`User #${id} 3점 티칭 완료 및 활성화`, 'ok');
+  }
+};
 
 // ---------------------------------------------------------------- 컨트롤러 버튼 · 3D HUD
 $('#btnServo').onclick = () => app.st && cmdChecked('servo', { on: !app.st.servo });
@@ -604,18 +723,28 @@ const COMM_INFO = {
   hyundai: { k: /hyundai|hi6|openapi/i, d: 'Hi6 Open API 스타일 REST(JSON). 위치/상태/IO/변수/프로그램 제어/이동' },
   abb: { k: /abb|rws/i, d: 'Robot Web Services (RWS 1.0/2.0 경로). jointtarget/robtarget, RAPID 실행/모듈 로드/심볼 데이터, IO 신호, 파일 서비스' },
   kuka: { k: /kuka|varproxy|showvar/i, d: 'KukaVarProxy / OpenShowVar (TCP 7000). $AXIS_ACT, $POS_ACT, $OV_PRO, $OUT[n], 전역 변수 읽기·쓰기' },
+  ur: { k: /\bur\b|dashboard/i, d: 'UR Dashboard Server (TCP 29999). power on, brake release, play, pause, stop, load, robotmode' },
   modbus: { k: /modbus/i, d: 'Modbus TCP 서버 (제조사 공통). 코일 0~511 = DI, 이산 입력 = DO, 입력 레지스터 = 상태/관절/TCP/사이클 타임, 홀딩 0 = 명령, 1 = 오버라이드, 100~ = 사용자 레지스터' },
   opcua: { k: /opc[ -]?ua/i, d: 'OPC UA 서버 (제조사 공통). opc.tcp://…:4840/UA/RobotEmulator — Robot 폴더: 상태·관절·TCP·IO·레지스터 변수(구독 가능), ServoOn/Start/MoveJoints 등 메서드' },
 };
 function renderComms() {
   const vendor = app.robots.find((r) => r.id === app.robotId)?.vendor;
+  $$('#segProtoMode button').forEach((b) => b.classList.toggle('active', b.dataset.v === app.protocolMode));
   $('#commList').innerHTML = app.comms.length ? app.comms.map((c) => {
     const v = Object.entries(COMM_INFO).find(([, x]) => x.k.test(c.name))?.[0];
-    return `<div class="comm ${v === vendor ? 'cur' : ''}">
-      <div class="t"><span>${escHtml(c.name)}</span><span class="p">${escHtml(c.proto)} ${c.port ?? '비활성'}</span></div>
+    const standby = c.standby || c.active === false;
+    const portTxt = standby ? `대기 (${c.configuredPort ?? '-'})` : (c.port ?? '비활성');
+    return `<div class="comm ${v === vendor ? 'cur' : ''} ${standby ? 'standby' : ''}">
+      <div class="t"><span>${escHtml(c.name)}</span><span class="p">${escHtml(c.proto)} ${escHtml(String(portTxt))}</span></div>
       <div class="d">${v ? COMM_INFO[v].d : ''}</div></div>`;
   }).join('') : '<div class="note">통신 모듈 로딩 중…</div>';
 }
+$$('#segProtoMode button').forEach((b) => (b.onclick = async () => {
+  const mode = b.dataset.v;
+  if (mode === app.protocolMode) return;
+  const r = await cmd('protocolMode', { mode }).catch(() => null);
+  if (r?.comms) { app.comms = r.comms; app.protocolMode = r.protocolMode || mode; renderComms(); }
+}));
 
 // ---------------------------------------------------------------- 로그 (검색 · 스크롤 고정 · 내보내기)
 const logEl = $('#log');
@@ -885,8 +1014,11 @@ $('#btnTeach').onclick = () => {
         editor.ta.selectionStart = editor.ta.selectionEnd = off;
         editor.insertAtCursor(`MOVL ${tag} V=250.0`);
       } else {
-        // 헤더 없는 빈 파일: 기본 //POS 스켈레톤에 C 포인트와 MOVL 함께 삽입
-        editor.insertAtCursor(`//POS\n///NPOS 1,0,0,0,0,0\n///POSTYPE BASE\n${tag}=${t.join(',')}\n//INST\nNOP\nMOVL ${tag} V=250.0\nEND`);
+        // 헤더 없는 빈 파일: 기본 //POS 스켈레톤에 C 포인트와 MOVL 함께 삽입 (활성 Tool/User 반영)
+        const fr = st.frames;
+        const toolHdr = fr?.activeTool > 0 ? `///TOOL ${fr.activeTool}\n` : '';
+        const userHdr = fr?.activeUser > 0 ? `///USER ${fr.activeUser}\n///POSTYPE USER\n` : '///POSTYPE BASE\n';
+        editor.insertAtCursor(`//POS\n///NPOS 1,0,0,0,0,0\n${toolHdr}${userHdr}${tag}=${t.join(',')}\n//INST\nNOP\nMOVL ${tag} V=250.0\nEND`);
       }
       break;
     }
@@ -903,6 +1035,57 @@ $('#btnTeach').onclick = () => {
     case 'kuka': editor.insertAtCursor(`LIN {X ${t[0]}, Y ${t[1]}, Z ${t[2]}, A ${t[3]}, B ${t[4]}, C ${t[5]}}`); break;
   }
   addLog({ t: Date.now(), src: 'system', msg: `현재 위치 삽입 (관절: ${j.join(', ')})` });
+};
+
+// ---------------------------------------------------------------- Touch-Up (좌표 덮어쓰기)
+$('#btnTouchUp').onclick = () => {
+  const st = app.st;
+  if (!st || !app.openFile) return;
+  const model = app.robots.find((r) => r.id === st.robotId);
+  const r = touchUpAtLine({
+    vendor: st.vendor, text: editor.text, fileName: app.openFile, files: app.buffers,
+    cursorLine: app.cursorLine, tcp: st.tcp, joints: st.joints, robot: model,
+  });
+  if (!r.ok) { showToast(`<b>좌표 덮어쓰기 불가</b> — ${escHtml(r.reason)}`); return; }
+  app.buffers[r.file] = r.text;
+  app.dirty.add(r.file);
+  if (r.file === app.openFile) {
+    const ss = editor.ta.selectionStart, se = editor.ta.selectionEnd, stp = editor.ta.scrollTop;
+    editor.ta.value = r.text;
+    editor.ta.selectionStart = Math.min(ss, r.text.length);
+    editor.ta.selectionEnd = Math.min(se, r.text.length);
+    editor.ta.scrollTop = stp;
+    editor.dirty = true;
+    editor.render();
+  }
+  renderFileTabs();
+  addLog({ t: Date.now(), src: 'system', msg: `좌표 덮어쓰기 (Touch-Up): ${r.label} (${r.file}:${r.line})` });
+  showToast(`좌표 덮어쓰기 완료: <b>${escHtml(r.label)}</b> (${escHtml(r.file)}:${r.line})`, 'ok');
+};
+
+// ---------------------------------------------------------------- Go To Point (선택 포인트로 이동)
+$('#btnGoTo').onclick = async () => {
+  const st = app.st;
+  if (!st || !app.openFile) return;
+  const model = app.robots.find((r) => r.id === st.robotId);
+  const pt = extractPointAtLine({
+    vendor: st.vendor, text: editor.text, fileName: app.openFile, files: app.buffers,
+    cursorLine: app.cursorLine, robot: model,
+  });
+  if (!pt.ok) { showToast(`<b>포인트 이동 불가</b> — ${escHtml(pt.reason)}`); return; }
+  const r = await cmdChecked('goToPoint', { kind: pt.kind, values: pt.values, label: pt.label });
+  if (r?.ok === false && r.reason && !r.reject) showToast(`<b>포인트 이동 실패</b> — ${escHtml(r.reason)}`);
+  else if (r?.ok) showToast(`포인트 이동 완료: <b>${escHtml(pt.label)}</b>`, 'ok');
+};
+
+// ---------------------------------------------------------------- Set PP to Cursor (프로그램 포인터 이동)
+$('#btnSetPP').onclick = async () => {
+  if (!app.st || !app.openFile) return;
+  try { await saveAll(); } catch { return; }
+  const r = await cmd('setPP', { file: app.openFile, line: app.cursorLine }).catch(() => null);
+  if (!r) return;
+  if (r.ok === false) { showToast(`<b>PP 이동 불가</b> — ${escHtml(r.reason || '실행 가능한 줄 없음')}`); return; }
+  showToast(`PP 이동: <b>${escHtml(r.file)}:${r.line}</b> (${escHtml(r.proc)})`, 'ok');
 };
 
 // ---------------------------------------------------------------- 탭

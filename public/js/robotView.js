@@ -80,6 +80,11 @@ export class RobotView {
     this.tcpAxes.matrixAutoUpdate = false;
     this.tcpAxes.layers.set(HELPER_LAYER);
     this.world.add(this.tcpAxes);
+    this.userAxes = new THREE.AxesHelper(140);
+    this.userAxes.matrixAutoUpdate = false;
+    this.userAxes.visible = false;
+    this.userAxes.layers.set(HELPER_LAYER);
+    this.world.add(this.userAxes);
     this.objMeshes = new Map();
 
     // 프레임당 할당을 줄이기 위한 재사용 벡터·행렬
@@ -360,6 +365,16 @@ export class RobotView {
     this._v1.set(p[0], p[1], p[2]);
     this._q.set(q[1], q[2], q[3], q[0]);
     this.tcpAxes.matrix.compose(this._v1, this._q, this._one);
+    // 활성 User Frame 3D 축 표시
+    if (st.activeUserFrame) {
+      const uf = st.activeUserFrame;
+      this.userAxes.visible = true;
+      this._v2.set(uf.p[0], uf.p[1], uf.p[2]);
+      this._q.set(uf.q[1], uf.q[2], uf.q[3], uf.q[0]);
+      this.userAxes.matrix.compose(this._v2, this._q, this._one);
+    } else {
+      this.userAxes.visible = false;
+    }
     if (this.trailOn && st.moving) this.pushTrail(p);
     // 공작물
     const seen = new Set();

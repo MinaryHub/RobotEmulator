@@ -7,6 +7,7 @@ import { GRIPPERS, getGripper } from '../shared/grippers.js';
 import { normalizeCameras } from '../shared/cameras.js';
 import { fkFlange, fkTcp, ikNearest, tcpToFlange, withinLimits } from '../shared/kinematics.js';
 import { toVendorPose, fromVendorPose, frameFromXYZRPY } from '../shared/poseformat.js';
+import { computeUserFrame3Pt } from '../shared/teachOps.js';
 import { poseMul, poseInv, mulv, mul3, Rx, Ry, Rz, DEG, add, sub, norm, quatFromR, RfromQuat, T3 } from '../shared/math.js';
 import { planJoint, planLinear, planCircular, MotionError } from './motion.js';
 import { VM } from './vm.js';
@@ -20,6 +21,14 @@ const NIO = 512;
 const TICK_MS = 8;
 const SUB_MAX_S = 0.010;   // 배속 시 한 서브스텝의 최대 시뮬레이션 시간 (간섭 체크·블렌딩 정확도 유지)
 const MAX_SUB = 100;
+export const TEACH_TCP_MAX = 250; // ISO 10218-1 T1(TEACH) 모드 TCP 최대 속도 (mm/s)
+const N_FRAMES = 8;
+const defaultFrames = () => ({
+  activeTool: 0, // 0 = 그리퍼 기본 TCP, 1..8 = Tool 프레임
+  activeUser: 0, // 0 = 로봇 베이스(WORLD), 1..8 = User/Base/WObj 프레임
+  tools: Array.from({ length: N_FRAMES }, (_, i) => ({ id: i + 1, name: `Tool ${i + 1}`, pose: [0, 0, 0, 0, 0, 0] })),
+  users: Array.from({ length: N_FRAMES }, (_, i) => ({ id: i + 1, name: `User ${i + 1}`, pose: [0, 0, 0, 0, 0, 0] })),
+});
 // 명령 거부 사유 (code 는 Modbus 입력 레지스터 7 / OPC UA LastRejectCode 로도 노출)
 export const REJECT = {
   NOT_REMOTE: { code: 1, reason: '외부 명령은 REMOTE 모드에서만 허용됩니다' },
@@ -70,15 +79,16 @@ export class Controller extends EventEmitter {
     this.program = null;       // 컴파일 결과
     this.vm = null;
     this.regs = new Map();     // 컨트롤러 전역 레지스터 (INFORM B/I/D/R/P, HRScript V 변수 등)
-    this.toolOverride = null;  // 프로그램이 지정한 툴 (null → 그리퍼 TCP)
-    this.base = null;          // 사용자 좌표계 (null → 로봇 베이스)
+    this.toolOverride = null;  // 프로그램이 지정한 툴 (null → activeTool 또는 그리퍼 TCP)
+    this.base = null;          // 프로그램이 지정한 사용자 좌표계 (null → activeUser 또는 로봇 베이스)
+    this.frames = defaultFrames();
     this.motionStats = { moves: 0 };
     this.cycleStats = { current: null, last: null, history: [] };
     this.heldMs = 0;
     this._heldSince = 0;
     this._dirty = true;
     // WebSocket stateDelta 최적화용 필드별 리비전 카운터 (매 틱 JSON.stringify 회피)
-    this._rev = { sysio: 1, cell: 1, scene: 1, safety: 1, ioLabels: 1, gripperIO: 1, cameras: 1, faults: 1 };
+    this._rev = { sysio: 1, cell: 1, scene: 1, safety: 1, ioLabels: 1, gripperIO: 1, cameras: 1, faults: 1, frames: 1 };
     // 고장 주입 상태 (ROADMAP-SI P1-1)
     this.faults = {
       gripperFail: false,
@@ -97,10 +107,11 @@ export class Controller extends EventEmitter {
     // 운전 모드 인터록 · 안전 (docs/ROADMAP-SI.md P0-1, P0-3)
     //  명령 출처 source: 'internal'(로봇 프로그램·테스트·AI 도구) | 'ui'(펜던트에 해당: 웹 UI·/api/cmd) | 'ext'(통신 인터페이스·시스템 I/O)
     this.interlock = true;       // false → 모드에 따른 외부/펜던트 명령 제한을 끔 (안전 신호는 항상 적용)
-    this.safety = { estopUI: false, estopExt: false, fenceOpen: false, enable: false, requireEnable: false, fenceStop: 'stop1' };
+    this.safety = { estopUI: false, estopExt: false, fenceOpen: false, enable: false, requireEnable: false, fenceStop: 'stop1', teachSpeedLimit: true };
     this.lastReject = null;      // { op, source, code, reason, t } 마지막으로 거부된 명령
     this.ioLabels = { do: {}, di: {} };  // 사용자 I/O 이름표 { n: { name, desc } } (P1-3)
     this.timeScale = 1;        // 배속: 시뮬레이션 시간 / 실제 시간 (모션·대기·타이머·주변기기 모두 적용, 조그는 실시간)
+    this.lockTimeScaleOnExt = false; // 외부 통신/REMOTE 연동 시 ×1 배속 강제 잠금
     this._waiters = [];        // 시뮬레이션 시계 기준 대기/조건/타이머 (서브스텝마다 평가)
     this._ticking = false;
     this._timer = setInterval(() => this.tick(), TICK_MS);
@@ -239,9 +250,92 @@ export class Controller extends EventEmitter {
     this.emitState();
   }
 
-  get tool() { return this.toolOverride ?? this.gripperTcp; }
+  get tool() {
+    if (this.toolOverride) return this.toolOverride;
+    if (this.frames?.activeTool > 0) return this.getToolFrame(this.frames.activeTool);
+    return this.gripperTcp;
+  }
   // 파지 판정/보유 공작물 추종은 프로그램 툴 설정과 무관하게 그리퍼 실제 TCP 사용
   get gripperTcp() { return frameFromXYZRPY(this.gripper.tcp); }
+  get effectiveBase() {
+    if (this.base) return this.base;
+    if (this.frames?.activeUser > 0) return this.getUserFrame(this.frames.activeUser);
+    return null;
+  }
+  getToolFrame(idx) {
+    const n = Number(idx);
+    if (!Number.isInteger(n) || n <= 0) return this.gripperTcp;
+    const entry = this.frames?.tools?.[n - 1];
+    return entry ? frameFromXYZRPY(entry.pose) : this.gripperTcp;
+  }
+  getUserFrame(idx) {
+    const n = Number(idx);
+    if (!Number.isInteger(n) || n <= 0) return null;
+    const entry = this.frames?.users?.[n - 1];
+    return entry ? frameFromXYZRPY(entry.pose) : null;
+  }
+  setActiveFrames({ activeTool, activeUser } = {}) {
+    if (activeTool !== undefined) {
+      const n = Number(activeTool);
+      if (!Number.isInteger(n) || n < 0 || n > N_FRAMES) throw new Error(`Tool 번호 범위 초과: ${activeTool} (0~${N_FRAMES})`);
+      this.frames.activeTool = n;
+    }
+    if (activeUser !== undefined) {
+      const n = Number(activeUser);
+      if (!Number.isInteger(n) || n < 0 || n > N_FRAMES) throw new Error(`User 번호 범위 초과: ${activeUser} (0~${N_FRAMES})`);
+      this.frames.activeUser = n;
+    }
+    this._bumpRev('frames');
+    this.log('system', `좌표계 선택: Tool #${this.frames.activeTool} / User #${this.frames.activeUser}`);
+    this.emitState();
+    return this.frames;
+  }
+  setFrame(kind, id, { name, pose } = {}) {
+    if (kind !== 'tool' && kind !== 'user') throw new Error(`좌표계 종류 오류: ${kind}`);
+    const n = Number(id);
+    if (!Number.isInteger(n) || n < 1 || n > N_FRAMES) throw new Error(`좌표계 번호 범위 초과: ${id} (1~${N_FRAMES})`);
+    const arr = kind === 'tool' ? this.frames.tools : this.frames.users;
+    const entry = arr[n - 1];
+    if (name !== undefined) entry.name = String(name).trim().slice(0, 32) || `${kind === 'tool' ? 'Tool' : 'User'} ${n}`;
+    if (pose !== undefined) {
+      const p = Array.isArray(pose) ? pose.map(Number) : [];
+      if (p.length !== 6 || !p.every(Number.isFinite)) throw new Error('좌표계 pose 는 숫자 6개 [x,y,z,rx,ry,rz] 여야 합니다');
+      entry.pose = p;
+    }
+    this._bumpRev('frames');
+    this.log('system', `${kind === 'tool' ? 'Tool' : 'User'} #${n} (${entry.name}) 저장: [${entry.pose.map((v) => Number(v.toFixed(2))).join(', ')}]`);
+    this.emitState();
+    return entry;
+  }
+  teachUserFrame3Pt(id, { origin, xPoint, xyPoint, name, activate = true } = {}) {
+    const pose = computeUserFrame3Pt(origin, xPoint, xyPoint);
+    const entry = this.setFrame('user', id, { name, pose });
+    if (activate) this.setActiveFrames({ activeUser: Number(id) });
+    return entry;
+  }
+  setFramesData(data) {
+    const def = defaultFrames();
+    if (data && typeof data === 'object') {
+      const at = Number(data.activeTool);
+      const au = Number(data.activeUser);
+      if (Number.isInteger(at) && at >= 0 && at <= N_FRAMES) def.activeTool = at;
+      if (Number.isInteger(au) && au >= 0 && au <= N_FRAMES) def.activeUser = au;
+      for (const k of ['tools', 'users']) {
+        if (!Array.isArray(data[k])) continue;
+        for (let i = 0; i < N_FRAMES && i < data[k].length; i++) {
+          const src = data[k][i];
+          if (!src || typeof src !== 'object') continue;
+          if (typeof src.name === 'string' && src.name.trim()) def[k][i].name = src.name.trim().slice(0, 32);
+          if (Array.isArray(src.pose) && src.pose.length === 6 && src.pose.every((v) => Number.isFinite(Number(v)))) {
+            def[k][i].pose = src.pose.map(Number);
+          }
+        }
+      }
+    }
+    this.frames = def;
+    this._bumpRev('frames');
+    this.emitState();
+  }
 
   // ------------------------------------------------------------ 상태/로그
   log(src, msg) {
@@ -269,19 +363,23 @@ export class Controller extends EventEmitter {
 
   emitState() { this._dirty = true; }
 
-  tcpPose() { return fkTcp(this.robot, this.joints, this.tool, this.base); }
+  tcpPose() { return fkTcp(this.robot, this.joints, this.tool, this.effectiveBase); }
   flangePose() { return fkFlange(this.robot, this.joints); }
   vendorPose() { return toVendorPose(this.vendor, this.tcpPose()); }
 
   snapshot() {
     const tcpWorld = fkTcp(this.robot, this.joints, this.tool, null);
-    const tcpPose = this.base ? poseMul(poseInv(this.base), tcpWorld) : tcpWorld;
+    const effBase = this.effectiveBase;
+    const tcpPose = effBase ? poseMul(poseInv(effBase), tcpWorld) : tcpWorld;
     const doOn = [], diOn = [];
     for (let i = 1; i <= NIO; i++) { if (this.io.do[i]) doOn.push(i); if (this.io.di[i]) diOn.push(i); }
+    const extClients = this.traffic ? this.traffic.listClients().length : 0;
     return {
       robotId: this.robot.id, vendor: this.vendor, gripperId: this.gripper.id, gripperCustom: this.gripper.custom ? this.gripper : null,
       joints: this.joints, tcp: toVendorPose(this.vendor, tcpPose), tcpWorld: { p: tcpWorld.p, q: quatFromR(tcpWorld.R) },
       tool: this.tool.p.concat(quatFromR(this.tool.R)),
+      frames: this.frames,
+      activeUserFrame: effBase ? { p: effBase.p, q: quatFromR(effBase.R) } : null,
       grip: { pos: this.grip.pos, closed: this.grip.closed, holding: this.grip.holding?.id ?? null },
       io: { do: doOn, di: diOn, names: this.ioNames }, gripperIO: this.gripperIO,
       servo: this.servo, mode: this.mode, override: this.override, held: this.held,
@@ -290,10 +388,12 @@ export class Controller extends EventEmitter {
       moving: this.segs.length > 0 || !!this.jog, blendEnabled: this.blendEnabled,
       collision: this.collision, collisionMode: this.collisionMode, autoResetScene: this.autoResetScene,
       breakpoints: [...this.breakpoints], simMs: Math.round(this.simMs), timeScale: this.timeScale,
+      lockTimeScaleOnExt: this.lockTimeScaleOnExt, extClients,
       alarms: this.alarms,
       program: {
         main: this.main, files: [...this.files.keys()],
         status: this.vm?.status ?? 'idle', current: this.vm?.current ?? null, cycle: this.vm?.cycle ?? 0,
+        ppCustom: !!this.vm?._ppCustom,
         compileError: this.compileError ?? null,
       },
       cycle: {
@@ -410,6 +510,10 @@ export class Controller extends EventEmitter {
   setSafetyOptions(o = {}) {
     if (o.requireEnable !== undefined) this.safety.requireEnable = !!o.requireEnable;
     if (o.fenceStop === 'stop1' || o.fenceStop === 'stop2') this.safety.fenceStop = o.fenceStop;
+    if (o.teachSpeedLimit !== undefined) {
+      this.safety.teachSpeedLimit = !!o.teachSpeedLimit;
+      this.log('system', `TEACH 속도 제한 (${TEACH_TCP_MAX} mm/s) ${this.safety.teachSpeedLimit ? 'ON' : 'OFF'}`);
+    }
     if (o.interlock !== undefined) { this.interlock = !!o.interlock; this.log('system', `모드 인터록 ${this.interlock ? 'ON' : 'OFF'}`); }
     this._bumpRev('safety');
     this.emitState();
@@ -465,6 +569,10 @@ export class Controller extends EventEmitter {
       this._freeze();
       this._servoOffKeep();
       this._safetyAlarm('FENCE', '안전 펜스 열린 상태에서 자동 운전 전환 (정지 범주 1)');
+    }
+    if (this.lockTimeScaleOnExt && m === 'REMOTE' && this.timeScale !== 1) {
+      this.timeScale = 1;
+      this.log('system', 'REMOTE 모드 전환 + ×1 배속 잠금 → 배속을 ×1로 복원');
     }
     this.jog = null;
     this.emitState();
@@ -627,7 +735,8 @@ export class Controller extends EventEmitter {
     if (!this.servo) return Promise.reject(new MotionError('SERVO_OFF', '서보가 OFF 상태입니다'));
     if (this.alarms.length) return Promise.reject(new MotionError('ALARM', '알람 발생 중입니다'));
     const tool = cmd.tool ?? this.tool;
-    const base = cmd.base !== undefined ? cmd.base : this.base;
+    const base = cmd.base !== undefined ? cmd.base : this.effectiveBase;
+    const teachCap = this.mode === 'TEACH' && this.safety?.teachSpeedLimit ? TEACH_TCP_MAX : Infinity;
     // 블렌딩 중이면 앞 구간의 목표점에서부터 계획 (경로는 겹침 구간에서 합성됨)
     const j0 = this.segs.length ? [...this.segs[this.segs.length - 1].end] : [...this.joints];
     let seg;
@@ -663,11 +772,24 @@ export class Controller extends EventEmitter {
       if (cmd.kind === 'J') {
         let frac = sp.frac;
         if (frac === undefined) frac = Math.min(1, (sp.tcp ?? 250) / this.robot.tcpMaxSpeed);
-        seg = planJoint(this.robot, j0, toJoints(cmd.target), frac);
+        const jEnd = toJoints(cmd.target);
+        seg = planJoint(this.robot, j0, jEnd, frac);
+        // ISO 10218-1 T1(TEACH) TCP 250 mm/s 상한: 관절 이동도 평균 TCP 속도가 250 mm/s를 넘지 않도록 감속
+        if (Number.isFinite(teachCap) && seg.duration > 1e-4) {
+          const p0 = fkTcp(this.robot, j0, tool, null).p;
+          const p1 = fkTcp(this.robot, jEnd, tool, null).p;
+          const dist = norm(sub(p1, p0));
+          const avgTcp = dist / seg.duration;
+          if (avgTcp > teachCap) {
+            seg = planJoint(this.robot, j0, jEnd, Math.max(0.01, frac * (teachCap / avgTcp)));
+          }
+        }
       } else if (cmd.kind === 'L') {
-        seg = planLinear(this.robot, j0, toPose(cmd.target), { tcp: sp.tcp ?? (sp.frac ?? 0.1) * this.robot.tcpMaxSpeed, rot: sp.rot }, tool, base);
+        const reqTcp = sp.tcp ?? (sp.frac ?? 0.1) * this.robot.tcpMaxSpeed;
+        seg = planLinear(this.robot, j0, toPose(cmd.target), { tcp: Math.min(reqTcp, teachCap), rot: sp.rot }, tool, base);
       } else if (cmd.kind === 'C') {
-        seg = planCircular(this.robot, j0, toPose(cmd.via), toPose(cmd.target), { tcp: sp.tcp ?? (sp.frac ?? 0.1) * this.robot.tcpMaxSpeed, rot: sp.rot }, tool, base);
+        const reqTcp = sp.tcp ?? (sp.frac ?? 0.1) * this.robot.tcpMaxSpeed;
+        seg = planCircular(this.robot, j0, toPose(cmd.via), toPose(cmd.target), { tcp: Math.min(reqTcp, teachCap), rot: sp.rot }, tool, base);
       } else throw new Error(`알 수 없는 이동 종류 ${cmd.kind}`);
     } catch (e) {
       return Promise.reject(e);
@@ -700,7 +822,30 @@ export class Controller extends EventEmitter {
     for (const s of ss) if (!s.resolved) s.reject?.(Object.assign(new Error('motion cancelled'), { aborted: true }));
   }
 
-  // 조그: {type:'joint', axis:0..5, dir:±1, speed:0~1} | {type:'cart', axis:0..5 (x,y,z,rx,ry,rz), dir, speed, frame:'base'|'tool'}
+  // 직교 조그 다음 자세 계산 (frame: 'base' | 'tool' | 'user')
+  _cartJogPose(curWorld, axis, d, frame) {
+    if (axis < 3) {
+      const v = [0, 0, 0]; v[axis] = d;
+      if (frame === 'tool') return poseMul(curWorld, { p: v, R: Rz(0) });
+      if (frame === 'user') {
+        const uf = this.effectiveBase;
+        return uf ? { p: add(curWorld.p, mulv(uf.R, v)), R: curWorld.R } : { p: add(curWorld.p, v), R: curWorld.R };
+      }
+      return { p: add(curWorld.p, v), R: curWorld.R };
+    }
+    const rot = [Rx, Ry, Rz][axis - 3](d);
+    if (frame === 'tool') return { p: curWorld.p, R: mul3(curWorld.R, rot) };
+    if (frame === 'user') {
+      const uf = this.effectiveBase;
+      if (uf) {
+        const rw = mul3(mul3(uf.R, rot), T3(uf.R));
+        return { p: curWorld.p, R: mul3(rw, curWorld.R) };
+      }
+    }
+    return { p: curWorld.p, R: mul3(rot, curWorld.R) };
+  }
+
+  // 조그: {type:'joint', axis:0..5, dir:±1, speed:0~1} | {type:'cart', axis:0..5 (x,y,z,rx,ry,rz), dir, speed, frame:'base'|'tool'|'user'}
   startJog(j, source = 'ui') {
     if (!j || typeof j !== 'object') return;
     const type = j.type === 'cart' ? 'cart' : j.type === 'joint' ? 'joint' : null;
@@ -718,7 +863,8 @@ export class Controller extends EventEmitter {
       }
       return;
     }
-    this.jog = { type, axis, dir: Math.sign(dir), speed: Math.max(0.01, Math.min(1, speed)), frame: j.frame === 'tool' ? 'tool' : 'base', until: performance.now() + 400 };
+    const frame = j.frame === 'tool' ? 'tool' : j.frame === 'user' ? 'user' : 'base';
+    this.jog = { type, axis, dir: Math.sign(dir), speed: Math.max(0.01, Math.min(1, speed)), frame, until: performance.now() + 400 };
   }
   stopJog() { this.jog = null; this.emitState(); }
 
@@ -743,18 +889,32 @@ export class Controller extends EventEmitter {
     } else {
       const tool = this.tool;
       const cur = fkTcp(r, this.joints, tool, null);
-      let next;
-      if (axis < 3) {
-        const v = [0, 0, 0]; v[axis] = s;
-        next = j.frame === 'tool' ? poseMul(cur, { p: v, R: Rz(0) }) : { p: add(cur.p, v), R: cur.R };
-      } else {
-        const rot = [Rx, Ry, Rz][axis - 3](s * DEG);
-        next = j.frame === 'tool' ? { p: cur.p, R: mul3(cur.R, rot) } : { p: cur.p, R: mul3(rot, cur.R) };
-      }
+      const frame = j.frame === 'tool' ? 'tool' : j.frame === 'user' ? 'user' : 'base';
+      const next = this._cartJogPose(cur, axis, axis < 3 ? s : s * DEG, frame);
       nj = ikNearest(r, tcpToFlange(next, tool, null), this.joints);
       if (!nj || nj.some((v, i) => Math.abs(v - this.joints[i]) > 20)) return { ok: false, reason: '조그: 도달 불가/특이점' };
     }
     return this._teachApply(nj);
+  }
+
+  // 티칭용: 선택한 포인트(pose 또는 joints)로 안전 속도 이동 (Go To Point)
+  async goToPoint({ kind, values, moveKind = 'J', label = '' } = {}, source = 'ui') {
+    const g = this._teachGate(source);
+    if (g) return g;
+    if (!Array.isArray(values) || values.length < 6 || !values.every(Number.isFinite)) {
+      return { ok: false, reason: '이동할 좌표 숫자가 올바르지 않습니다' };
+    }
+    const target = kind === 'joints'
+      ? { joints: values.slice(0, 6) }
+      : { pose: fromVendorPose(this.vendor, values) };
+    const mk = moveKind === 'L' ? 'L' : 'J';
+    try {
+      this.log('system', `포인트 이동 (${label || mk}): [${values.slice(0, 6).map((v) => Number(v.toFixed(2))).join(', ')}]`);
+      await this.move({ kind: mk, target, speed: { frac: 0.2, tcp: 150 }, source });
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, reason: e.message || String(e), code: e.code };
+    }
   }
 
   // 티칭용: 관절각 직접 지정 (모션 없이 즉시)
@@ -829,8 +989,27 @@ export class Controller extends EventEmitter {
   setTimeScale(v) {
     const x = Number(v);
     if (!Number.isFinite(x) || x <= 0) return;
-    this.timeScale = Math.max(TIME_SCALE_MIN, Math.min(TIME_SCALE_MAX, x));
-    this.log('system', `배속 ×${+this.timeScale.toFixed(2)}`);
+    const clamped = Math.max(TIME_SCALE_MIN, Math.min(TIME_SCALE_MAX, x));
+    const ext = this.traffic ? this.traffic.listClients().length : 0;
+    if (this.lockTimeScaleOnExt && clamped !== 1 && (ext > 0 || this.mode === 'REMOTE')) {
+      this.timeScale = 1;
+      this.log('system', '⚠ 외부/REMOTE 연동 중 ×1 배속 잠금이 켜져 있어 배속을 ×1로 유지합니다');
+      this.emitState();
+      return;
+    }
+    this.timeScale = clamped;
+    this.log('system', `배속 ×${+this.timeScale.toFixed(2)}${clamped !== 1 && (ext > 0 || this.mode === 'REMOTE') ? ' (⚠ 외부 PLC 타이머와 시간 불일치 주의)' : ''}`);
+    this.emitState();
+  }
+  setTimeScaleLock(on) {
+    this.lockTimeScaleOnExt = !!on;
+    const ext = this.traffic ? this.traffic.listClients().length : 0;
+    if (this.lockTimeScaleOnExt && this.timeScale !== 1 && (ext > 0 || this.mode === 'REMOTE')) {
+      this.timeScale = 1;
+      this.log('system', '외부 연동 ×1 배속 잠금 ON → 배속을 ×1로 복원');
+    } else {
+      this.log('system', `외부 연동 ×1 배속 잠금 ${this.lockTimeScaleOnExt ? 'ON' : 'OFF'}`);
+    }
     this.emitState();
   }
 
@@ -977,14 +1156,7 @@ export class Controller extends EventEmitter {
       const tool = this.tool;
       const cur = fkTcp(r, this.joints, tool, null);
       const d = j.dir * (j.axis < 3 ? 250 * sp * dt : 45 * sp * dt * DEG);
-      let next;
-      if (j.axis < 3) {
-        const v = [0, 0, 0]; v[j.axis] = d;
-        next = j.frame === 'tool' ? poseMul(cur, { p: v, R: Rz(0) }) : { p: add(cur.p, v), R: cur.R };
-      } else {
-        const rot = [Rx, Ry, Rz][j.axis - 3](d);
-        next = j.frame === 'tool' ? { p: cur.p, R: mul3(cur.R, rot) } : { p: cur.p, R: mul3(rot, cur.R) };
-      }
+      const next = this._cartJogPose(cur, j.axis, d, j.frame);
       const nj = ikNearest(r, tcpToFlange(next, tool, null), this.joints);
       if (!nj || nj.some((v, i) => Math.abs(v - this.joints[i]) > 10)) { this.jog = null; this.log('system', '조그: 도달 불가/특이점'); return; }
       this.joints = nj;
@@ -1078,6 +1250,22 @@ export class Controller extends EventEmitter {
     return this.program;
   }
 
+  // 프로그램 포인터(PP)를 지정 파일·줄로 이동 (Set PP to Cursor)
+  setPP(file, line) {
+    if (this.vm?.status === 'running' && !this.held) {
+      return { ok: false, reason: '프로그램 실행 중에는 PP를 이동할 수 없습니다 (정지 후 시도)' };
+    }
+    if (this.vm?.status === 'running' || this.vm?.status === 'paused') this.stopProgram();
+    if (!this.vm || ['done', 'error', 'aborted'].includes(this.vm.status)) this.compile(true);
+    if (!this.vm) return { ok: false, reason: this.compileError?.msg || '컴파일된 프로그램이 없습니다' };
+    const r = this.vm.setPointer(file || this.main, line);
+    if (r.ok) {
+      this.log('system', `PP 이동: ${r.file}:${r.line} (${r.proc})`);
+      this.emitState();
+    }
+    return r;
+  }
+
   async start({ step = false, source = 'internal' } = {}) {
     if (!this.allow('start', source)) return false;
     if (this.alarms.length) { this.log('system', '알람 리셋 후 시작하십시오'); this._noteReject('start', source, REJECT.ALARM); return false; }
@@ -1098,12 +1286,13 @@ export class Controller extends EventEmitter {
     if (!this.vm) return false;
     if (this.vm.status !== 'idle') this.vm.reset();
     this.held = false;
-    if (this.autoResetScene && !step) {
+    const ppCustom = !!this.vm._ppCustom;
+    if (this.autoResetScene && !step && !ppCustom) {
       // 중간 정지로 공작물을 쥔 채 남아 있으면 그리퍼를 열고 셀을 초기 배치로
       if (this.grip?.closed || this.grip?.holding) { this.setDO(this.gripperIO.close, false); this.gripperCmd(false); }
       this.resetScene();
     }
-    this.log('system', `프로그램 시작: ${this.main}${step ? ' (단계 실행)' : ''}`);
+    this.log('system', `프로그램 시작: ${this.main}${ppCustom && this.vm.current?.line ? ` (Ln ${this.vm.current.line}부터)` : ''}${step ? ' (단계 실행)' : ''}`);
     this.vm.run({ step });
     return true;
   }

@@ -55,6 +55,8 @@ function loadConfig() {
     // 업데이트: enabled(새 버전 자동 확인), intervalHours(확인 주기), allowApply(화면에서 원클릭 업데이트 허용),
     //   repo('owner/name', 기본 package.json repository), sponsorUrl(후원 링크, 기본 package.json funding)
     update: { enabled: true, intervalHours: 24, allowApply: true },
+    // 프로토콜 활성화 방식: 'vendor'(기본: 현재 제조사 + 필드버스만 포트 바인딩) | 'all'(모든 제조사 동시 오픈)
+    protocolMode: 'vendor',
     protocols: {
       yaskawaHse: { port: 10040, filePort: 10041 },
       kawasakiAs: { port: 23, fallbackPort: 10023 },
@@ -121,6 +123,8 @@ function serveStatic(req, res) {
 
 // ---------------------------------------------------------------- 명령 처리 (WS/REST 공용)
 let comms = [];
+let protoMgr = null;
+const commsPayload = () => comms.map(({ key, vendor, name, proto, port, configuredPort, active, standby, error }) => ({ key, vendor, name, proto, port, configuredPort, active, standby, error }));
 
 async function handleCmd(m) {
   switch (m.cmd) {
@@ -132,9 +136,20 @@ async function handleCmd(m) {
     case 'mode': return { ok: ctrl.setMode(m.mode, 'ui') !== false };
     case 'override': ctrl.setOverride(m.value); return;
     case 'timeScale': ctrl.setTimeScale(m.value); return;
+    case 'timeScaleLock': ctrl.setTimeScaleLock(m.on); return;
     case 'jog': ctrl.startJog(m.jog, 'ui'); return;
     case 'stepJog': return ctrl.stepJog(m.jog, 'ui');
     case 'jogStop': ctrl.stopJog(); return;
+    case 'goToPoint': return await ctrl.goToPoint(m, 'ui');
+    case 'setPP': return ctrl.setPP(m.file, m.line);
+    case 'setActiveFrames': return { frames: ctrl.setActiveFrames(m) };
+    case 'setFrame': return { entry: ctrl.setFrame(m.kind, m.id, m), frames: ctrl.frames };
+    case 'teachUserFrame3Pt': return { entry: ctrl.teachUserFrame3Pt(m.id, m), frames: ctrl.frames };
+    case 'protocolMode': {
+      if (!protoMgr) return { protocolMode: config.protocolMode };
+      comms = await protoMgr.setMode(m.mode);
+      return { protocolMode: protoMgr.mode, comms: commsPayload() };
+    }
     case 'setJoints': return ctrl.teachJoints(m.joints, 'ui');   // 펜던트 관절 직접 지정 = 조그와 같은 조건
     case 'teachPose': return ctrl.teachPose({ p: m.p, q: m.q }, 'ui');   // p[3] mm, q[4] 쿼터니언 — 형식 검사는 teachPose 에서   // 직접교시: TCP 핸들 드래그
     case 'teachJoints': return ctrl.teachJoints(m.joints, 'ui');      // 직접교시: 관절 드래그 · 되돌리기
@@ -191,7 +206,7 @@ async function handleCmd(m) {
     case 'projectDelete': projects.remove(m.name); return { projects: projects.list() };
     case 'projectExport': return { project: projects.serialize(m.name) };
     case 'projectImport': projects.apply(m.project); return { files: filesMsg(), current: projects.current };
-    case 'safety':   // { estop?, fence?, enable?, requireEnable?, fenceStop?, interlock? }
+    case 'safety':   // { estop?, fence?, enable?, requireEnable?, fenceStop?, teachSpeedLimit?, interlock? }
       if (m.estop !== undefined) ctrl.setEstop(m.estop, 'ui');
       if (m.fence !== undefined) ctrl.setFence(m.fence);
       if (m.enable !== undefined) ctrl.setEnableSwitch(m.enable);
@@ -391,7 +406,7 @@ wss.on('connection', (ws) => {
   send(ws, {
     type: 'init', robots: ROBOTS, grippers: GRIPPERS, vendors: VENDORS, cameras: CAMERAS,
     state: ctrl.snapshot(), logs: ctrl.logs.slice(-200), files: filesMsg(),
-    comms: comms.map(({ key, name, proto, port }) => ({ key, name, proto, port })),
+    comms: commsPayload(), protocolMode: protoMgr?.mode ?? (config.allProtocols ? 'all' : config.protocolMode || 'vendor'),
     about: updater.info(),
   });
   ws.on('message', async (raw) => {
@@ -421,7 +436,7 @@ wss.on('connection', (ws) => {
 // 상태 브로드캐스트 (최대 30Hz)
 //  자주 바뀌지 않는 큰 항목은 리비전 카운터(ctrl._rev)로 O(1) 비교 후 직전 전송과 같으면 뺀다 (app.js STICKY).
 //  접속된 웹 클라이언트가 없으면 스냅샷 생성 자체를 생략한다.
-const STICKY = ['sysio', 'cell', 'scene', 'safety', 'ioLabels', 'gripperIO', 'cameras', 'faults'];
+const STICKY = ['sysio', 'cell', 'scene', 'safety', 'ioLabels', 'gripperIO', 'cameras', 'faults', 'frames'];
 const lastStickyRev = {};
 function stateDelta(st) {
   const rev = ctrl._rev;
@@ -490,6 +505,11 @@ function attachTrafficStream() {
     if (!trTimer) trTimer = setTimeout(flush, 150);
   });
   ctrl.traffic.on('client', () => {
+    if (ctrl.lockTimeScaleOnExt && ctrl.timeScale !== 1 && ctrl.traffic.listClients().length > 0) {
+      ctrl.timeScale = 1;
+      ctrl.log('system', '외부 클라이언트 접속 + ×1 배속 잠금 → 배속을 ×1로 복원');
+    }
+    ctrl.emitState();
     if (!wss.clients.size) return;
     if (!trTimer) trTimer = setTimeout(flush, 150);
   });
@@ -512,11 +532,21 @@ server.listen(config.httpPort, config.host || undefined, async () => {
   if (process.env.ROBOT_EMU_OPEN === '1' && !process.env.ROBOT_EMU_RESTARTED) openBrowser(`http://${shown}:${actualPort}/`);
   console.log(config.host && /^(127\.|::1$|localhost$)/i.test(config.host) ? '  (이 PC 에서만 접속 가능)\n' : `  (바인딩: ${config.host || '모든 인터페이스'} — 인증 없음, 신뢰할 수 있는 네트워크에서만 사용)\n`);
   try {
-    const { startAll } = await import('./protocols/index.js');
-    comms = await startAll(ctrl, config.protocols);
+    const { ProtocolManager } = await import('./protocols/index.js');
+    const mode = config.allProtocols ? 'all' : (config.protocolMode === 'all' ? 'all' : 'vendor');
+    protoMgr = new ProtocolManager(ctrl, config.protocols, {
+      mode,
+      onChange: (list, pm) => {
+        comms = list;
+        broadcast({ type: 'comms', comms: commsPayload(), protocolMode: pm });
+      },
+    });
+    comms = await protoMgr.sync();
     attachTrafficStream();
-    for (const c of comms) console.log(`  [통신] ${c.name.padEnd(28)} ${c.proto.padEnd(5)} ${c.port ?? '(비활성)'}`);
-    broadcast({ type: 'comms', comms: comms.map(({ key, name, proto, port }) => ({ key, name, proto, port })) });
+    for (const c of comms) {
+      const st = c.active ? (c.port ?? '(실패)') : `(대기:${c.configuredPort ?? '-'})`;
+      console.log(`  [통신] ${c.name.padEnd(28)} ${c.proto.padEnd(5)} ${st}`);
+    }
   } catch (e) {
     console.error('통신 모듈 시작 실패:', e.message);
   }
@@ -559,7 +589,8 @@ async function shutdown(sig, code = 0) {
   try { projects.saveAutosave?.(); } catch {}
   const force = setTimeout(() => process.exit(code), 3000);
   force.unref();
-  await Promise.allSettled(comms.map(async (c) => c.close?.()));
+  if (protoMgr) await protoMgr.closeAll().catch(() => {});
+  else await Promise.allSettled(comms.map(async (c) => c.close?.()));
   try { for (const c of wss.clients) c.terminate(); server.closeAllConnections?.(); server.close(); } catch {}
   process.exit(code);
 }

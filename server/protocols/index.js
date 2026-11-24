@@ -58,6 +58,17 @@ export function externalView(ctrl) {
   });
 }
 
+const DISPLAY_NAME = {
+  yaskawaHse: { name: 'Yaskawa HSE (UDP)', proto: 'UDP' },
+  kawasakiAs: { name: 'Kawasaki AS 터미널', proto: 'TCP' },
+  hyundai: { name: 'Hyundai Hi6 Open API', proto: 'HTTP' },
+  abbRws: { name: 'ABB RWS', proto: 'HTTP' },
+  kukaVarProxy: { name: 'KukaVarProxy / OpenShowVar', proto: 'TCP' },
+  urDashboard: { name: 'UR Dashboard', proto: 'TCP' },
+  modbus: { name: 'Modbus TCP', proto: 'TCP' },
+  opcua: { name: 'OPC UA', proto: 'TCP' },
+};
+
 export async function startAll(ctrl0, config = {}) {
   if (!ctrl0.traffic) ctrl0.traffic = new TrafficMonitor(ctrl0);
   const ctrl = externalView(ctrl0);
@@ -79,4 +90,108 @@ export async function startAll(ctrl0, config = {}) {
 
 export async function closeAll(list) {
   for (const h of list || []) { try { await h.close(); } catch {} }
+}
+
+// 프로토콜 수명 주기 관리자:
+//  - mode='vendor'(기본): 현재 선택된 제조사 프로토콜 + 공용 필드버스(Modbus/OPC UA)만 포트 바인딩 (포트 충돌 방지)
+//  - mode='all': 설정된 모든 제조사 프로토콜 동시 오픈 (교차 테스트용)
+export class ProtocolManager {
+  constructor(ctrl0, config = {}, { mode = 'vendor', onChange = null } = {}) {
+    if (!ctrl0.traffic) ctrl0.traffic = new TrafficMonitor(ctrl0);
+    this.ctrl0 = ctrl0;
+    this.ctrl = externalView(ctrl0);
+    this.config = config || {};
+    this.mode = mode === 'all' ? 'all' : 'vendor';
+    this.onChange = onChange;
+    this.running = new Map(); // key → handle
+    this._queue = Promise.resolve();
+    this._closed = false;
+    this._lastVendor = ctrl0.vendor;
+    this._onRobot = () => {
+      if (this._closed || this.mode !== 'vendor') return;
+      if (this.ctrl0.vendor === this._lastVendor) return;
+      this._lastVendor = this.ctrl0.vendor;
+      this.sync().catch(() => {});
+    };
+    ctrl0.on('robot', this._onRobot);
+  }
+
+  _configured(p) {
+    if (p.optional && !this.config[p.key]) return null;
+    const cfg = { ...p.defaults, ...(this.config[p.key] || {}) };
+    if (cfg.enabled === false) return null;
+    return cfg;
+  }
+
+  _shouldRun(p) {
+    if (!this._configured(p)) return false;
+    if (this.mode === 'all') return true;
+    return p.vendor === null || p.vendor === this.ctrl0.vendor;
+  }
+
+  list() {
+    const out = [];
+    for (const p of PROTOCOLS) {
+      const cfg = this._configured(p);
+      if (!cfg) continue;
+      const h = this.running.get(p.key);
+      if (h) {
+        out.push({ key: p.key, vendor: p.vendor, name: h.name, proto: h.proto, port: h.port, active: true, standby: false, error: h.error });
+      } else {
+        const meta = DISPLAY_NAME[p.key] || { name: p.key, proto: '?' };
+        out.push({ key: p.key, vendor: p.vendor, name: meta.name, proto: meta.proto, port: null, configuredPort: cfg.port, active: false, standby: true });
+      }
+    }
+    return out;
+  }
+
+  sync() {
+    this._queue = this._queue.then(() => this._syncNow());
+    return this._queue;
+  }
+
+  async _syncNow() {
+    if (this._closed) return this.list();
+    this._lastVendor = this.ctrl0.vendor;
+    // 1) 중지 대상 먼저 닫아 포트 반환
+    for (const p of PROTOCOLS) {
+      if (this.running.has(p.key) && !this._shouldRun(p)) {
+        const h = this.running.get(p.key);
+        this.running.delete(p.key);
+        try { await h.close?.(); } catch {}
+      }
+    }
+    // 2) 기동 대상 시작
+    for (const p of PROTOCOLS) {
+      if (this.running.has(p.key) || !this._shouldRun(p)) continue;
+      const cfg = this._configured(p);
+      if (!cfg) continue;
+      try {
+        const h = await p.mod.start(this.ctrl, cfg);
+        this.running.set(p.key, { key: p.key, vendor: p.vendor, ...h, close: h.close });
+      } catch (e) {
+        this.ctrl.log('comm', `[${p.key}] 기동 실패: ${e.message}`);
+        this.running.set(p.key, { key: p.key, vendor: p.vendor, name: DISPLAY_NAME[p.key]?.name || p.key, proto: DISPLAY_NAME[p.key]?.proto || '?', port: null, error: e.message, close() {} });
+      }
+    }
+    const items = this.list();
+    this.onChange?.(items, this.mode);
+    return items;
+  }
+
+  async setMode(mode) {
+    const next = mode === 'all' ? 'all' : 'vendor';
+    if (next === this.mode) return this.list();
+    this.mode = next;
+    this.ctrl0.log('comm', `프로토콜 모드 전환: ${next === 'vendor' ? '선택 제조사만 활성화' : '모든 제조사 동시 오픈'}`);
+    return this.sync();
+  }
+
+  async closeAll() {
+    this._closed = true;
+    this.ctrl0.off('robot', this._onRobot);
+    const list = [...this.running.values()];
+    this.running.clear();
+    await closeAll(list);
+  }
 }
