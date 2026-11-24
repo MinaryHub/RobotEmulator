@@ -49,12 +49,15 @@ function loadConfig() {
     host: '127.0.0.1',
     allowedHosts: [],
     robot: null, gripper: null,
-    // Claude 채팅. backend: 'auto'(API 키 환경변수가 있으면 api, 없으면 claude-code) | 'api'(ANTHROPIC_API_KEY 또는 ant auth login)
+    // Claude 채팅. enabled: false 면 폐쇄망 환경용으로 UI/WS 채팅을 완전히 비활성화
+    //   backend: 'auto'(API 키 환경변수가 있으면 api, 없으면 claude-code) | 'api'(ANTHROPIC_API_KEY 또는 ant auth login)
     //   | 'claude-code'(설치된 Claude Code CLI 의 구독 로그인 사용, API 키 불필요). 환경변수 AI_BACKEND 로도 지정
-    ai: { backend: 'auto', model: 'claude-opus-5-5', effort: 'high', fallbacks: true, cliModel: null },
+    ai: { enabled: true, backend: 'auto', model: 'claude-opus-5-5', effort: 'high', fallbacks: true, cliModel: null },
     // 업데이트: enabled(새 버전 자동 확인), intervalHours(확인 주기), allowApply(화면에서 원클릭 업데이트 허용),
     //   repo('owner/name', 기본 package.json repository), sponsorUrl(후원 링크, 기본 package.json funding)
     update: { enabled: true, intervalHours: 24, allowApply: true },
+    // 프로토콜 활성화 방식: 'vendor'(기본: 현재 제조사 + 필드버스만 포트 바인딩) | 'all'(모든 제조사 동시 오픈)
+    protocolMode: 'vendor',
     protocols: {
       yaskawaHse: { port: 10040, filePort: 10041 },
       kawasakiAs: { port: 23, fallbackPort: 10023 },
@@ -121,6 +124,8 @@ function serveStatic(req, res) {
 
 // ---------------------------------------------------------------- 명령 처리 (WS/REST 공용)
 let comms = [];
+let protoMgr = null;
+const commsPayload = () => comms.map(({ key, vendor, name, proto, port, configuredPort, active, standby, error }) => ({ key, vendor, name, proto, port, configuredPort, active, standby, error }));
 
 async function handleCmd(m) {
   switch (m.cmd) {
@@ -131,12 +136,25 @@ async function handleCmd(m) {
     case 'servo': return { ok: ctrl.setServo(m.on, 'ui') !== false, reject: ctrl.lastReject };
     case 'mode': return { ok: ctrl.setMode(m.mode, 'ui') !== false };
     case 'override': ctrl.setOverride(m.value); return;
+    case 'setPayload': return { payload: ctrl.setPayload(m.mass, m.cog) };
+    case 'setAccelScale': return { accelScale: ctrl.setAccelScale(m.value) };
     case 'timeScale': ctrl.setTimeScale(m.value); return;
+    case 'timeScaleLock': ctrl.setTimeScaleLock(m.on); return;
     case 'jog': ctrl.startJog(m.jog, 'ui'); return;
     case 'stepJog': return ctrl.stepJog(m.jog, 'ui');
     case 'jogStop': ctrl.stopJog(); return;
+    case 'goToPoint': return await ctrl.goToPoint(m, 'ui');
+    case 'setPP': return ctrl.setPP(m.file, m.line);
+    case 'setActiveFrames': return { frames: ctrl.setActiveFrames(m) };
+    case 'setFrame': return { entry: ctrl.setFrame(m.kind, m.id, m), frames: ctrl.frames };
+    case 'teachUserFrame3Pt': return { entry: ctrl.teachUserFrame3Pt(m.id, m), frames: ctrl.frames };
+    case 'protocolMode': {
+      if (!protoMgr) return { protocolMode: config.protocolMode };
+      comms = await protoMgr.setMode(m.mode);
+      return { protocolMode: protoMgr.mode, comms: commsPayload() };
+    }
     case 'setJoints': return ctrl.teachJoints(m.joints, 'ui');   // 펜던트 관절 직접 지정 = 조그와 같은 조건
-    case 'teachPose': return ctrl.teachPose({ p: m.p, q: m.q }, 'ui');   // p[3] mm, q[4] 쿼터니언 — 형식 검사는 teachPose 에서   // 직접교시: TCP 핸들 드래그
+    case 'teachPose': return ctrl.teachPose({ p: m.p, q: m.q, allowJump: !!m.allowJump }, 'ui');   // p[3] mm, q[4] 쿼터니언 — 형식 검사는 teachPose 에서
     case 'teachJoints': return ctrl.teachJoints(m.joints, 'ui');      // 직접교시: 관절 드래그 · 되돌리기
     case 'moveJoints':
       ctrl.move({ kind: 'J', target: { joints: m.joints }, speed: { frac: m.speed ?? 0.3 }, source: 'ui' }).catch((e) => !e.aborted && !String(e.code).startsWith('REJECT') && ctrl.alarm(e.code || 'MOTION', e.message));
@@ -146,6 +164,13 @@ async function handleCmd(m) {
       return;
     case 'setDO': ctrl.setDO(m.n, m.v); return;
     case 'setDI': ctrl.setDI(m.n, m.v); return;
+    case 'setAI': ctrl.setAI(m.n, m.v); return;
+    case 'setAO': ctrl.setAO(m.n, m.v); return;
+    case 'aioConfig': ctrl.setAioConfig(m.type, m.n, m); return;
+    case 'ioGroups': return { ioGroups: ctrl.setIoGroups(m.list) };
+    case 'writeGroupIO': return { value: ctrl.writeGroupIO(m.id, m.value) };
+    case 'zones': return { zones: ctrl.setZones(m.list) };
+    case 'visionTrigger': return ctrl.triggerVision(m.camId, { deterministic: !!m.deterministic });
     case 'gripperIO': {   // { map: { close, open, fbClosed, fbOpen, fbPart } } — 번호는 정수 1~512
       const next = { ...ctrl.gripperIO };
       for (const [k, v] of Object.entries(m.map || {})) {
@@ -165,7 +190,8 @@ async function handleCmd(m) {
     case 'start': return { ok: await ctrl.start({ step: false, source: 'ui' }), reject: ctrl.lastReject };
     case 'step': return { ok: await ctrl.start({ step: true, source: 'ui' }), reject: ctrl.lastReject };
     case 'hold': ctrl.hold(); return;
-    case 'resume': return { ok: ctrl.resume('ui') !== false };
+    case 'resume': return { ok: ctrl.resume('ui') !== false, reject: ctrl.lastReject };
+    case 'recoverPath': return ctrl.recoverPath('ui');
     case 'stop': ctrl.stopProgram(); return;
     case 'reset': ctrl.resetProgram(); return;
     case 'resetAlarms': ctrl.resetAlarms(); return;
@@ -191,7 +217,7 @@ async function handleCmd(m) {
     case 'projectDelete': projects.remove(m.name); return { projects: projects.list() };
     case 'projectExport': return { project: projects.serialize(m.name) };
     case 'projectImport': projects.apply(m.project); return { files: filesMsg(), current: projects.current };
-    case 'safety':   // { estop?, fence?, enable?, requireEnable?, fenceStop?, interlock? }
+    case 'safety':   // { estop?, fence?, enable?, requireEnable?, fenceStop?, teachSpeedLimit?, interlock? }
       if (m.estop !== undefined) ctrl.setEstop(m.estop, 'ui');
       if (m.fence !== undefined) ctrl.setFence(m.fence);
       if (m.enable !== undefined) ctrl.setEnableSwitch(m.enable);
@@ -391,13 +417,18 @@ wss.on('connection', (ws) => {
   send(ws, {
     type: 'init', robots: ROBOTS, grippers: GRIPPERS, vendors: VENDORS, cameras: CAMERAS,
     state: ctrl.snapshot(), logs: ctrl.logs.slice(-200), files: filesMsg(),
-    comms: comms.map(({ key, name, proto, port }) => ({ key, name, proto, port })),
+    comms: commsPayload(), protocolMode: protoMgr?.mode ?? (config.allProtocols ? 'all' : config.protocolMode || 'vendor'),
+    aiEnabled: config.ai?.enabled !== false,
     about: updater.info(),
   });
   ws.on('message', async (raw) => {
     let m;
     try { m = JSON.parse(raw); } catch { return; }
     if (m.cmd === 'chat' || m.cmd === 'chatStop' || m.cmd === 'chatReset') {
+      if (config.ai?.enabled === false) {
+        send(ws, { type: 'chat', ev: 'error', msg: '폐쇄망 설정(config.ai.enabled=false)으로 AI 채팅이 비활성화되어 있습니다.' });
+        return;
+      }
       try {
         const c = await chatSession(ws);
         if (!c || ws.readyState !== 1) return;
@@ -421,7 +452,7 @@ wss.on('connection', (ws) => {
 // 상태 브로드캐스트 (최대 30Hz)
 //  자주 바뀌지 않는 큰 항목은 리비전 카운터(ctrl._rev)로 O(1) 비교 후 직전 전송과 같으면 뺀다 (app.js STICKY).
 //  접속된 웹 클라이언트가 없으면 스냅샷 생성 자체를 생략한다.
-const STICKY = ['sysio', 'cell', 'scene', 'safety', 'ioLabels', 'gripperIO', 'cameras', 'faults'];
+const STICKY = ['sysio', 'cell', 'scene', 'safety', 'ioLabels', 'gripperIO', 'cameras', 'faults', 'frames', 'zones', 'vision'];
 const lastStickyRev = {};
 function stateDelta(st) {
   const rev = ctrl._rev;
@@ -490,6 +521,11 @@ function attachTrafficStream() {
     if (!trTimer) trTimer = setTimeout(flush, 150);
   });
   ctrl.traffic.on('client', () => {
+    if (ctrl.lockTimeScaleOnExt && ctrl.timeScale !== 1 && ctrl.traffic.listClients().length > 0) {
+      ctrl.timeScale = 1;
+      ctrl.log('system', '외부 클라이언트 접속 + ×1 배속 잠금 → 배속을 ×1로 복원');
+    }
+    ctrl.emitState();
     if (!wss.clients.size) return;
     if (!trTimer) trTimer = setTimeout(flush, 150);
   });
@@ -512,11 +548,21 @@ server.listen(config.httpPort, config.host || undefined, async () => {
   if (process.env.ROBOT_EMU_OPEN === '1' && !process.env.ROBOT_EMU_RESTARTED) openBrowser(`http://${shown}:${actualPort}/`);
   console.log(config.host && /^(127\.|::1$|localhost$)/i.test(config.host) ? '  (이 PC 에서만 접속 가능)\n' : `  (바인딩: ${config.host || '모든 인터페이스'} — 인증 없음, 신뢰할 수 있는 네트워크에서만 사용)\n`);
   try {
-    const { startAll } = await import('./protocols/index.js');
-    comms = await startAll(ctrl, config.protocols);
+    const { ProtocolManager } = await import('./protocols/index.js');
+    const mode = config.allProtocols ? 'all' : (config.protocolMode === 'all' ? 'all' : 'vendor');
+    protoMgr = new ProtocolManager(ctrl, config.protocols, {
+      mode,
+      onChange: (list, pm) => {
+        comms = list;
+        broadcast({ type: 'comms', comms: commsPayload(), protocolMode: pm });
+      },
+    });
+    comms = await protoMgr.sync();
     attachTrafficStream();
-    for (const c of comms) console.log(`  [통신] ${c.name.padEnd(28)} ${c.proto.padEnd(5)} ${c.port ?? '(비활성)'}`);
-    broadcast({ type: 'comms', comms: comms.map(({ key, name, proto, port }) => ({ key, name, proto, port })) });
+    for (const c of comms) {
+      const st = c.active ? (c.port ?? '(실패)') : `(대기:${c.configuredPort ?? '-'})`;
+      console.log(`  [통신] ${c.name.padEnd(28)} ${c.proto.padEnd(5)} ${st}`);
+    }
   } catch (e) {
     console.error('통신 모듈 시작 실패:', e.message);
   }
@@ -559,7 +605,8 @@ async function shutdown(sig, code = 0) {
   try { projects.saveAutosave?.(); } catch {}
   const force = setTimeout(() => process.exit(code), 3000);
   force.unref();
-  await Promise.allSettled(comms.map(async (c) => c.close?.()));
+  if (protoMgr) await protoMgr.closeAll().catch(() => {});
+  else await Promise.allSettled(comms.map(async (c) => c.close?.()));
   try { for (const c of wss.clients) c.terminate(); server.closeAllConnections?.(); server.close(); } catch {}
   process.exit(code);
 }

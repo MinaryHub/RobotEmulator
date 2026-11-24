@@ -175,6 +175,28 @@ export async function start(ctrl, opts = {}) {
         ctrl.setDI(n, v); return G;
       });
     }
+    const NAIO = 16;
+    addVar(ioFolder, R + 'IO.AI', 'AI', 'Double', () => Float64Array.from({ length: NAIO }, (_, i) => ctrl.getAI?.(i + 1) ?? 0), (v) => {
+      if (!v || typeof v.length !== 'number' || v.length > NAIO) return StatusCodes.BadOutOfRange;
+      for (let i = 0; i < v.length; i++) if (Number.isFinite(Number(v[i]))) ctrl.setAI?.(i + 1, Number(v[i]));
+      return G;
+    }, { array: true, dims: NAIO, desc: '아날로그 입력 AI1..16' });
+    addVar(ioFolder, R + 'IO.AO', 'AO', 'Double', () => Float64Array.from({ length: NAIO }, (_, i) => ctrl.getAO?.(i + 1) ?? 0), (v) => {
+      if (!v || typeof v.length !== 'number' || v.length > NAIO) return StatusCodes.BadOutOfRange;
+      for (let i = 0; i < v.length; i++) if (Number.isFinite(Number(v[i]))) ctrl.setAO?.(i + 1, Number(v[i]));
+      return G;
+    }, { array: true, dims: NAIO, desc: '아날로그 출력 AO1..16' });
+    for (let n = 1; n <= NAIO; n++) {
+      addVar(ioFolder, `${R}IO.AI_${n}`, `AI_${n}`, 'Double', () => ctrl.getAI?.(n) ?? 0, (v) => {
+        if (!Number.isFinite(Number(v))) return StatusCodes.BadTypeMismatch;
+        ctrl.setAI?.(n, Number(v)); return G;
+      });
+      addVar(ioFolder, `${R}IO.AO_${n}`, `AO_${n}`, 'Double', () => ctrl.getAO?.(n) ?? 0, (v) => {
+        if (!Number.isFinite(Number(v))) return StatusCodes.BadTypeMismatch;
+        ctrl.setAO?.(n, Number(v)); return G;
+      });
+    }
+    addVar(robot, R + 'SafeZoneActive', 'SafeZoneActive', 'Boolean', () => (ctrl.zones || []).some((z) => z.kind === 'safe' && z.enabled && ctrl.zoneStates?.[z.id]));
 
     // --- 레지스터 (Modbus 사용자 레지스터와 공유)
     const toInt16 = (v) => ((Math.round(Number(v) || 0) & 0xFFFF) << 16) >> 16;

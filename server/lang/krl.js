@@ -242,6 +242,7 @@ function newState() {
     tool: null, base: null, toolNo: null, baseNo: 0,
     sys: new Map(),
     timers: Array.from({ length: 65 }, () => ({ v: 0, since: 0, stop: true })),
+    pendingTriggers: [],
   };
 }
 
@@ -799,6 +800,45 @@ function compileBody(prog, proc, ctrl, pending) {
 
   function stmt(t, line) {
     let m;
+    // 선독 트리거: TRIGGER WHEN DISTANCE=<0|1> DELAY=<ms> DO <대입|PULSE(...)>  /  TRIGGER WHEN PATH=<mm> [ONSTART] DELAY=<ms> DO ...
+    if ((m = /^TRIGGER\s+WHEN\s+(DISTANCE|PATH)\s*=\s*([^\s]+)(?:\s+ONSTART)?(?:\s+DELAY\s*=\s*([^\s]+))?\s+DO\s+([\s\S]+)$/i.exec(t))) {
+      const kind = K(m[1]);
+      const valAst = parseE(m[2]);
+      const onStart = /\bONSTART\b/i.test(t.slice(0, t.toUpperCase().indexOf(' DO ')));
+      const delayAst = m[3] ? parseE(m[3]) : null;
+      const actText = m[4].replace(/\s+PRIO\s*=\s*\S+\s*$/i, '').trim();
+      const sa = splitAssign(actText);
+      if (sa) {
+        const lhs = parseE(sa[0]), rhs = parseE(sa[1]);
+        emit(line, (vm, f) => {
+          const c = cx(vm, f);
+          const v = n_(c.ev(valAst));
+          const delayMs = delayAst ? n_(c.ev(delayAst)) : 0;
+          const mode = kind === 'DISTANCE' ? 'progress' : (v >= 0 && onStart ? 'distFromStart' : v < 0 ? 'distFromEnd' : 'distFromStart');
+          const value = kind === 'DISTANCE' ? (v ? 1 : 0) : Math.abs(v);
+          c.st.pendingTriggers.push({
+            mode, value, delayMs,
+            fn: () => { const tc = new Ctx(prog, vm.ctrl, vm, f); assignK(tc, lhs, tc.ev(rhs)); },
+          });
+        });
+        return;
+      }
+      const actAst = parseE(actText);
+      if (actAst.t === 'call' && K(actAst.fn.name) === 'PULSE' && INSTR.PULSE) {
+        const runPulse = INSTR.PULSE(actAst, line);
+        emit(line, (vm, f) => {
+          const c = cx(vm, f);
+          const v = n_(c.ev(valAst));
+          const delayMs = delayAst ? n_(c.ev(delayAst)) : 0;
+          const mode = kind === 'DISTANCE' ? 'progress' : (v < 0 ? 'distFromEnd' : 'distFromStart');
+          const value = kind === 'DISTANCE' ? (v ? 1 : 0) : Math.abs(v);
+          c.st.pendingTriggers.push({ mode, value, delayMs, fn: () => runPulse(vm, f) });
+        });
+        return;
+      }
+      prog.warnings.push({ file, line, msg: 'TRIGGER DO (미지원 동작)' });
+      return;
+    }
     if (/^(GLOBAL\s+)?INTERRUPT\b/i.test(t) || /^(TRIGGER|ANIN|ANOUT|BRAKE|RESUME|ON_ERROR_PROCEED|CONTINUE|EXT|EXTFCT|IMPORT|SIGNAL)\b/i.test(t)) {
       // 동작에 영향을 주는데 에뮬레이터가 실행하지 않는 문장은 경고 (표준 IR_STOPM 인터럽트 선언은 제외)
       if ((/^(GLOBAL\s+)?INTERRUPT\s+DECL\b/i.test(t) && !/\$STOPMESS/i.test(t)) || /^(TRIGGER|ANOUT)\b/i.test(t)) prog.warnings.push({ file, line, msg: t.split(/\s+/).slice(0, 2).join(' ') });
@@ -1096,6 +1136,8 @@ function compileBody(prog, proc, ctrl, pending) {
 // ------------------------------------------------------------------ 이동 실행
 function ptpSpeed(c) { return { frac: Math.max(0.001, Math.min(1, Math.min(...c.st.velAxis) / 100)) }; }
 function cpSpeed(c) { return { tcp: Math.max(0.1, n_(c.st.vel.CP) * 1000), rot: Math.max(1, n_(c.st.vel.ORI1)) }; }
+function ptpAccel(c) { return Math.max(5, Math.min(100, Math.min(...c.st.accAxis))); }
+function cpAccel(c) { return Math.max(5, Math.min(100, (n_(c.st.acc.CP) / 2.3) * 100)); }
 
 // 목표 값 → 컨트롤러 목표 (부분 구조체는 현재 위치로 채움)
 function toTarget(c, v, kind) {
@@ -1106,6 +1148,7 @@ function toTarget(c, v, kind) {
   const g = (k) => Number(v[k] ?? cur[k]);
   const tg = { pose: fromVendorPose('kuka', [g('X'), g('Y'), g('Z'), g('A'), g('B'), g('C')]) };
   if (kind === 'PTP' && (v.S !== undefined || v.T !== undefined)) tg.cfgFilter = stFilter(ctrl.robot, v.S, v.T);
+  else if (kind !== 'PTP' && v.S !== undefined) tg.cfgFilter = stFilter(ctrl.robot, v.S, undefined);
   return tg;
 }
 
@@ -1125,8 +1168,9 @@ function relTarget(c, v, frame) {
 
 async function doMove(c, kind, v, zone = 0) {
   const target = toTarget(c, v, kind);
-  if (kind === 'PTP') await c.vm.move({ kind: 'J', target, speed: ptpSpeed(c), zone });
-  else await c.vm.move({ kind: 'L', target, speed: cpSpeed(c), zone });
+  const triggers = c.st.pendingTriggers?.length ? c.st.pendingTriggers.splice(0) : undefined;
+  if (kind === 'PTP') await c.vm.move({ kind: 'J', target, speed: ptpSpeed(c), zone, accelScale: ptpAccel(c), triggers });
+  else await c.vm.move({ kind: 'L', target, speed: cpSpeed(c), zone, accelScale: cpAccel(c), triggers });
 }
 
 async function doCirc(c, auxV, tgtV, ca, zone = 0) {
@@ -1141,7 +1185,8 @@ async function doCirc(c, auxV, tgtV, ca, zone = 0) {
     via = { pose: { p: pVia, R: tgt.pose.R } };
     end = { pose: { p: pEnd, R: tgt.pose.R } };
   }
-  await c.vm.move({ kind: 'C', via, target: end, speed: cpSpeed(c), zone });
+  const triggers = c.st.pendingTriggers?.length ? c.st.pendingTriggers.splice(0) : undefined;
+  await c.vm.move({ kind: 'C', via, target: end, speed: cpSpeed(c), zone, accelScale: cpAccel(c), triggers });
 }
 
 // ------------------------------------------------------------------ 내장 명령 (문장 호출)
@@ -1160,9 +1205,12 @@ const INSTR = {
       case '#INITMOV':
         c.st.velAxis.fill(100); c.st.accAxis.fill(100);
         Object.assign(c.st.vel, { CP: 2, ORI1: 200, ORI2: 200 });
+        Object.assign(c.st.acc, { CP: 2.3, ORI1: 300, ORI2: 300 });
         break;
       case '#VEL_PTP': c.st.velAxis.fill(v); break;
       case '#VEL_CP': c.st.vel.CP = v; break;
+      case '#ACC_PTP': c.st.accAxis.fill(Math.max(1, Math.min(100, v))); break;
+      case '#ACC_CP': c.st.acc.CP = 2.3 * Math.max(1, Math.min(100, v)) / 100; break;
       case '#TOOL': selectTool(c, v); break;
       case '#BASE': selectBase(c, v); break;
       case '#FRAMES': { const fd = g.get('FDAT_ACT'); selectTool(c, fd?.TOOL_NO ?? 1); selectBase(c, fd?.BASE_NO ?? 0); break; }
@@ -1176,7 +1224,7 @@ const INSTR = {
         const fd = g.get('FDAT_ACT'); selectTool(c, fd?.TOOL_NO ?? 1); selectBase(c, fd?.BASE_NO ?? 0);
         break;
       }
-      default: break; // #ACC_PTP, #ACC_CP, #PTP_DAT, #CP_DAT ... 무시
+      default: break;
     }
   },
   PULSE: (ast) => (vm, f) => {

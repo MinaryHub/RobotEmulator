@@ -30,13 +30,20 @@ function trapezoid(Tc, ta) {
   return { T, s, tAcc };
 }
 
+// 가감속 시간 보정: AccSet/ACC(5~100%) 및 페이로드 비율(0~1.5)에 따라 가감속 시간 연장
+function effectiveAccelTime(model, opts = {}) {
+  const accPct = Number.isFinite(Number(opts.accelScale)) ? Math.max(5, Math.min(100, Number(opts.accelScale))) : 100;
+  const loadRatio = Number.isFinite(Number(opts.payloadRatio)) ? Math.max(0, Math.min(1.5, Number(opts.payloadRatio))) : 0;
+  return model.maxAccelTime * (100 / accPct) * (1 + 0.4 * loadRatio);
+}
+
 // 관절보간. speedFrac: 0~1 (최대 관절속도 대비)
-export function planJoint(model, j0, j1, speedFrac) {
+export function planJoint(model, j0, j1, speedFrac, opts = {}) {
   if (!withinLimits(model, j1)) throw new MotionError('LIMIT', `관절 한계 초과: [${j1.map((v) => v.toFixed(2)).join(', ')}]`);
   const f = Math.max(0.001, Math.min(1, speedFrac));
   let Tc = 0;
   for (let i = 0; i < 6; i++) Tc = Math.max(Tc, Math.abs(j1[i] - j0[i]) / (model.maxSpeed[i] * f));
-  const prof = trapezoid(Tc, model.maxAccelTime);
+  const prof = trapezoid(Tc, effectiveAccelTime(model, opts));
   return {
     kind: 'J', duration: prof.T, end: [...j1], prof,
     sample: (t) => { const s = prof.s(t); return j0.map((v, i) => v + (j1[i] - v) * s); },
@@ -44,9 +51,12 @@ export function planJoint(model, j0, j1, speedFrac) {
 }
 
 // 경로 함수 path(s) → TCP pose (s: 0~1). length(mm), angle(deg)
-function planPath(model, j0, path, length, angleDeg, speed, tool, base, kind) {
+function planPath(model, j0, path, length, angleDeg, speed, tool, base, kind, opts = {}) {
   if (length < 1e-6 && angleDeg < 1e-6) {
     const end = [...j0];
+    if (opts.cfgFilter && opts.cfgFilter(end) > 0) {
+      throw new MotionError('CONFIG', '목표점의 로봇 자세(Configuration)가 지정된 설정과 다릅니다 (ConfL \\Off 또는 PTP로 자세를 맞추세요)');
+    }
     return { kind, duration: 0, end, prof: trapezoid(0, 0), length: 0, sample: () => [...end] };
   }
   const vLin = Math.max(0.1, Math.min(speed.tcp ?? 250, model.tcpMaxSpeed));
@@ -66,6 +76,10 @@ function planPath(model, j0, path, length, angleDeg, speed, tool, base, kind) {
     }
     table[k] = j; prev = j;
   }
+  // 직선/원호 끝점 자세(Configuration) 검증 (ABB ConfL \On / KRL CP 상태 감시)
+  if (opts.cfgFilter && opts.cfgFilter(table[N]) > 0) {
+    throw new MotionError('CONFIG', `경로 끝점의 로봇 자세(Configuration)가 목표 설정과 다릅니다 (관절: [${table[N].map((v) => v.toFixed(1)).join(', ')}])`);
+  }
   // 관절 속도 제한으로 인한 최소 시간
   let Tc = Math.max(length / vLin, angleDeg / vRot);
   for (let k = 1; k <= N; k++) {
@@ -74,7 +88,7 @@ function planPath(model, j0, path, length, angleDeg, speed, tool, base, kind) {
       Tc = Math.max(Tc, dq / model.maxSpeed[i]);
     }
   }
-  const prof = trapezoid(Tc, model.maxAccelTime);
+  const prof = trapezoid(Tc, effectiveAccelTime(model, opts));
   return {
     kind, duration: prof.T, end: [...table[N]], prof, length,
     sample: (t) => {
@@ -88,28 +102,28 @@ function planPath(model, j0, path, length, angleDeg, speed, tool, base, kind) {
 }
 
 // 직선보간. target: TCP pose (base 좌표계 기준)
-export function planLinear(model, j0, target, speed, tool, base) {
+export function planLinear(model, j0, target, speed, tool, base, opts = {}) {
   const start = fkTcp(model, j0, tool, base);
   const q0 = quatFromR(start.R), q1 = quatFromR(target.R);
   const length = norm(sub(target.p, start.p));
   const angle = rotAngle(start.R, target.R) * RAD;
   const path = (s) => ({ p: lerp3(start.p, target.p, s), R: RfromQuat(quatSlerp(q0, q1, s)) });
-  return planPath(model, j0, path, length, angle, speed, tool, base, 'L');
+  return planPath(model, j0, path, length, angle, speed, tool, base, 'L', opts);
 }
 
 // 원호보간: 시작점 → 경유점(via) → 끝점
-export function planCircular(model, j0, via, target, speed, tool, base) {
+export function planCircular(model, j0, via, target, speed, tool, base, opts = {}) {
   const start = fkTcp(model, j0, tool, base);
   const A = start.p, B = via.p, C = target.p;
   const ab = sub(B, A), ac = sub(C, A);
   const n = cross(ab, ac);
   const nn = norm(n);
   const ab2 = dot(ab, ab), ac2 = dot(ac, ac);
-  if (nn < 1e-6 || nn < 1e-6 * Math.sqrt(ab2 * ac2)) return planLinear(model, j0, target, speed, tool, base); // 일직선
+  if (nn < 1e-6 || nn < 1e-6 * Math.sqrt(ab2 * ac2)) return planLinear(model, j0, target, speed, tool, base, opts); // 일직선
   // 외접원 중심
   const center = add(A, scale(add(scale(cross(n, ab), ac2), scale(cross(ac, n), ab2)), 1 / (2 * nn * nn)));
   const r = norm(sub(A, center));
-  if (!Number.isFinite(r) || r > 1e6) return planLinear(model, j0, target, speed, tool, base);
+  if (!Number.isFinite(r) || r > 1e6) return planLinear(model, j0, target, speed, tool, base, opts);
   const nz = scale(n, 1 / nn);
   const ex = scale(sub(A, center), 1 / r);
   const ey = cross(nz, ex);
@@ -120,6 +134,6 @@ export function planCircular(model, j0, via, target, speed, tool, base) {
     const th = thetaC * s;
     return { p: add(center, add(scale(ex, r * Math.cos(th)), scale(ey, r * Math.sin(th)))), R: RfromQuat(quatSlerp(q0, q1, s)) };
   };
-  return planPath(model, j0, path, r * thetaC, rotAngle(start.R, target.R) * RAD, speed, tool, base, 'C');
+  return planPath(model, j0, path, r * thetaC, rotAngle(start.R, target.R) * RAD, speed, tool, base, 'C', opts);
 }
 

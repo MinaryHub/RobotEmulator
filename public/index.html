@@ -82,6 +82,17 @@
           <label class="chk"><input type="checkbox" id="chkReqEnable"> 조그 시 인에이블 스위치 필요</label>
           <button id="btnEnable" title="인에이블 스위치 (3포지션 스위치 가운데 위치). 켜 두면 조그 가능">인에이블 OFF</button>
         </div>
+        <div class="row">
+          <label class="chk" title="ISO 10218-1 T1 규격: TEACH 모드에서 TCP 최대 속도를 250 mm/s로 제한"><input type="checkbox" id="chkTeachLimit" checked> TEACH 속도 제한 (250 mm/s)</label>
+        </div>
+        <div class="row safety-row">
+          <label for="selPathRecovery">홀드 경로 복귀</label>
+          <select id="selPathRecovery" title="홀드 중 수동 조그로 원경로에서 이탈한 뒤 재개할 때의 동작">
+            <option value="auto">자동 저속 복귀</option>
+            <option value="block">복귀 전 재개 차단</option>
+            <option value="off">끄기</option>
+          </select>
+        </div>
         <div class="note" id="safetyNote"></div>
         <div class="row">
           <label>간섭 체크</label>
@@ -91,6 +102,10 @@
         <div class="row">
           <label>오버라이드 <b id="ovVal">100%</b></label>
           <input type="range" id="ovRange" min="1" max="100" value="100">
+        </div>
+        <div class="row payload-row">
+          <label for="inpPayload" title="작업물 질량(kg)에 따라 모션 가감속 시간이 자동으로 연장됩니다">페이로드 (kg) <b id="payVal">0 kg</b></label>
+          <input type="number" id="inpPayload" min="0" max="500" step="0.5" value="0">
         </div>
         <h3>로봇 사양</h3>
         <div id="robotSpec" class="spec"></div>
@@ -148,8 +163,42 @@
         </div>
         <h3>축 조그</h3>
         <div id="jogJoints" class="jog"></div>
-        <h3>직교 조그 <div class="seg small" id="segFrame"><button data-v="base" class="active">BASE</button><button data-v="tool">TOOL</button></div></h3>
+        <h3>직교 조그 <div class="seg small" id="segFrame"><button data-v="base" class="active">BASE</button><button data-v="tool">TOOL</button><button data-v="user">USER</button></div></h3>
         <div id="jogCart" class="jog"></div>
+        <h3>좌표계 (Tool / User) <button id="btnFrameEdit" class="mini" type="button">편집 ▾</button></h3>
+        <div class="frame-sel">
+          <label>Tool <select id="selToolFrame"></select></label>
+          <label>User <select id="selUserFrame"></select></label>
+        </div>
+        <div id="frameEditor" class="frame-ed hidden">
+          <div class="frame-ed-head">
+            <div class="seg small" id="segFrameKind"><button data-v="user" class="active">User</button><button data-v="tool">Tool</button></div>
+            <select id="selEditFrameId"></select>
+            <input id="inpFrameName" type="text" placeholder="이름" maxlength="32">
+          </div>
+          <div class="grid3">
+            <label>X(mm)<input id="frX" type="number" step="0.1" value="0"></label>
+            <label>Y(mm)<input id="frY" type="number" step="0.1" value="0"></label>
+            <label>Z(mm)<input id="frZ" type="number" step="0.1" value="0"></label>
+            <label>Rx(°)<input id="frRx" type="number" step="0.1" value="0"></label>
+            <label>Ry(°)<input id="frRy" type="number" step="0.1" value="0"></label>
+            <label>Rz(°)<input id="frRz" type="number" step="0.1" value="0"></label>
+          </div>
+          <div class="row btns">
+            <button id="btnFrameSave" class="primary" type="button">좌표계 저장</button>
+            <button id="btnFrameCopyTcp" type="button" title="현재 TCP 위치를 좌표계 원점/자세로 채움">현재 TCP 채우기</button>
+          </div>
+          <div id="uf3ptBox" class="uf3pt">
+            <div class="uf3pt-hd">3점 User Frame 티칭 (로봇을 지그 3점으로 조그 후 캡처)</div>
+            <div class="uf3pt-btns">
+              <button id="btnUfP0" type="button">1. 원점</button>
+              <button id="btnUfPx" type="button">2. +X 방향</button>
+              <button id="btnUfPxy" type="button">3. +XY 평면</button>
+              <button id="btnUfApply" type="button" class="primary" disabled>3점 적용</button>
+            </div>
+            <div id="uf3ptStatus" class="note"></div>
+          </div>
+        </div>
         <h3>현재 위치</h3>
         <div id="posView" class="posview"></div>
       </section>
@@ -178,11 +227,37 @@
           <input type="file" id="lblFile" accept=".csv,text/csv" hidden>
         </div>
         <div class="note">이름표는 신호 타임라인에도 표시되고 프로젝트에 저장됩니다. 시스템 I/O 에 할당된 번호는 시스템 신호 이름이 우선 표시됩니다.</div>
+        <h3>그룹 I/O (GI / GO) <button id="btnAddGroup" class="mini" type="button">＋ 그룹 추가</button></h3>
+        <div id="ioGroupList" class="iogrp-list"></div>
+        <div id="ioGroupForm" class="ioedit hidden">
+          <div class="grid3">
+            <label>방향<select id="grpDir"><option value="in">GI (입력 DI)</option><option value="out">GO (출력 DO)</option></select></label>
+            <label>시작 번호<input id="grpStart" type="number" min="1" max="512" value="25"></label>
+            <label>비트 수<input id="grpBits" type="number" min="1" max="16" value="8"></label>
+          </div>
+          <input id="grpName" type="text" placeholder="그룹 이름 (예: 품종 번호)" maxlength="32">
+          <div class="btns"><button id="grpSave" class="primary" type="button">추가</button><button id="grpCancel" type="button">취소</button></div>
+        </div>
+        <h3>아날로그 I/O (AI / AO) <small>Modbus HR 356~387 · OPC UA</small></h3>
+        <div class="row io-page">
+          <div class="seg small" id="segAioKind"><button data-v="ai" class="active">AI 1..16 (입력)</button><button data-v="ao">AO 1..16 (출력)</button></div>
+        </div>
+        <div id="ioAnalog" class="aio-grid"></div>
       </section>
 
       <section id="tSys" class="tab"><!-- public/js/sysioPanel.js 가 채움 --></section>
 
       <section id="tComm" class="tab">
+        <h3>프로토콜 활성화</h3>
+        <div class="row">
+          <div class="seg small" id="segProtoMode" title="선택 제조사만 활성화하면 미사용 포트를 열지 않아 포트 충돌을 방지합니다">
+            <button data-v="vendor" class="active">선택 제조사만 (권장)</button>
+            <button data-v="all">모든 제조사 동시</button>
+          </div>
+        </div>
+        <div class="row">
+          <label class="chk" title="외부 PLC/통신 클라이언트 접속 중이거나 REMOTE 모드일 때 시뮬레이션 배속을 ×1로 고정합니다"><input type="checkbox" id="chkSpeedLock"> 외부 연동 시 배속 ×1 잠금</label>
+        </div>
         <h3>외부 통신 인터페이스</h3>
         <div id="commList"></div>
         <div class="note">각 인터페이스는 실제 컨트롤러의 프로토콜을 모사합니다. 샘플 클라이언트: <code>tools/clients/</code></div>
@@ -201,6 +276,10 @@
       <div class="overlay tl" id="ovPose"></div>
       <div class="overlay tr" id="ovProg"></div>
       <div class="overlay tc" id="ovAlarm"></div>
+      <div id="pathRecBar" class="path-rec hidden">
+        <span id="pathRecMsg">⚠ 홀드 중 경로 이탈</span>
+        <button id="btnRecoverPath" class="primary" title="홀드 중 수동 이동으로 이탈한 로봇을 원래 홀드 위치로 저속 복귀합니다">↩ 원경로 복귀</button>
+      </div>
       <!-- 3D 뷰 빠른 조작 HUD -->
       <div class="view-hud" id="viewHud">
         <button data-cam="iso" title="등각 시점 (1)">등각</button>
@@ -220,6 +299,7 @@
           <div class="seg small" id="dtMode"><button data-v="translate" class="active" title="이동 (W)">이동</button><button data-v="rotate" title="회전 (E)">회전</button></div>
           <div class="seg small" id="dtSpace"><button data-v="world" class="active" title="로봇 베이스 좌표 (Q 로 전환)">BASE</button><button data-v="tool" title="툴 좌표 (Q 로 전환)">TOOL</button></div>
           <select id="dtSnap" title="스냅 (X 로 전환)"></select>
+          <button id="dtAlign" title="3D 표면을 클릭해 TCP +Z를 면 법선으로 정렬 (F)">⟂ 면 정렬</button>
           <button id="dtUndo" title="되돌리기 (Ctrl+Z)" disabled>↶</button>
           <button id="dtGrip" title="그리퍼 열기/닫기 (G)">그리퍼 닫기</button>
           <button id="dtRecord" class="primary" title="현재 위치를 에디터 커서 위치에 이동 명령으로 삽입 (Enter)">⌖ 위치 기록</button>
@@ -252,13 +332,17 @@
         <button id="btnHold" class="warn" title="홀드 / 재개 (Space)">⏸ 홀드</button>
         <button id="btnStop" class="danger">■ 정지</button>
         <button id="btnReset">⟲ 리셋</button>
-        <button id="btnTeach" title="현재 위치를 커서 위치에 삽입">⌖ 현재위치 삽입</button>
+        <button id="btnTeach" title="현재 위치를 커서 위치에 새 이동 명령으로 삽입">⌖ 삽입</button>
+        <button id="btnTouchUp" title="커서 줄(또는 참조 포인트)의 좌표만 현재 로봇 위치로 덮어쓰기 (Touch-Up)">✎ 덮어쓰기</button>
+        <button id="btnGoTo" title="커서 줄(또는 참조 포인트)의 목표 위치로 로봇 이동 (Go To Point)">→ 포인트 이동</button>
+        <button id="btnSetPP" title="프로그램 포인터(PP)를 에디터 커서 줄로 이동 (Set PP to Cursor)">➤ PP 이동</button>
         <label class="speed" title="시뮬레이션 배속 — 모션·대기·타이머·주변기기에 모두 적용 (조그는 실시간). 사이클 타임은 시뮬레이션 시간 기준이라 배속과 무관. 단축키: - / +">배속
           <select id="selSpeed">
             <option value="0.1">×0.1</option><option value="0.25">×0.25</option><option value="0.5">×0.5</option>
             <option value="1" selected>×1</option><option value="2">×2</option><option value="4">×4</option>
             <option value="8">×8</option><option value="10">×10</option>
           </select></label>
+        <span id="speedWarn" class="speed-warn hidden" title="시뮬레이션 배속이 ×1이 아닙니다 — 외부 PLC/클라이언트 타이머와 시간 불일치가 발생할 수 있습니다">⚠ PLC 타이밍</span>
       </div>
       <div class="cycle">
         <div class="cyc-head">
@@ -357,6 +441,10 @@
       <div id="abBuild" class="note"></div>
       <div class="prow ablang"><label for="abLang">언어 · Language</label><select id="abLang"><option value="ko">한국어</option><option value="en">English</option></select></div>
       <section>
+        <h4>폐쇄망 · AI 설정</h4>
+        <label class="chk" title="폐쇄망 현장 환경에서 Claude AI 채팅 버튼·패널을 숨깁니다"><input type="checkbox" id="chkHideChat"> AI 채팅 패널 숨기기 (폐쇄망 모드)</label>
+      </section>
+      <section>
         <h4>업데이트</h4>
         <div id="abUpd" class="abupd"></div>
         <pre id="abNotes" class="abnotes" hidden></pre>
@@ -396,7 +484,7 @@
         <tr><td><kbd>-</kbd> / <kbd>+</kbd></td><td>시뮬레이션 배속 조절</td></tr>
         <tr><td><kbd>1</kbd>~<kbd>5</kbd></td><td>3D 카메라 프리셋 (등각·상면·정면·측면·TCP)</td></tr>
         <tr><td><kbd>T</kbd></td><td>직접교시 켜기 / 끄기</td></tr>
-        <tr><td><kbd>W</kbd> / <kbd>E</kbd> / <kbd>Q</kbd> / <kbd>X</kbd></td><td>직접교시 이동 · 회전 · 좌표계 · 스냅</td></tr>
+        <tr><td><kbd>W</kbd> / <kbd>E</kbd> / <kbd>Q</kbd> / <kbd>X</kbd> / <kbd>F</kbd></td><td>직접교시 이동 · 회전 · 좌표계 · 스냅 · 면 정렬</td></tr>
         <tr><td><kbd>G</kbd> / <kbd>Enter</kbd> / <kbd>Ctrl+Z</kbd></td><td>직접교시 그리퍼 · 위치 기록 · 되돌리기</td></tr>
         <tr><td><kbd>?</kbd></td><td>단축키 안내 창 열기</td></tr>
       </table>

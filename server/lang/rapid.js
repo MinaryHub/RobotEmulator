@@ -658,12 +658,14 @@ function compile(files, main, ctrl) {
     modules: {}, state: null,
     init(vm) {
       prog.state = vm.rapid = {
-        confJ: true, confL: true, velOv: 100, velMax: ctrl?.robot?.tcpMaxSpeed ?? 7000,
+        confJ: true, confL: true, velOv: 100, velMax: ctrl?.robot?.tcpMaxSpeed ?? 7000, acc: 100,
         tool: null, wobj: null, toolData: null, wobjData: null,
+        triggs: new Map(), triggSeq: 1,
       };
+      vm.ctrl.setAccelScale?.(100);
     },
   };
-  prog.state = { confJ: true, confL: true, velOv: 100, velMax: 7000, tool: null, wobj: null };
+  prog.state = { confJ: true, confL: true, velOv: 100, velMax: 7000, acc: 100, tool: null, wobj: null, triggs: new Map(), triggSeq: 1 };
   const pending = []; // 미해결 루틴 호출 [{name, file, line}]
   const names = [...files.keys()].filter((f) => EXTS.some((e) => f.toLowerCase().endsWith(e)) || f === main);
   names.sort((a, b) => (a === main ? 1 : b === main ? -1 : 0));
@@ -1026,12 +1028,12 @@ function callProc(c, target, args, named) {
 }
 
 // ------------------------------------------------------------------ 명령어
-const IGNORED = new Set(['ACCSET', 'SINGAREA', 'GRIPLOAD', 'PATHACCLIM', 'WORLDACCLIM', 'TPERASE', 'CIRPATHMODE', 'IDELETE', 'ISIGNALDI', 'ISIGNALDO',
-  'ITIMER', 'IENABLE', 'IDISABLE', 'ISLEEP', 'IWATCH', 'CONNECT', 'SOFTACT', 'SOFTDEACT', 'STOREPATH', 'RESTOPATH', 'MOTIONSUP', 'LOADID', 'TRIGGIO', 'TRIGGEQUIP',
-  'STOPMOVE', 'STARTMOVE', 'CLEARPATH', 'ERRLOG', 'SKIPWARN', 'RESETRETRYCOUNT', 'SETAO', 'SETGO', 'CORRCON', 'CORRDISCON', 'PATHRESOL', 'CONFJ_', 'SPEEDREFRESH',
+const IGNORED = new Set(['SINGAREA', 'GRIPLOAD', 'PATHACCLIM', 'WORLDACCLIM', 'TPERASE', 'CIRPATHMODE', 'IDELETE', 'ISIGNALDI', 'ISIGNALDO',
+  'ITIMER', 'IENABLE', 'IDISABLE', 'ISLEEP', 'IWATCH', 'CONNECT', 'SOFTACT', 'SOFTDEACT', 'STOREPATH', 'RESTOPATH', 'MOTIONSUP', 'LOADID', 'TRIGGEQUIP',
+  'STOPMOVE', 'STARTMOVE', 'CLEARPATH', 'ERRLOG', 'SKIPWARN', 'RESETRETRYCOUNT', 'CORRCON', 'CORRDISCON', 'PATHRESOL', 'CONFJ_', 'SPEEDREFRESH',
   'ACTUNIT', 'DEACTUNIT', 'TUNESERVO', 'SETSYSDATA', 'TPSHOW', 'UILISTVIEW', 'STEPBWDPATH', 'WAITSYNCTASK', 'SYNCMOVEON', 'SYNCMOVEOFF', 'CIRCPATHMODE']);
 // 무시하면 프로그램 동작이 달라질 수 있는 명령 → 컴파일 시 경고 (나머지는 설정성 명령이라 조용히 무시)
-const WARN_IGNORED = new Set(['CONNECT', 'ISIGNALDI', 'ISIGNALDO', 'ITIMER', 'IWATCH', 'TRIGGIO', 'TRIGGEQUIP', 'SETAO', 'SETGO', 'STOREPATH', 'RESTOPATH', 'STOPMOVE', 'STARTMOVE', 'CLEARPATH']);
+const WARN_IGNORED = new Set(['CONNECT', 'ISIGNALDI', 'ISIGNALDO', 'ITIMER', 'IWATCH', 'TRIGGEQUIP', 'STOREPATH', 'RESTOPATH', 'STOPMOVE', 'STARTMOVE', 'CLEARPATH']);
 const IGNORE_REST = new Set(['CONNECT', 'ISIGNALDI', 'ISIGNALDO', 'ITIMER']);
 
 const evalArg = (c, ast) => (ast === true || ast === undefined ? ast : c.ev(ast));
@@ -1044,6 +1046,24 @@ function sigArg(c, ast, type) {
   }
   return sigNo(c.ctrl, c.ev(ast), type);
 }
+function aoArg(c, ast) {
+  if (ast?.t === 'id') {
+    const m = /^AO(\d+)$/i.exec(ast.name);
+    if (m) return Number(m[1]);
+  }
+  const v = c.ev(ast);
+  if (v instanceof Sig) return v.n;
+  const m = /(\d+)$/.exec(String(v));
+  return m ? Number(m[1]) : Math.max(1, Math.round(num(v)));
+}
+function goArg(c, ast) {
+  const groups = c.ctrl.ioGroups || [];
+  const raw = ast?.t === 'id' ? ast.name : String(c.ev(ast));
+  const hit = groups.find((g) => g.dir === 'out' && (g.id.toUpperCase() === raw.toUpperCase() || g.name.toUpperCase() === raw.toUpperCase()));
+  if (hit) return hit.id;
+  const firstOut = groups.find((g) => g.dir === 'out');
+  return firstOut ? firstOut.id : raw;
+}
 
 function speedOf(c, sp, nm, kind) {
   const s = asRec('speeddata', sp);
@@ -1053,7 +1073,7 @@ function speedOf(c, sp, nm, kind) {
   return { tcp: Math.max(0.1, v), rot: Math.max(1, s.v_ori * c.st.velOv / 100) };
 }
 
-async function doMove(c, kind, { target, via, sp, zn, tool, nm }) {
+async function doMove(c, kind, { target, via, sp, zn, tool, nm, triggers }) {
   const ctrl = c.ctrl;
   const td = tool === undefined ? null : asRec('tooldata', tool);
   const toolPose = td ? poseOf(td.tframe) : (c.st.tool ?? ctrl.tool);
@@ -1075,13 +1095,13 @@ async function doMove(c, kind, { target, via, sp, zn, tool, nm }) {
   } else {
     const rt = asRec('robtarget', target);
     tg = { pose: poseOf(rt) };
-    if (kind === 'J' ? c.st.confJ : false) tg.cfgFilter = confFilter(rt.robconf);
+    if (kind === 'J' ? c.st.confJ : c.st.confL) tg.cfgFilter = confFilter(rt.robconf);
     if (via !== undefined) vtg = { pose: poseOf(asRec('robtarget', via)) };
   }
   c.st.tool = toolPose; c.st.toolData = td; c.st.wobj = base; c.st.wobjData = wd;
   ctrl.toolOverride = toolPose;
   ctrl.base = base;
-  await c.vm.move({ kind: kind === 'A' ? 'J' : kind, target: tg, via: vtg, speed, zone, tool: toolPose, base });
+  await c.vm.move({ kind: kind === 'A' ? 'J' : kind, target: tg, via: vtg, speed, zone, tool: toolPose, base, accelScale: c.st.acc, triggers });
 }
 
 function moveInstr(kind, withVia, withDO) {
@@ -1106,6 +1126,42 @@ function moveInstr(kind, withVia, withDO) {
   };
 }
 
+function triggMoveInstr(kind, withVia) {
+  return ({ args, named }) => {
+    const minNeed = withVia ? 6 : 5;
+    if (args.length < minNeed) throw new Error(`인자가 부족합니다 (필요 ${minNeed}, 발견 ${args.length})`);
+    return async (vm, f) => {
+      const c = new Ctx(vm.prog, vm.ctrl, vm, f);
+      const nm = namedVals(c, named);
+      let k = 0;
+      const via = withVia ? c.ev(args[k++]) : undefined;
+      const target = c.ev(args[k++]);
+      const sp = c.ev(args[k++]);
+      // trigg 인자는 1개 이상 가능 (마지막 2개가 zone, tool)
+      const triggArgs = args.slice(k, args.length - 2);
+      const zn = c.ev(args[args.length - 2]);
+      const tool = c.ev(args[args.length - 1]);
+      const triggers = [];
+      for (const ta of triggArgs) {
+        const id = num(c.ev(ta));
+        const spec = c.st.triggs?.get(id);
+        if (!spec) continue;
+        triggers.push({
+          mode: spec.mode,
+          value: spec.value,
+          delayMs: 0,
+          fn: () => {
+            if (spec.kind === 'do') vm.ctrl.setDO(spec.sig, !!spec.val);
+            else if (spec.kind === 'ao') vm.ctrl.setAO(spec.sig, spec.val);
+            else if (spec.kind === 'go') vm.ctrl.writeGroupIO(spec.sig, spec.val);
+          },
+        });
+      }
+      await doMove(c, kind, { target, via, sp, zn, tool, nm, triggers });
+    };
+  };
+}
+
 function setSig(vmc, n, v) { vmc.setDO(n, v); }
 
 const INSTR = {
@@ -1116,6 +1172,43 @@ const INSTR = {
   MOVEJDO: moveInstr('J', false, true),
   MOVELDO: moveInstr('L', false, true),
   MOVECDO: moveInstr('C', true, true),
+  TRIGGJ: triggMoveInstr('J', false),
+  TRIGGL: triggMoveInstr('L', false),
+  TRIGGC: triggMoveInstr('C', true),
+  TRIGGIO: ({ args, named }) => {
+    if (args.length < 2) throw new Error('TriggIO: triggdata 변수와 거리(또는 시간)가 필요합니다');
+    return (vm, f) => {
+      const c = new Ctx(vm.prog, vm.ctrl, vm, f);
+      const dist = Math.max(0, num(c.ev(args[1])));
+      const fromStart = !!named.START;
+      const isTime = !!named.TIME;
+      const val = args[2] !== undefined ? num(c.ev(args[2])) : 1;
+      let kind = 'do', sig = 1;
+      if (named.DOP && named.DOP !== true) { kind = 'do'; sig = sigArg(c, named.DOP, 'do'); }
+      else if (named.GOP && named.GOP !== true) { kind = 'go'; sig = goArg(c, named.GOP); }
+      else if (named.AOP && named.AOP !== true) { kind = 'ao'; sig = aoArg(c, named.AOP); }
+      const mode = isTime
+        ? (fromStart ? 'timeFromStart' : 'timeFromEnd')
+        : (fromStart ? 'distFromStart' : 'distFromEnd');
+      const id = c.st.triggSeq++;
+      c.st.triggs.set(id, { mode, value: dist, kind, sig, val: kind === 'do' ? truthy(val) : val });
+      assign(c, args[0], id);
+    };
+  },
+  ACCSET: ({ args }) => (vm, f) => {
+    const c = new Ctx(vm.prog, vm.ctrl, vm, f);
+    const acc = Math.max(5, Math.min(100, num(c.ev(args[0]))));
+    vm.rapid.acc = acc;
+    vm.ctrl.setAccelScale?.(acc);
+  },
+  SETAO: ({ args }) => (vm, f) => {
+    const c = new Ctx(vm.prog, vm.ctrl, vm, f);
+    vm.ctrl.setAO(aoArg(c, args[0]), num(c.ev(args[1])));
+  },
+  SETGO: ({ args }) => (vm, f) => {
+    const c = new Ctx(vm.prog, vm.ctrl, vm, f);
+    vm.ctrl.writeGroupIO(goArg(c, args[0]), num(c.ev(args[1])));
+  },
   WAITTIME: ({ args }) => async (vm, f) => { const c = new Ctx(vm.prog, vm.ctrl, vm, f); await vm.wait(Math.max(0, num(c.ev(args[0])))); },
   WAITDI: ({ args, named }) => waitSig('di', args, named),
   WAITDO: ({ args, named }) => waitSig('do', args, named),

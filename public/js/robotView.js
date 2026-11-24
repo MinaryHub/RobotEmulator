@@ -80,6 +80,15 @@ export class RobotView {
     this.tcpAxes.matrixAutoUpdate = false;
     this.tcpAxes.layers.set(HELPER_LAYER);
     this.world.add(this.tcpAxes);
+    this.userAxes = new THREE.AxesHelper(140);
+    this.userAxes.matrixAutoUpdate = false;
+    this.userAxes.visible = false;
+    this.userAxes.layers.set(HELPER_LAYER);
+    this.world.add(this.userAxes);
+    this.zoneGroup = new THREE.Group();
+    this.zoneGroup.layers.set(HELPER_LAYER);
+    this.world.add(this.zoneGroup);
+    this._zoneSig = '';
     this.objMeshes = new Map();
 
     // 프레임당 할당을 줄이기 위한 재사용 벡터·행렬
@@ -102,6 +111,26 @@ export class RobotView {
     this.trail.frustumCulled = false;
     this.trail.layers.set(HELPER_LAYER);
     this.world.add(this.trail);
+
+    // 용접 토치 아크 글로우 + 용접 비드(Bead) 누적 궤적
+    this.weldArcGroup = new THREE.Group();
+    const arcOuter = new THREE.Mesh(new THREE.SphereGeometry(15, 14, 10), new THREE.MeshBasicMaterial({ color: 0xff8c1a, transparent: true, opacity: 0.72, depthWrite: false }));
+    const arcCore = new THREE.Mesh(new THREE.SphereGeometry(6.5, 10, 8), new THREE.MeshBasicMaterial({ color: 0xfff6cc }));
+    arcOuter.layers.set(HELPER_LAYER);
+    arcCore.layers.set(HELPER_LAYER);
+    this.weldArcGroup.add(arcOuter, arcCore);
+    this.weldArcGroup.visible = false;
+    this.world.add(this.weldArcGroup);
+    this.weldBeadMax = 4000;
+    this.weldBeadPts = new Float32Array(this.weldBeadMax * 6);
+    this.weldBeadN = 0;
+    this._lastWeldPt = null;
+    const wg = new THREE.BufferGeometry();
+    wg.setAttribute('position', new THREE.BufferAttribute(this.weldBeadPts, 3));
+    this.weldBead = new THREE.LineSegments(wg, new THREE.LineBasicMaterial({ color: 0xff8c1a }));
+    this.weldBead.frustumCulled = false;
+    this.weldBead.layers.set(HELPER_LAYER);
+    this.world.add(this.weldBead);
 
     this.cameras = new CameraRig(this, el.parentElement);
 
@@ -360,7 +389,28 @@ export class RobotView {
     this._v1.set(p[0], p[1], p[2]);
     this._q.set(q[1], q[2], q[3], q[0]);
     this.tcpAxes.matrix.compose(this._v1, this._q, this._one);
+    // 활성 User Frame 3D 축 표시
+    if (st.activeUserFrame) {
+      const uf = st.activeUserFrame;
+      this.userAxes.visible = true;
+      this._v2.set(uf.p[0], uf.p[1], uf.p[2]);
+      this._q.set(uf.q[1], uf.q[2], uf.q[3], uf.q[0]);
+      this.userAxes.matrix.compose(this._v2, this._q, this._one);
+    } else {
+      this.userAxes.visible = false;
+    }
     if (this.trailOn && st.moving) this.pushTrail(p);
+    // 용접 아크 및 비드 궤적
+    const arcOn = !!st.weldArc;
+    this.weldArcGroup.visible = arcOn;
+    if (arcOn) {
+      this.weldArcGroup.position.set(p[0], p[1], p[2]);
+      const sc = st.moving ? (0.85 + 0.35 * Math.random()) : 1;
+      this.weldArcGroup.scale.setScalar(sc);
+      if (st.moving) this.pushWeldBead(p);
+    } else {
+      this._lastWeldPt = null;
+    }
     // 공작물
     const seen = new Set();
     for (const o of st.objects) {
@@ -390,6 +440,7 @@ export class RobotView {
     }
     for (const [id, mesh] of this.objMeshes) if (!seen.has(id)) { this.objGroup.remove(mesh); disposeTree(mesh); this.objMeshes.delete(id); movedShadow = true; }
     if (st.cell) this.updateCell(st);
+    if (st.zones) this.updateZones(st.zones);
     this.markDirty(movedShadow);
   }
 
@@ -397,6 +448,32 @@ export class RobotView {
   updateCell(st) {
     if (!this.cellDevices) this.cellDevices = new CellMeshes(this);
     this.cellDevices.update(st);
+  }
+
+  // 안전 영역(SafeZone) · 간섭 구역(Interference Zone) 3D 표시 (HELPER_LAYER → 비전 영상 제외)
+  updateZones(zones) {
+    const list = Array.isArray(zones) ? zones : [];
+    const sig = JSON.stringify(list.map((z) => [z.id, z.kind, z.shape, z.enabled, z.p, z.size, !!z.active]));
+    if (sig === this._zoneSig) return;
+    this._zoneSig = sig;
+    clearGroup(this.zoneGroup);
+    for (const z of list) {
+      if (!z.enabled) continue;
+      const isSafe = z.kind === 'safe';
+      const col = isSafe ? 0xff3b30 : (z.active ? 0xf59e0b : 0x38bdf8);
+      const geo = z.shape === 'cylinder'
+        ? (() => { const g = new THREE.CylinderGeometry(z.size[0] / 2, z.size[0] / 2, z.size[2], 24); g.rotateX(Math.PI / 2); return g; })()
+        : new THREE.BoxGeometry(z.size[0], z.size[1], z.size[2]);
+      const mat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: z.active ? 0.24 : 0.10, depthWrite: false, side: THREE.DoubleSide });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(z.p[0], z.p[1], z.p[2]);
+      mesh.layers.set(HELPER_LAYER);
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: z.active ? 0.95 : 0.6 }));
+      edges.layers.set(HELPER_LAYER);
+      mesh.add(edges);
+      this.zoneGroup.add(mesh);
+    }
+    this.markDirty(false);
   }
 
   // 작업 영역: 관절 한계 내 무작위 자세의 손목 중심(P점) 분포 — 데이터시트의 동작 범위도와 같은 기준
@@ -441,5 +518,26 @@ export class RobotView {
     this.trail.geometry.attributes.position.needsUpdate = true;
     this.markDirty(false);
   }
-  clearTrail() { this.trailN = 0; this.trail.geometry.setDrawRange(0, 0); this.markDirty(false); }
+  pushWeldBead(p) {
+    if (!this._lastWeldPt) { this._lastWeldPt = [p[0], p[1], p[2]]; return; }
+    const a = this._lastWeldPt;
+    if (Math.hypot(a[0] - p[0], a[1] - p[1], a[2] - p[2]) < 1.5) return;
+    if (this.weldBeadN >= this.weldBeadMax) {
+      this.weldBeadPts.copyWithin(0, 6);
+      this.weldBeadN--;
+    }
+    const off = this.weldBeadN * 6;
+    this.weldBeadPts[off] = a[0]; this.weldBeadPts[off + 1] = a[1]; this.weldBeadPts[off + 2] = a[2];
+    this.weldBeadPts[off + 3] = p[0]; this.weldBeadPts[off + 4] = p[1]; this.weldBeadPts[off + 5] = p[2];
+    this.weldBeadN++;
+    this._lastWeldPt = [p[0], p[1], p[2]];
+    this.weldBead.geometry.setDrawRange(0, this.weldBeadN * 2);
+    this.weldBead.geometry.attributes.position.needsUpdate = true;
+    this.markDirty(false);
+  }
+  clearTrail() {
+    this.trailN = 0; this.trail.geometry.setDrawRange(0, 0);
+    this.weldBeadN = 0; this._lastWeldPt = null; this.weldBead.geometry.setDrawRange(0, 0);
+    this.markDirty(false);
+  }
 }

@@ -121,7 +121,7 @@ const isJbi = (n) => /\.jbi$/i.test(n);
 
 function parseJob(text, file, robot) {
   const lines = String(text).replace(/\r\n?/g, '\n').split('\n');
-  const job = { name: null, file, pos: new Map(), inst: [] };
+  const job = { name: null, file, pos: new Map(), inst: [], toolNo: null, userNo: null };
   let section = /^\s*\/JOB\s*$/m.test(text) ? 'head' : 'inst';
   let postype = 'PULSE';
   for (let i = 0; i < lines.length; i++) {
@@ -139,7 +139,9 @@ function parseJob(text, file, robot) {
       if (key === 'POSTYPE') postype = m[2].trim();
       else if (key === 'PULSE') postype = 'PULSE';
       else if (key === 'RECTAN' && postype === 'PULSE') postype = 'BASE';
-      continue; // NPOS, TOOL, USER, RCONF, DATE, ATTR, GROUP1, COMM, LVARS ... 무시
+      else if (key === 'TOOL') { const n = Number(m[2].trim()); if (Number.isInteger(n) && n >= 0) job.toolNo = n; }
+      else if (key === 'USER') { const n = Number(m[2].trim()); if (Number.isInteger(n) && n >= 0) job.userNo = n; }
+      continue; // NPOS, RCONF, DATE, ATTR, GROUP1, COMM, LVARS ... 무시
     }
     if (U.startsWith('//')) continue; // //ALIAS 등
     if (section === 'pos') {
@@ -153,7 +155,7 @@ function parseJob(text, file, robot) {
         const ppd = robot.pulsePerDeg || [1000, 1000, 1000, 1000, 1000, 1000];
         p = posVal('joints', nums.slice(0, 6).map((v, k) => v / ppd[k]));
       } else p = posVal('pose', nums);
-      job.pos.set(Number(m[2]), { ...p, line: ln });
+      job.pos.set(Number(m[2]), { ...p, postype, line: ln });
       continue;
     }
     if (section === 'inst') { job.inst.push({ line: ln, text: lines[i].replace(/^\s+/, '') }); continue; }
@@ -372,6 +374,19 @@ function compileJob(prog, proc, job, need) {
         const pl = numTag(tags, 'PL', file, line);
         if (pl !== undefined && !(pl >= 0 && pl <= 8)) throw new CompileError('PL 은 0~8 이어야 합니다', file, line);
         const zone = pl ? PL_MM[Math.round(pl)] : 0;
+        const acc = numTag(tags, 'ACC', file, line);
+        if (acc !== undefined && !(acc >= 1 && acc <= 100)) throw new CompileError('ACC 는 1~100 이어야 합니다', file, line);
+        const accelOpt = acc !== undefined ? { accelScale: acc } : {};
+        const resolveMoveFrames = (ctrl, rawPos) => {
+          const out = {};
+          if (job.toolNo > 0 && ctrl.getToolFrame) out.tool = ctrl.getToolFrame(job.toolNo);
+          if (rawPos?.postype === 'USER') {
+            if (job.userNo > 0 && ctrl.getUserFrame) out.base = ctrl.getUserFrame(job.userNo);
+          } else if (rawPos?.postype === 'BASE' || rawPos?.postype === 'ROBOT') {
+            out.base = null;
+          }
+          return out;
+        };
         if (op === 'MOVC') {
           if (!movcRun) movcRun = { pts: [], first: line };
           const run = movcRun;
@@ -379,20 +394,24 @@ function compileJob(prog, proc, job, need) {
           run.pts.push(pos);
           const ins = emit(line, guarded(async (vm, f) => {
             const n = run.pts.length;
-            const cur = applyShift(vm.ctrl, pos(vm, f), f.locals.get('$SFT'));
-            if (k === 0) return void await vm.move({ kind: 'L', target: targetOf(cur), speed, zone });
+            const rawP = pos(vm, f);
+            const frames = resolveMoveFrames(vm.ctrl, rawP);
+            const cur = applyShift(vm.ctrl, rawP, f.locals.get('$SFT'));
+            if (k === 0) return void await vm.move({ kind: 'L', target: targetOf(cur), speed, zone, ...accelOpt, ...frames });
             const tri = k + 1 < n ? [k - 1, k, k + 1] : [k - 2, k - 1, k];
             const P = tri.map((j) => poseOf(vm.ctrl, applyShift(vm.ctrl, run.pts[j](vm, f), f.locals.get('$SFT'))));
             const [A, B, X] = k + 1 < n ? P : [P[1], P[2], P[0]];
             const mid = arcMid(A.p, B.p, X.p);
-            await vm.move({ kind: 'C', via: { pose: { p: mid, R: B.R } }, target: targetOf(cur), speed, zone });
+            await vm.move({ kind: 'C', via: { pose: { p: mid, R: B.R } }, target: targetOf(cur), speed, zone, ...accelOpt, ...frames });
           }));
           ins.movcRun = run;
           break;
         }
         emit(line, guarded(async (vm, f) => {
-          const p = applyShift(vm.ctrl, pos(vm, f), f.locals.get('$SFT'));
-          await vm.move({ kind: op === 'MOVJ' ? 'J' : 'L', target: targetOf(p), speed, zone });
+          const rawP = pos(vm, f);
+          const frames = resolveMoveFrames(vm.ctrl, rawP);
+          const p = applyShift(vm.ctrl, rawP, f.locals.get('$SFT'));
+          await vm.move({ kind: op === 'MOVJ' ? 'J' : 'L', target: targetOf(p), speed, zone, ...accelOpt, ...frames });
         }));
         break;
       }
@@ -400,11 +419,14 @@ function compileJob(prog, proc, job, need) {
       case 'IMOV': {
         const r = parseVarName(args[0] || '');
         if (!r || r.type !== 'P') throw new CompileError('IMOV: P 변수가 필요합니다 (예: IMOV P000 V=100 BF)', file, line);
-        const tags = parseTags(args.slice(1));
+        const ufArg = args.slice(1).find((w) => /^UF#\(\d+\)$/i.test(w));
+        const ufNo = ufArg ? Number(/\d+/.exec(ufArg)[0]) : null;
+        const tags = parseTags(args.slice(1).filter((w) => w !== ufArg));
         const v = numTag(tags, 'V', file, line) ?? 66;
         const speed = { tcp: v };
         if (tags.VR !== undefined) speed.rot = numTag(tags, 'VR', file, line);
         const tf = !!tags.TF;
+        const bf = !!tags.BF || !!tags.RF;
         emit(line, guarded(async (vm, f) => {
           const d = readV(vm.ctrl, f, r);
           if (!d) throw new RuntimeErr('VAR', `위치 변수 ${args[0]} 가 설정되지 않았습니다`);
@@ -413,10 +435,12 @@ function compileJob(prog, proc, job, need) {
             const j = vm.ctrl.joints.map((q, i) => q + d.v[i]);
             return void await vm.move({ kind: 'J', target: jointTarget(j), speed: { frac: Math.min(1, v / vm.ctrl.robot.tcpMaxSpeed) } });
           }
-          const cur = vm.ctrl.tcpPose();
+          const tool = job.toolNo > 0 && vm.ctrl.getToolFrame ? vm.ctrl.getToolFrame(job.toolNo) : vm.ctrl.tool;
+          const base = ufNo !== null ? (vm.ctrl.getUserFrame?.(ufNo) ?? null) : bf ? null : vm.ctrl.effectiveBase;
+          const cur = fkTcp(vm.ctrl.robot, vm.ctrl.joints, tool, base);
           const dp = fromVendorPose(VENDOR, dv);
           const next = tf ? { p: add(cur.p, rot(cur.R, dp.p)), R: mul3(cur.R, dp.R) } : { p: add(cur.p, dp.p), R: mul3(dp.R, cur.R) };
-          await vm.move({ kind: 'L', target: { pose: next }, speed });
+          await vm.move({ kind: 'L', target: { pose: next }, speed, tool, base });
         }));
         break;
       }

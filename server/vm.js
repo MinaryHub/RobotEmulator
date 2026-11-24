@@ -33,6 +33,7 @@ export class VM {
     this.cycle = 0;
     this._resume = null;
     this.current = null; // {file, line, proc}
+    this._ppCustom = false;
   }
 
   get frame() { return this.frames[this.frames.length - 1]; }
@@ -44,7 +45,49 @@ export class VM {
     this.frames.push({ proc: entry, pc: 0, locals: new Map() });
     this.aborted = false;
     this.status = 'idle';
+    this._ppCustom = false;
     this.setCurrent();
+  }
+
+  // 커서 줄(file, line)로 프로그램 포인터(PP) 이동 — 해당 줄 또는 직후 실행 가능한 명령으로 스냅
+  setPointer(file, line) {
+    const ln = Math.max(1, Math.trunc(Number(line) || 1));
+    const procs = Object.values(this.prog.procs || {});
+    let best = null;
+    for (const proc of procs) {
+      for (let pc = 0; pc < proc.code.length; pc++) {
+        const ins = proc.code[pc];
+        const f = ins.file ?? proc.file;
+        if (file && f !== file) continue;
+        if (typeof ins.line !== 'number') continue;
+        if (ins.line >= ln) {
+          const dist = ins.line - ln;
+          if (!best || dist < best.dist) best = { proc, pc, line: ins.line, file: f, dist };
+          break;
+        }
+      }
+    }
+    // 커서가 파일 끝 주석/빈 줄 아래에 있으면 같은 파일의 마지막 실행 명령으로
+    if (!best) {
+      for (const proc of procs) {
+        for (let pc = proc.code.length - 1; pc >= 0; pc--) {
+          const ins = proc.code[pc];
+          const f = ins.file ?? proc.file;
+          if (file && f !== file) continue;
+          if (typeof ins.line === 'number') {
+            if (!best || ins.line > best.line) best = { proc, pc, line: ins.line, file: f, dist: ln - ins.line };
+            break;
+          }
+        }
+      }
+    }
+    if (!best) return { ok: false, reason: `${file || '현재 파일'}에서 실행 가능한 명령 줄을 찾을 수 없습니다` };
+    this.frames = [{ proc: best.proc, pc: best.pc, locals: new Map() }];
+    this.aborted = false;
+    this.status = 'idle';
+    this._ppCustom = true;
+    this.setCurrent();
+    return { ok: true, file: best.file, line: best.line, proc: best.proc.name, pc: best.pc };
   }
 
   setCurrent() {
