@@ -218,7 +218,8 @@ h3 small { text-transform: none; letter-spacing: 0; font-weight: 400; }
 .tc:empty { display: none; }
 
 /* 3D 뷰 빠른 HUD */
-.view-hud { position: absolute; left: 10px; bottom: 10px; z-index: 4; display: flex; align-items: center; gap: 3px; background: var(--ov-bg); border: 1px solid var(--line); border-radius: 7px; padding: 3px 5px; }
+.view-hud { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); z-index: 4; display: flex; align-items: center; gap: 3px; background: var(--ov-bg); border: 1px solid var(--line); border-radius: 7px; padding: 3px 5px; white-space: nowrap; }
+main.chat-open .view-hud { top: auto; bottom: 48px; }
 .view-hud button { padding: 2px 7px; font-size: 11px; background: transparent; border-color: transparent; }
 .view-hud button:hover { background: var(--panel2); border-color: var(--line); }
 .view-hud button.active { background: var(--acc); border-color: var(--acc); color: #fff; }

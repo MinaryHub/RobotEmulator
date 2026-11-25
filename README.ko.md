@@ -15,13 +15,14 @@
 
 화면은 한국어와 영어를 지원합니다. 브라우저 언어에 따라 자동으로 고르며, 정보(ⓘ) 창에서 바꿀 수 있습니다. 아래는 영어 화면입니다.
 
-![KUKA KR 6 R900 running a KRL pick & place program with the signal timeline](screenshots/main.png)
+![KUKA KR 6 R900이 KRL 픽앤플레이스 사이클을 3D 궤적·신호 타임라인과 함께 실행하는 데모](screenshots/demo.gif)
 
 | | |
 |---|---|
-| ![Conveyor cell preset with an ABB IRB 1200 running RAPID](screenshots/cell-conveyor.png) **Cell layout** — conveyor, feeder and sensor preset (ABB RAPID) | ![System I/O: a PLC-style external start of a Yaskawa INFORM job in REMOTE mode](screenshots/system-io.png) **System I/O** — PLC handshake signals, external start in REMOTE (Yaskawa INFORM) |
-| ![Direct teach gizmo on a UR5e](screenshots/direct-teach.png) **Direct teach** — drag the TCP or a link (Universal Robots) | ![Flange-mounted depth camera and a fixed monitoring camera with live previews](screenshots/vision-camera.png) **Vision cameras** — flange and fixed cameras with live previews |
-| ![Claude chat panel next to a Doosan DRL program](screenshots/claude-chat.png) **Claude chat** — write, compile and test-run programs (Doosan DRL) | ![About dialog with version, update check, issue links and sponsor link](screenshots/about.png) **About** — version, one-click update, contact, sponsor |
+| ![KUKA KR 6 R900 KRL 실행 화면 (덮어쓰기·포인트 이동·PP 이동·페이로드·경로 복귀)](screenshots/main.png) **메인 컨트롤러** — KRL 실행, Touch-Up / Go To / Set PP, 페이로드 · 경로 복귀 (KUKA) | ![ABB IRB 1200 컨베이어 셀 및 안전 영역/간섭 구역 3D 표시](screenshots/cell-conveyor.png) **셀 레이아웃 · 안전 구역** — 컨베이어·피더·SafeZone·간섭 구역 (ABB RAPID) |
+| ![야스카와 GP7 REMOTE 모드 시스템 I/O 외부 기동](screenshots/system-io.png) **시스템 I/O** — PLC 핸드셰이크 신호, REMOTE 외부 기동 (Yaskawa INFORM) | ![UR5e 직접교시·면 정렬·스텝 조그·User Frame](screenshots/direct-teach.png) **직접교시 · 좌표계** — TCP/링크 드래그, 면 정렬, 스텝 조그, User Frame (Universal Robots) |
+| ![플랜지 깊이 카메라·상부 모니터링 카메라 및 가상 비전 센서 검출](screenshots/vision-camera.png) **비전 카메라 · 가상 센서** — 깊이/컬러 실시간 PiP 및 DO 트리거 가상 비전 센서 | ![두산 M1013 DRL 프로그램과 Claude 채팅 패널](screenshots/claude-chat.png) **Claude 채팅** — 프로그램 작성·컴파일·시험 실행 (Doosan DRL) |
+| ![정보 창 v1.4.0 — 폐쇄망 AI 숨김, 원클릭 업데이트, 문의·후원](screenshots/about.png) **정보 · 폐쇄망 모드** — 버전, 폐쇄망 AI 숨김 토글, 원클릭 업데이트 | |
 
 ## 내려받기
 

@@ -309,7 +309,7 @@ export const EN = {
     '가상 비전 센서 (DO 트리거)': 'Virtual Vision Sensor (DO Trigger)', '▶ 트리거': '▶ Trigger',
     '지금 시야 내 공작물 검출 실행': 'Run workpiece detection in camera frustum now',
     '트리거 DO': 'Trigger DO', '완료 DI': 'Done DI', '검출 DI': 'Found DI',
-    '레지스터 시작': 'Reg Base', '노이즈 ±mm': 'Noise ±mm', '각도 ±°': 'Angle ±°', '지연 ms': 'Latency ms',
+    '레지스터 시작': 'Reg Base', '노이즈 ±mm': 'Noise ±mm', '각도 ±°': 'Angle ±°', '지연 ms': 'Latency ms', '좌표계': 'Frame',
     '대기 중 (트리거 DO 상승 에지 또는 ▶ 트리거 클릭)': 'Idle (trigger DO rising edge or click ▶ Trigger)',
     '○ 시야 내 공작물 없음': '○ No workpiece in frustum',
     // Phase 3: 경로 복귀, 페이로드, 면 법선 정렬, 폐쇄망 AI 숨김
@@ -374,5 +374,6 @@ export const EN = {
     'Schmalz/SMC 형': 'Schmalz/SMC type', 'Schmalz FXP 형': 'Schmalz FXP type', 'Binzel/Fronius 형': 'Binzel/Fronius type',
     '프로그램 번호 비트': 'Program number bit ', '잡 번호 비트': 'Job number bit ', 'PGNO 비트': 'PGNO bit ', '컬러': 'color', '흑백': 'mono', '깊이': 'depth', '핸드': 'hand', '월드': 'world',
     '(공압)': '(pneumatic)', '(비상정지)': '(E-stop)', ' (비공개 저장소이면 GITHUB_TOKEN 환경변수 필요)': ' (private repository: set GITHUB_TOKEN)',
+    'TCP 250 mm/s 제한': 'TCP 250 mm/s limit',
   },
 };
