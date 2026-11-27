@@ -4,6 +4,7 @@
 //  - touchUpAtLine: 커서 줄(또는 참조 심볼)의 좌표만 현재 로봇 위치로 덮어쓰기 (Touch-Up)
 import { sub, cross, norm, scale } from './math.js';
 import { xyzrpyFromFrame } from './poseformat.js';
+import { toOpw, wristCenter } from './kinematics.js';
 
 const NUM = '-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?';
 const fN = (v, d = 3) => (Math.abs(v) < 0.5 * 10 ** -d ? 0 : v).toFixed(d);
@@ -85,9 +86,31 @@ function matchKrlStruct(line) {
   return null;
 }
 
-function replaceKrlStruct(line, info, vals) {
+function krlStatusTurn(robot, joints) {
+  if (!Array.isArray(joints) || joints.length < 6) return null;
+  let T = 0;
+  for (let i = 0; i < 6; i++) if (joints[i] < 0) T |= 1 << i;
+  let S = null;
+  if (robot?.opw) {
+    const q = toOpw(robot, joints);
+    const wc = wristCenter(robot, joints);
+    const x1 = wc[0] * Math.cos(q[0]) + wc[1] * Math.sin(q[0]);
+    const e = (q[2] + Math.atan2(robot.opw.a2, robot.opw.c3)) * RAD_TO_DEG;
+    S = (x1 < 0 ? 1 : 0) | (e >= 0 ? 2 : 0) | (joints[4] <= 0 ? 4 : 0);
+  }
+  return { S, T };
+}
+
+function replaceKrlStruct(line, info, vals, { joints = null, robot = null } = {}) {
   const keys = info.kind === 'pose' ? ['X', 'Y', 'Z', 'A', 'B', 'C'] : ['A1', 'A2', 'A3', 'A4', 'A5', 'A6'];
   const map = Object.fromEntries(keys.map((k, i) => [k, fN(vals[i], 3)]));
+  if (info.kind === 'pose' && joints && robot?.opw) {
+    const st = krlStatusTurn(robot, joints);
+    if (st) {
+      if (st.S !== null && 'S' in info.fields) map.S = String(st.S);
+      if ('T' in info.fields) map.T = String(st.T);
+    }
+  }
   const oldBlock = info.match[0];
   const newBlock = oldBlock.replace(/\b([A-Za-z_]\w*)\s+(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g, (full, k) => {
     const uk = k.toUpperCase();
@@ -96,7 +119,7 @@ function replaceKrlStruct(line, info, vals) {
   return line.slice(0, info.match.index) + newBlock + line.slice(info.match.index + oldBlock.length);
 }
 
-// 파일 목록에서 심볼 정의 줄 찾기 (현재 파일 우선, 이후 보조 파일 — KRL .dat 등)
+// 파일 목록에서 심볼 정의 줄 찾기 (현재 파일 → 동명 .dat 쌍 → 나머지 보조 파일 순)
 function findDefAcross(fileName, text, files, matcher) {
   const searchOne = (fn, src) => {
     const lines = splitLines(src);
@@ -109,8 +132,14 @@ function findDefAcross(fileName, text, files, matcher) {
   const primary = searchOne(fileName, text);
   if (primary) return primary;
   if (files && typeof files === 'object') {
-    for (const [fn, src] of Object.entries(files)) {
-      if (fn === fileName || typeof src !== 'string') continue;
+    const stem = String(fileName || '').replace(/\.[^.]+$/, '').toLowerCase();
+    const entries = Object.entries(files).filter(([fn, src]) => fn !== fileName && typeof src === 'string');
+    entries.sort((a, b) => {
+      const aMatch = stem && a[0].toLowerCase() === `${stem}.dat` ? 0 : 1;
+      const bMatch = stem && b[0].toLowerCase() === `${stem}.dat` ? 0 : 1;
+      return aMatch - bMatch;
+    });
+    for (const [fn, src] of entries) {
       const found = searchOne(fn, src);
       if (found) return found;
     }
@@ -210,6 +239,24 @@ function locatePoint({ vendor, text, fileName = '', files = null, cursorLine, ro
 
     case 'hyundai': {
       const parseLine = (l) => {
+        // 1) 중괄호 포즈/관절: P1={450, 0, 300, 180, 0, 0, "base"} 또는 {0, -30, 60, 0, 60, 0, "axis"}
+        const bm = new RegExp(`(\\{\\s*)(${NUM}\\s*(?:,\\s*${NUM}\\s*){5})([^}]*)(\\})`).exec(l);
+        if (bm) {
+          const nums = parseNums(bm[2]);
+          if (nums.length === 6 && nums.every(Number.isFinite)) {
+            const tail = bm[3] || '';
+            const isAxis = /["']axis["']/i.test(tail);
+            return {
+              kind: isAxis ? 'joints' : 'pose',
+              values: nums,
+              replace: (tcp, joints) => {
+                const v = isAxis ? joints : tcp;
+                return l.slice(0, bm.index) + `${bm[1]}${v.slice(0, 6).map((x) => fN(x, 3)).join(', ')}${tail}${bm[4]}` + l.slice(bm.index + bm[0].length);
+              },
+            };
+          }
+        }
+        // 2) 괄호 인라인 포즈: MOVE L,(450,0,300,180,0,0),S=250mm/sec
         const m = new RegExp(`(\\(\\s*)(${NUM}\\s*(?:,\\s*${NUM}\\s*){5})(\\))`).exec(l);
         if (m) {
           const nums = parseNums(m[2]);
@@ -220,7 +267,7 @@ function locatePoint({ vendor, text, fileName = '', files = null, cursorLine, ro
         return null;
       };
       const direct = parseLine(line);
-      if (direct) return { ok: true, file: fileName, lines, lineIdx: idx, label: `Ln ${idx + 1}`, kind: direct.kind, values: direct.values, formatUpdate: ({ tcp }) => direct.replace(tcp) };
+      if (direct) return { ok: true, file: fileName, lines, lineIdx: idx, label: `Ln ${idx + 1}`, kind: direct.kind, values: direct.values, formatUpdate: ({ tcp, joints }) => direct.replace(tcp, joints) };
       const ref = /\bMOVE\s+[PLCS]\s*,\s*([A-Za-z_]\w*)/i.exec(line);
       if (ref) {
         const sym = ref[1];
@@ -228,9 +275,9 @@ function locatePoint({ vendor, text, fileName = '', files = null, cursorLine, ro
           if (new RegExp(`^\\s*(?:VAR\\s+)?${sym}\\s*=`, 'i').test(l)) return parseLine(l);
           return null;
         });
-        if (found) return { ok: true, file: found.file, lines: found.lines, lineIdx: found.lineIdx, label: sym, kind: found.hit.kind, values: found.hit.values, formatUpdate: ({ tcp }) => found.hit.replace(tcp) };
+        if (found) return { ok: true, file: found.file, lines: found.lines, lineIdx: found.lineIdx, label: sym, kind: found.hit.kind, values: found.hit.values, formatUpdate: ({ tcp, joints }) => found.hit.replace(tcp, joints) };
       }
-      return { ok: false, reason: '커서 줄에 (X,Y,Z,Rx,Ry,Rz) 좌표를 찾을 수 없습니다' };
+      return { ok: false, reason: '커서 줄에 (X,Y,Z,Rx,Ry,Rz) 또는 {X,Y,Z,Rx,Ry,Rz,"base"} 좌표를 찾을 수 없습니다' };
     }
 
     case 'abb': {
@@ -289,22 +336,27 @@ function locatePoint({ vendor, text, fileName = '', files = null, cursorLine, ro
         return {
           ok: true, file: fileName, lines, lineIdx: idx, label: `Ln ${idx + 1}`,
           kind: direct.kind, values: direct.values,
-          formatUpdate: ({ tcp, joints }) => replaceKrlStruct(line, direct, direct.kind === 'pose' ? tcp : joints),
+          formatUpdate: ({ tcp, joints }) => replaceKrlStruct(line, direct, direct.kind === 'pose' ? tcp : joints, { joints, robot }),
         };
       }
-      const ref = /\b(?:PTP|LIN|CIRC)\s+([A-Za-z_]\w*)\b/i.exec(line);
-      if (ref && !/^(HOME)$/i.test(ref[1])) {
-        const sym = ref[1];
-        const found = findDefAcross(fileName, text, files, (l) => {
-          if (new RegExp(`\\b${sym}\\s*=\\s*\\{`, 'i').test(l)) return matchKrlStruct(l);
-          return null;
-        });
-        if (found) {
-          return {
-            ok: true, file: found.file, lines: found.lines, lineIdx: found.lineIdx, label: sym,
-            kind: found.hit.kind, values: found.hit.values,
-            formatUpdate: ({ tcp, joints }) => replaceKrlStruct(found.lines[found.lineIdx], found.hit, found.hit.kind === 'pose' ? tcp : joints),
-          };
+      // 1) KSS 인라인 폼 ;FOLD PTP P1 ... / ;FOLD LIN P2 ... → XP1 (또는 P1) 조회
+      const fold = /^\s*;\s*FOLD\s+(?:S?PTP|S?LIN|S?CIRC)\s+([A-Za-z_]\w*)\b/i.exec(line);
+      const ref = fold ? null : /\b(?:S?PTP|S?LIN|S?CIRC)\s+([A-Za-z_]\w*)\b/i.exec(line);
+      const rawSym = fold?.[1] || ref?.[1];
+      if (rawSym && !/^(HOME)$/i.test(rawSym)) {
+        const candidates = fold ? [`X${rawSym}`, rawSym] : [rawSym];
+        for (const sym of candidates) {
+          const found = findDefAcross(fileName, text, files, (l) => {
+            if (new RegExp(`\\b${sym}\\s*=\\s*\\{`, 'i').test(l)) return matchKrlStruct(l);
+            return null;
+          });
+          if (found) {
+            return {
+              ok: true, file: found.file, lines: found.lines, lineIdx: found.lineIdx, label: sym,
+              kind: found.hit.kind, values: found.hit.values,
+              formatUpdate: ({ tcp, joints }) => replaceKrlStruct(found.lines[found.lineIdx], found.hit, found.hit.kind === 'pose' ? tcp : joints, { joints, robot }),
+            };
+          }
         }
       }
       return { ok: false, reason: '커서 줄에 KRL 좌표 구조체 {X..,Y..,Z..,A..,B..,C..} 또는 {A1..A6}를 찾을 수 없습니다' };

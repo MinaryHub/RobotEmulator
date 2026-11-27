@@ -7,6 +7,30 @@
 
 릴리스 절차는 [README의 버전 관리](README.ko.md#버전-관리와-업데이트) 절을 보십시오.
 
+## [1.5.0] - 2026-11-27
+
+### 추가
+- **현장 프로토콜 4종 추가 (총 12개 통신 인터페이스).**
+  - **UR RTDE** (`TCP 30004`): 바이너리 버전 협상, 입출력 레시피 설정, 주기적 `DATA_PACKAGE` 및 GP 정수/실수 레지스터 동기화
+  - **EtherNet/IP CIP** (`TCP 44818`): `ListServices`, `ListIdentity`, `RegisterSession`, `SendRRData` UCMM Identity(0x01) 및 Input/Output Assembly(100/150)
+  - **CC-Link IE Field Basic** (`UDP 61450`): `NODE_SEARCH` 및 사이클릭 RX/RY/RWw/RWr 교환
+  - **Doosan DRFL 소켓** (`TCP 12345`): 라인/JSON 프로토콜 기반 상태·좌표·I/O·서보·모드·이동 명령 지원
+- **실장비 다중 폴더 ZIP 백업 가져오기 (`POST /api/backup/import`).** KUKA(`KRC/R1/...`), ABB(`RAPID/...`), Yaskawa, Kawasaki, Hyundai, Doosan, UR 백업 ZIP 또는 폴더 JSON을 제조사 자동 판별·충돌 방지 페어링으로 가져옵니다.
+- **URScript PolyScope 호환성 확장.** `thread` / `run` / `join` / `kill` 협력 스레드와 `struct(...)` / `{k=v}` 구조체 리터럴 및 `.field` 읽기/쓰기를 지원합니다.
+- **공장 IT 보안 · RBAC · 다중 접속 제어권 잠금.**
+  - `Bearer` / `X-Auth-Token` / `?token=` 기반 `admin`·`readonly`(관찰자) 토큰 인증 및 IP/CIDR 허용 목록
+  - 다중 브라우저 접속 시 단일 제어권(Single-Writer Pendant Lock), 상단 `제어권 가져오기` 버튼, 접속 종료 시 자동 위임
+  - `--air-gapped`, `--no-ai`, `--no-update`, `--no-autosave`, `--data-dir`, `--headless`, `--token`, `--readonly-token` CLI·환경변수 지원 및 `0.0.0.0` 공개 시 원격 업데이트 적용 자동 차단
+- **Headless HIL/CI 러너 & 프로브 · 배포 템플릿.**
+  - `node server/index.js --scenario <json> --junit <xml>` 무인 시나리오 검증 및 JUnit XML 리포트 생성
+  - 컨테이너/오케스트레이터용 비인증 `/healthz` · `/readyz` 엔드포인트
+  - [Dockerfile](Dockerfile), [docker-compose.yml](docker-compose.yml), [deploy/robot-emulator.service](deploy/robot-emulator.service) 추가
+
+### 수정 · 안정화
+- **충돌·티칭·비전 정확도.** 커스텀 STL 그리퍼 바운딩 캡슐 및 파지 공작물 간섭 검사, Direct Teach 활성 Tool Frame(`this.tool`) 반영, Yaskawa `///POSTYPE PULSE` 출력, 비전 지연 시 트리거 시점 스냅샷 좌표 출력, 현대 `{...}` 포즈 및 KRL `;FOLD`/동일 stem `.dat`/`S`,`T` 비트 갱신을 수정했습니다.
+- **언어 런타임 · 프로토콜 정합성.** KRL 파일 스코프 `.dat`·`$ANIN`/`$ANOUT`, RAPID `LOCAL` 격리·`AInput`/`GInput`, URScript 아날로그·RTDE GP 레지스터, DRL 아날로그·`get_vision_pos`, INFORM `ARCON`/`ARCOF`, ABB RWS `/rw/mastership`·`elog` 숫자 코드·알람 리셋, Modbus IR[3] 숫자 알람·소켓 상한/유휴 정리, Yaskawa HSE/Kawasaki AS/Hyundai OpenAPI/OPC UA를 보강했습니다.
+- **24/7 장기 구동 안정성.** 알람 200건 상한, 신호 번호 범위 클램프, 중단 시 VM 타이머 정리, WebSocket 30s `ping/pong`·2MB 백프레셔, 휘발성 레지스터(`MB:`, `RTDE_`, `aio`) 제외 및 10초 스로틀 비동기 자동 저장을 적용했습니다.
+
 ## [1.4.0] - 2026-11-24
 
 ### 추가

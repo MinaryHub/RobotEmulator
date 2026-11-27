@@ -27,7 +27,7 @@ import { peerOf } from './traffic.js';
 
 const TAG = 'ABB-RWS';
 const RAPID_EXT = /\.(mod|modx|sys|sysx|prg|pgf)$/i;
-const ERR = { MOTOR_OFF: -1073442812, NOT_FOUND: -1073445879, BAD_ARG: -1073445865, BUSY: -1073445860, PROGRAM: -1073442794 };
+const ERR = { MOTOR_OFF: -1073442812, NOT_FOUND: -1073445879, BAD_ARG: -1073445865, BUSY: -1073445860, BAD_STATE: -1073445861, PROGRAM: -1073442794 };
 
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
@@ -68,12 +68,15 @@ export async function start(ctrl, opts = {}) {
   const startTime = new Date();
   const sysId = crypto.randomUUID();
   let execCycle = 'once';
+  const mastership = { rapid: 'nomaster', cfg: 'nomaster', edit: 'nomaster' };
   let elogSeq = 0;
   const elog = [];
   const onLog = (e) => {
     if (e.src !== 'alarm') return;
     const a = ctrl.alarms[ctrl.alarms.length - 1];
-    elog.unshift({ seq: ++elogSeq, type: 3, code: 50000 + (Number(a?.code) || 0) % 10000, t: e.t, title: a?.code ?? 'ALARM', desc: e.msg });
+    const numMatch = /\d+/.exec(String(a?.vendorCode ?? a?.code ?? ''));
+    const code = numMatch ? Number(numMatch[0]) : 50000;
+    elog.unshift({ seq: ++elogSeq, type: 3, code, t: e.t, title: a?.vendorName ?? a?.code ?? 'ALARM', desc: e.msg });
     if (elog.length > 200) elog.pop();
   };
   ctrl.on('log', onLog);
@@ -451,6 +454,25 @@ export async function start(ctrl, opts = {}) {
       }
     }
 
+    // --- 마스터십 (abb_librws / RobotStudio 호환)
+    if ((m = /^\/rw\/mastership(?:\/(rapid|cfg|edit))?(?:\/(request|release))?$/i.exec(path))) {
+      const dom = m[1]?.toLowerCase() || null;
+      const subAct = m[2]?.toLowerCase() || action;
+      const keys = dom ? [dom] : ['rapid', 'cfg', 'edit'];
+      if (M === 'GET') {
+        if (dom) return state('msh-resource', dom, { mastership: mastership[dom] });
+        return {
+          list: true,
+          items: keys.map((k) => ({ cls: 'msh-resource', title: k, href: k, fields: { mastership: mastership[k] } })),
+        };
+      }
+      if (M === 'POST') {
+        if (subAct === 'request') { for (const k of keys) mastership[k] = 'held'; return { status: 204 }; }
+        if (subAct === 'release') { for (const k of keys) mastership[k] = 'nomaster'; return { status: 204 }; }
+        throw new RwsError(400, `Unknown mastership action: ${subAct}`);
+      }
+    }
+
     // --- 이벤트 로그
     if ((m = /^\/rw\/elog\/(\d+)$/i.exec(path))) {
       if (M === 'GET') {
@@ -459,7 +481,7 @@ export async function start(ctrl, opts = {}) {
           items: elog.map((e) => ({ cls: 'elog-message-li', title: `/rw/elog/${m[1]}/${e.seq}`, href: `${m[1]}/${e.seq}`, fields: { msgtype: String(e.type), code: String(e.code), tstamp: new Date(e.t).toISOString().replace('T', ' ').slice(0, 19), title: String(e.title), desc: e.desc } })),
         };
       }
-      if (M === 'POST' && (action === 'clear' || action === 'clearall')) { elog.length = 0; return { status: 204 }; }
+      if (M === 'POST' && (action === 'clear' || action === 'clearall')) { elog.length = 0; ctrl.resetAlarms(); return { status: 204 }; }
     }
     if (/^\/rw\/elog$/i.test(path) && M === 'GET') return { list: true, items: [{ cls: 'elog-domain-li', title: '0', href: 'elog/0', fields: { domain: '0', numevts: String(elog.length) } }] };
 
@@ -471,7 +493,7 @@ export async function start(ctrl, opts = {}) {
       return state('sys-system-li', 'system', { major: '6', minor: '13', build: '0', title: 'RobotWare', type: 'RobotWare', description: 'Robot Emulator RWS', date: startTime.toISOString().slice(0, 10), mctimestamp: '', name: 'EMU_SYSTEM', rwversion: '6.13.0', sysid: `{${sysId}}`, starttm: startTime.toISOString().replace('T', ' ').slice(0, 19), rwversionname: '6.13.00.00' });
     }
     if (/^\/rw\/system\/robottype$/i.test(path) && M === 'GET') return state('sys-robottype', 'robottype', { 'robot-type': `${ctrl.robot.name}` });
-    if (/^\/rw\/?$/.test(path) && M === 'GET') return { list: true, items: ['motionsystem', 'rapid', 'iosystem', 'panel', 'elog', 'system'].map((x) => ({ cls: 'rw-service-li', title: x, href: x, fields: {} })) };
+    if (/^\/rw\/?$/.test(path) && M === 'GET') return { list: true, items: ['motionsystem', 'rapid', 'iosystem', 'panel', 'mastership', 'elog', 'system'].map((x) => ({ cls: 'rw-service-li', title: x, href: x, fields: {} })) };
 
     // --- 파일 서비스
     if ((m = /^\/fileservice(?:\/(.*))?$/i.exec(path))) {

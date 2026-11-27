@@ -16,6 +16,8 @@ export const EN = {
     '정보 · 업데이트 · 문의하기 · 후원하기': 'About · Update · Contact · Sponsor', '정보': 'About',
     '비상정지 (정지 범주 0: 즉시 정지 + 서보 OFF). 누르면 잠김 — 다시 눌러 해제 후 알람 리셋': 'Emergency stop (stop category 0: immediate stop + servo OFF). Latches when pressed — press again to release, then reset alarms',
     '외부 비상정지 입력 (시스템 I/O)': 'External E-stop input (System I/O)',
+    '제어권 가져오기': 'Take Control',
+    '다른 브라우저가 제어권을 보유 중입니다 — 눌러서 제어권 가져오기': 'Another browser holds control — click to take control',
     // ---- 왼쪽 탭
     '로봇': 'Robot', '조그': 'Jog', '시스템 I/O': 'System I/O', '통신': 'Comm', '셀': 'Cell', '카메라': 'Camera', '고장': 'Faults',
     '조그 방식': 'Jog mode', '연속': 'Continuous', '연속: 누르는 동안 이동 · 0.1/1/10: 클릭마다 지정 크기(° 또는 mm)만큼 스텝 이동': 'Continuous: hold to jog · 0.1/1/10: step by ° or mm per click',

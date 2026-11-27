@@ -1,6 +1,6 @@
 {
   "name": "robot-emulator",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "다제조사 산업용 로봇 에뮬레이터 (Yaskawa/Kawasaki/Hyundai/ABB/KUKA/Doosan/Universal Robots)",
   "homepage": "https://github.com/MinaryHub/RobotEmulator#readme",
   "repository": {

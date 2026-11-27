@@ -743,6 +743,18 @@ const SYNC = {
   },
   get_digital_input: (c, [n]) => (c.vm.ctrl.getDI(sigNo(n, 'get_digital_input')) ? 1 : 0),
   get_digital_output: (c, [n]) => (c.vm.ctrl.getDO(sigNo(n, 'get_digital_output')) ? 1 : 0),
+  set_analog_output: (c, args, kw) => {
+    const o = bindArgs('set_analog_output', ['ch', 'val'], args, kw);
+    c.vm.ctrl.setAO(int(o.ch), num(o.val, 'set_analog_output'));
+    return null;
+  },
+  get_analog_input: (c, [ch]) => c.vm.ctrl.getAI(int(ch)),
+  get_analog_output: (c, [ch]) => c.vm.ctrl.getAO(int(ch)),
+  get_vision_pos: (c) => {
+    const r = c.vm.ctrl.regs;
+    const x = Number(r.get('VISION_X') ?? 0), y = Number(r.get('VISION_Y') ?? 0), z = Number(r.get('VISION_Z') ?? 0), rz = Number(r.get('VISION_RZ') ?? 0);
+    return mkPos('posx', [x, y, z, 0, 180, rz]);
+  },
 
   // 현재 위치
   get_current_posj: (c) => mkPos('posj', c.vm.ctrl.joints.map((x) => Math.round(x * 1e6) / 1e6)),

@@ -232,6 +232,7 @@ export async function start(ctrl, opts = {}) {
     if (err) {
       if (err.code === 'SERVO_OFF') throw new HseError(AS.TURN_SERVO_ON);
       if (err.code === 'ALARM') throw new HseError(AS.ALARM);
+      if (err.code === 'REJECT_1' || ctrl.lastReject?.code === 1) throw new HseError(AS.BAD_MODE);
       throw new HseError(AS.UNREACHABLE, ST.ERR, err.message);
     }
   };
@@ -298,7 +299,7 @@ export async function start(ctrl, opts = {}) {
           if (idx < 0 && !(inst >= 2001 && inst <= 4100)) throw new HseError(AS.INSTANCE, ST.BAD_INST);
           a = idx >= 0 ? history[idx] : undefined;
         }
-        const f = [i32s([a ? alarmNo(a.code) : 0]), i32s([0]), i32s([a ? 1 : 0]), strBuf(a ? fmtTime(a.t) : '', 16), strBuf(a ? a.msg : '', 32)];
+        const f = [i32s([a ? alarmNo(a.vendorCode ?? a.code) : 0]), i32s([0]), i32s([a ? 1 : 0]), strBuf(a ? fmtTime(a.t) : '', 16), strBuf(a ? a.msg : '', 32)];
         return pick(f);
       }
       case 0x72: { // 상태 정보

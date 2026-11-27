@@ -1,0 +1,25 @@
+[Unit]
+Description=Industrial Robot Emulator (Virtual Controller & Fieldbus Server)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=robotemu
+Group=robotemu
+WorkingDirectory=/opt/robot-emulator
+Environment=NODE_ENV=production
+Environment=HOST=0.0.0.0
+Environment=PORT=3000
+Environment=ROBOT_EMU_DATA_DIR=/var/lib/robot-emulator
+# Uncomment to require Bearer token auth for REST/WebSocket/MCP:
+# Environment=ROBOT_EMU_TOKEN=change-me
+ExecStart=/usr/bin/node /opt/robot-emulator/server/index.js --host 0.0.0.0 --data-dir /var/lib/robot-emulator --air-gapped --headless
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/robot-emulator
+
+[Install]
+WantedBy=multi-user.target

@@ -84,8 +84,8 @@ console.log('[URScript 문법]');
   ok(t.length === 1 && t[0].kw === 'def' && t[0].body[0].kw === 'if' && t[0].body[0].branches.length === 2 && t[0].body[0].els.length === 1 && t[0].body[1].kw === 'while', 'def/if/elif/else/while … end 트리, $ 주석 줄 무시');
   const e1 = (await run('def f():\n  x = 1\n')).compileError;
   ok(e1 && /end/.test(e1.msg ?? e1.message ?? JSON.stringify(e1)), 'end 누락 → 컴파일 오류');
-  const e2 = (await run('thread t():\n  sleep(1)\nend\n')).compileError;
-  ok(e2 && /thread/.test(JSON.stringify(e2)), 'thread → 지원하지 않음 오류');
+  const e2 = (await run('thread t():\n  sleep(0.01)\nend\nth = run t()\njoin th\n')).compileError;
+  ok(!e2, 'thread / run / join 컴파일 및 실행 지원');
   const e3 = (await run('foo_bar(1)\n')).compileError;
   ok(e3 && /foo_bar/.test(JSON.stringify(e3)), '알 수 없는 함수 → 컴파일 오류');
 }

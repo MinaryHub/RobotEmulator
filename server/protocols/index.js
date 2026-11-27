@@ -19,7 +19,11 @@ import * as hyundai from './hyundai-openapi.js';
 import * as abb from './abb-rws.js';
 import * as kuka from './kuka-varproxy.js';
 import * as urDash from './ur-dashboard.js';
+import * as urRtde from './ur-rtde.js';
+import * as doosanDrfl from './doosan-drfl.js';
 import * as modbus from './modbus-tcp.js';
+import * as ethernetIp from './ethernet-ip.js';
+import * as cclinkIeBasic from './cclink-ie-basic.js';
 import * as opcua from './opcua.js';
 import { TrafficMonitor } from './traffic.js';
 
@@ -32,7 +36,11 @@ export const PROTOCOLS = [
   { key: 'abbRws', mod: abb, vendor: 'abb', defaults: { port: 8080 } },
   { key: 'kukaVarProxy', mod: kuka, vendor: 'kuka', defaults: { port: 7000 } },
   { key: 'urDashboard', mod: urDash, vendor: 'ur', defaults: { port: 29999 } },
+  { key: 'urRtde', mod: urRtde, vendor: 'ur', optional: true, defaults: { port: 30004 } },
+  { key: 'doosanDrfl', mod: doosanDrfl, vendor: 'doosan', optional: true, defaults: { port: 12345 } },
   { key: 'modbus', mod: modbus, vendor: null, optional: true, defaults: { port: 502, fallbackPort: 1502 } },
+  { key: 'ethernetIp', mod: ethernetIp, vendor: null, optional: true, defaults: { port: 44818 } },
+  { key: 'cclinkIeBasic', mod: cclinkIeBasic, vendor: null, optional: true, defaults: { port: 61450 } },
   { key: 'opcua', mod: opcua, vendor: null, optional: true, defaults: { port: 4840 } },
 ];
 
@@ -65,7 +73,11 @@ const DISPLAY_NAME = {
   abbRws: { name: 'ABB RWS', proto: 'HTTP' },
   kukaVarProxy: { name: 'KukaVarProxy / OpenShowVar', proto: 'TCP' },
   urDashboard: { name: 'UR Dashboard', proto: 'TCP' },
+  urRtde: { name: 'UR RTDE', proto: 'TCP' },
+  doosanDrfl: { name: 'Doosan DRFL Socket', proto: 'TCP' },
   modbus: { name: 'Modbus TCP', proto: 'TCP' },
+  ethernetIp: { name: 'EtherNet/IP (CIP)', proto: 'TCP' },
+  cclinkIeBasic: { name: 'CC-Link IE Field Basic', proto: 'UDP' },
   opcua: { name: 'OPC UA', proto: 'TCP' },
 };
 

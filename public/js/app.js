@@ -50,7 +50,9 @@ function stopJog() {
 }
 function connect() {
   clearTimeout(reconnectTimer);
-  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+  const tok = new URLSearchParams(location.search).get('token');
+  const q = tok ? `?token=${encodeURIComponent(tok)}` : '';
+  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws${q}`);
   ws.onopen = () => {
     reconnectMs = 1000;
     setPill($('#stConn'), '연결됨', 'on');
@@ -76,6 +78,7 @@ function connect() {
     else if (m.type === 'logs') m.entries.forEach(addLog);
     else if (m.type === 'files') onFiles(m);
     else if (m.type === 'comms') { app.comms = m.comms; if (m.protocolMode) app.protocolMode = m.protocolMode; renderComms(); }
+    else if (m.type === 'controlLock') onControlLock(m);
     else if (m.type === 'tl') dbg.onTimeline(m);
     else if (m.type === 'traffic') dbg.onTraffic(m);
     else if (m.type === 'trafficClear') dbg.onTrafficClear();
@@ -128,9 +131,19 @@ $('#chkHideChat')?.addEventListener('change', (e) => {
 });
 applyChatVisibility();
 
+function onControlLock(lock) {
+  app.controlLock = lock;
+  const btn = $('#btnClaimLock');
+  if (!btn) return;
+  const otherHolds = lock && lock.holder != null && app.clientId != null && lock.holder !== app.clientId;
+  btn.classList.toggle('hidden', !otherHolds || app.role === 'readonly');
+}
+$('#btnClaimLock')?.addEventListener('click', () => run('claimControl'));
+
 function onInit(m) {
-  Object.assign(app, { robots: m.robots, grippers: m.grippers, vendors: m.vendors, comms: m.comms, protocolMode: m.protocolMode || 'vendor', aiEnabled: m.aiEnabled !== false });
+  Object.assign(app, { robots: m.robots, grippers: m.grippers, vendors: m.vendors, comms: m.comms, protocolMode: m.protocolMode || 'vendor', aiEnabled: m.aiEnabled !== false, clientId: m.clientId, role: m.role });
   applyChatVisibility();
+  onControlLock(m.controlLock);
   $('#log').innerHTML = '';
   m.logs.forEach(addLog);
   buildSelectors();
@@ -474,10 +487,13 @@ $('#btnCustomGripper').onclick = async () => {
   const s = Number($('#cgUnit').value);
   geom.scale(s, s, s);
   geom.computeVertexNormals();
+  geom.computeBoundingBox();
+  const bb = geom.boundingBox;
+  const bounds = bb ? { min: [bb.min.x, bb.min.y, bb.min.z], max: [bb.max.x, bb.max.y, bb.max.z] } : null;
   app.customGeom?.dispose?.();
   app.customGeom = geom;
   app.gripperKey = null;
-  run('customGripper', { def: { name: f.name, kind: $('#cgKind').value, stroke: Number($('#cgStroke').value), tcp: [Number($('#cgX').value), Number($('#cgY').value), Number($('#cgZ').value), 0, 0, 0] } });
+  run('customGripper', { def: { name: f.name, kind: $('#cgKind').value, stroke: Number($('#cgStroke').value), tcp: [Number($('#cgX').value), Number($('#cgY').value), Number($('#cgZ').value), 0, 0, 0], bounds } });
 };
 
 function renderGripIO(st) {
@@ -1134,13 +1150,24 @@ $('#btnTeach').onclick = () => {
       const posHdr = lastC !== undefined ? lastC : lines.findIndex((l) => l.trim() === '//POS' || l.startsWith('///POSTYPE'));
       if (posHdr !== -1) {
         const lineNo = editor.ta.value.slice(0, editor.ta.selectionStart).split('\n').length - 1;
-        lines.splice(posHdr + 1, 0, `${tag}=${t.join(',')}`);
+        let postype = 'PULSE';
+        for (let i = 0; i <= posHdr; i++) {
+          const u = lines[i].trim().toUpperCase();
+          const pm = /^\/\/\/(\w+)\s*(.*)$/.exec(u);
+          if (!pm) continue;
+          if (pm[1] === 'POSTYPE') postype = pm[2].trim();
+          else if (pm[1] === 'PULSE') postype = 'PULSE';
+          else if (pm[1] === 'RECTAN' && postype === 'PULSE') postype = 'BASE';
+        }
+        const ppd = app.robots.find((r) => r.id === st.robotId)?.pulsePerDeg || [1000, 1000, 1000, 1000, 1000, 1000];
+        const coords = postype === 'PULSE' ? st.joints.map((deg, i) => String(Math.round(deg * ppd[i]))) : t;
+        lines.splice(posHdr + 1, 0, `${tag}=${coords.join(',')}`);
         const np = lines.findIndex((l) => l.startsWith('///NPOS'));
         if (np >= 0) lines[np] = lines[np].replace(/^\/\/\/NPOS (\d+)/, (_, c) => `///NPOS ${Number(c) + 1}`);
         editor.ta.value = lines.join('\n');
         const off = lines.slice(0, lineNo + 1 + (posHdr < lineNo ? 1 : 0)).join('\n').length;
         editor.ta.selectionStart = editor.ta.selectionEnd = off;
-        editor.insertAtCursor(`MOVL ${tag} V=250.0`);
+        editor.insertAtCursor(postype === 'PULSE' ? `MOVJ ${tag} VJ=50.00` : `MOVL ${tag} V=250.0`);
       } else {
         // 헤더 없는 빈 파일: 기본 //POS 스켈레톤에 C 포인트와 MOVL 함께 삽입 (활성 Tool/User 반영)
         const fr = st.frames;
