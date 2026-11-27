@@ -254,7 +254,11 @@ export class Controller extends EventEmitter {
   setCustomGripper(def) {
     if (!def || typeof def !== 'object') throw new Error('그리퍼 정의(def)가 필요합니다');
     if (def.tcp !== undefined && !(Array.isArray(def.tcp) && def.tcp.length === 6 && def.tcp.every(Number.isFinite))) throw new Error('그리퍼 tcp 는 숫자 6개 [x,y,z,rx,ry,rz] 여야 합니다');
-    this.gripper = { id: 'custom', kind: def.kind || 'parallel', name: def.name || '사용자 그리퍼', maker: 'User', tcp: def.tcp || [0, 0, 100, 0, 0, 0], mass: def.mass || 1, grip: def.grip ?? 20, stroke: def.stroke || 50, geom: {}, custom: true };
+    const geom = (def.geom && typeof def.geom === 'object') ? { ...def.geom } : {};
+    if (def.bounds?.min?.length === 3 && def.bounds?.max?.length === 3 && [...def.bounds.min, ...def.bounds.max].every(Number.isFinite)) {
+      geom.bounds = { min: def.bounds.min.map(Number), max: def.bounds.max.map(Number) };
+    }
+    this.gripper = { id: 'custom', kind: def.kind || 'parallel', name: def.name || '사용자 그리퍼', maker: 'User', tcp: def.tcp || [0, 0, 100, 0, 0, 0], mass: def.mass || 1, grip: def.grip ?? 20, stroke: def.stroke || 50, geom, custom: true };
     this.grip = { pos: 0, closed: false, holding: null };
     this.emitState();
   }
@@ -367,6 +371,7 @@ export class Controller extends EventEmitter {
     const va = vendorAlarm(this.vendor, code);
     const a = { t: Date.now(), code, vendorCode: va.code, vendorName: va.name, msg };
     this.alarms.push(a);
+    if (this.alarms.length > 200) this.alarms.shift();
     this.log('alarm', `[${code}${va.code !== code ? '/' + va.code : ''}] ${msg}`);
     this.cancelMotion();
     this.emitState();
@@ -702,7 +707,12 @@ export class Controller extends EventEmitter {
     for (const [n, nm] of Object.entries(names)) if (nm.toUpperCase() === key.toUpperCase()) return Number(n);
     const m = /(\d+)$/.exec(key);
     let n = m ? Number(m[1]) : 0;
-    if (!n || names[n]) { n = 101; while (names[n]) n++; }
+    if (!n || n < 1 || n > NIO || names[n]) {
+      n = 101;
+      while (n <= NIO && names[n]) n++;
+      if (n > NIO) { n = 1; while (n <= NIO && names[n]) n++; }
+      if (n > NIO) throw new Error(`I/O 신호 매핑 한도(${NIO}) 초과: ${key}`);
+    }
     names[n] = key;
     return n;
   }
@@ -1157,8 +1167,9 @@ export class Controller extends EventEmitter {
     }
     let preCol = null;
     if (this.collisionMode === 'stop') {
-      const held = this.grip?.holding?.id;
-      preCol = checkCollision(this.robot, j, this.gripper, this.scene, this.objects, { ignoreObjects: held ? [held] : [], obstacles: this.cell.obstacles() });
+      const heldObj = this.grip?.holding || null;
+      const predHeld = heldObj && heldObj.rel ? { ...heldObj, pose: poseMul(fkTcp(this.robot, j, this.gripperTcp, null), heldObj.rel) } : heldObj;
+      preCol = checkCollision(this.robot, j, this.gripper, this.scene, this.objects, { ignoreObjects: heldObj ? [heldObj.id] : [], heldObject: predHeld, obstacles: this.cell.obstacles() });
       if (preCol.hit) return { ok: false, reason: `간섭: ${preCol.pairs.map((p) => `${p.a}↔${p.b}`).join(', ')}`, collision: true };
     }
     this.joints = [...j];
@@ -1170,14 +1181,14 @@ export class Controller extends EventEmitter {
     this.emitState();
     return { ok: true, joints: this.joints };
   }
-  // TCP 목표 자세 (로봇 베이스 좌표, mm / 쿼터니언 [w,x,y,z]) — 현재 그리퍼 TCP 기준
+  // TCP 목표 자세 (로봇 베이스 좌표, mm / 쿼터니언 [w,x,y,z]) — 활성 툴 프레임(this.tool) 기준
   teachPose({ p, q, R, allowJump = false }, source = 'ui') {
     const g = this._teachGate(source);
     if (g) return g;
     if (!Array.isArray(p) || p.length !== 3 || (!R && !(Array.isArray(q) && q.length === 4 && q.every(Number.isFinite)))) return { ok: false, reason: '위치 p[3] 와 자세 q[4](쿼터니언)가 필요합니다' };
     const target = { p: p.map(Number), R: R ?? RfromQuat(q) };
     if (!target.p.every(Number.isFinite)) return { ok: false, reason: '잘못된 위치' };
-    const j = ikNearest(this.robot, tcpToFlange(target, this.gripperTcp, null), this.joints);
+    const j = ikNearest(this.robot, tcpToFlange(target, this.tool, null), this.joints);
     if (!j) return { ok: false, reason: '도달 불가 (작업 영역·관절 한계 밖)' };
     const jump = Math.max(...j.map((v, i) => Math.abs(v - this.joints[i])));
     const maxJump = allowJump ? 120 : 30;
@@ -1237,18 +1248,20 @@ export class Controller extends EventEmitter {
     const until = Number.isFinite(t) ? this.simMs + Math.max(0, t) * 1000 : Infinity;   // NaN·생략 = 무한 대기
     return new Promise((res) => this._waiters.push({ pred, until, res, owner }));
   }
-  // 시뮬레이션 시간 sec 후 fn 실행 (펄스 출력 등)
-  after(sec, fn) {
+  // 시뮬레이션 시간 sec 후 fn 실행 (펄스 출력 등). owner 지정 시 wakeWaiters(owner) 로 취소 가능
+  after(sec, fn, owner = undefined) {
     const s = Number(sec);
     const ms = Number.isFinite(s) ? Math.max(0, s) * 1000 : 0;
-    this._waiters.push({ until: this.simMs + ms, fn });
+    const tag = owner !== undefined ? owner : (this.vm || 'program');
+    this._waiters.push({ until: this.simMs + ms, fn, owner: tag });
   }
-  // owner 의 대기를 모두 즉시 깨움 (프로그램 중단 시)
+  // owner 의 대기 및 예약 콜백을 모두 즉시 깨움/제거 (프로그램 중단 시)
   wakeWaiters(owner) {
     const keep = [];
     for (const w of this._waiters) {
-      if (owner && w.owner === owner) w.res(w.pred ? false : undefined);
-      else keep.push(w);
+      if (owner && w.owner === owner) {
+        if (w.res) w.res(w.pred ? false : undefined);
+      } else keep.push(w);
     }
     this._waiters = keep;
   }
@@ -1428,8 +1441,8 @@ export class Controller extends EventEmitter {
   // 간섭 체크 (매 틱). 충돌 상태로 '진입'할 때만 알람 → 알람 리셋 후 빠져나오는 조그는 허용
   checkCollisionNow() {
     if (this.collisionMode === 'off') { if (this.collision.hit) this.collision = { hit: false, pairs: [] }; return; }
-    const held = this.grip?.holding?.id;
-    const r = checkCollision(this.robot, this.joints, this.gripper, this.scene, this.objects, { ignoreObjects: held ? [held] : [], obstacles: this.cell.obstacles() });
+    const heldObj = this.grip?.holding || null;
+    const r = checkCollision(this.robot, this.joints, this.gripper, this.scene, this.objects, { ignoreObjects: heldObj ? [heldObj.id] : [], heldObject: heldObj, obstacles: this.cell.obstacles() });
     const was = this.collision.hit;
     this.collision = { hit: r.hit, pairs: r.pairs.map((p) => ({ a: p.a, b: p.b, type: p.type })) };
     if (r.hit && !was) {

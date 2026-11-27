@@ -73,16 +73,24 @@ export class VisionEngine {
     if (!cam) return { ok: false, reason: `카메라를 찾을 수 없습니다: ${camId}` };
     const vis = normalizeVision(cam.vision || {});
     const det = detectInFrustum(c, cam);
+    // 트리거 시점(t)의 공작물 자세와 활성 좌표계를 스냅샷 고정 (컨베이어 이동 중 latencyMs 후 미래 좌표 누출 방지)
+    const snapObj = det.found && det.obj ? {
+      id: det.obj.id,
+      pose: { p: [...det.obj.pose.p], R: det.obj.pose.R.map((row) => [...row]) },
+    } : null;
+    const snapBase = vis.frame === 'user' && c.effectiveBase
+      ? { p: [...c.effectiveBase.p], R: c.effectiveBase.R.map((row) => [...row]) }
+      : null;
     if (vis.doneDI > 0) c.setDI(vis.doneDI, false);
 
     const finalize = () => {
       let pose = [0, 0, 0, 0];
       let objectId = null;
-      if (det.found && det.obj) {
-        objectId = det.obj.id;
-        let objPose = det.obj.pose;
-        if (vis.frame === 'user' && c.effectiveBase) {
-          objPose = poseMul(poseInv(c.effectiveBase), objPose);
+      if (snapObj) {
+        objectId = snapObj.id;
+        let objPose = snapObj.pose;
+        if (snapBase) {
+          objPose = poseMul(poseInv(snapBase), objPose);
         }
         const yawDeg = Math.atan2(objPose.R[1][0], objPose.R[0][0]) / DEG;
         const nx = deterministic ? 0 : randSym(vis.noiseMm);
@@ -99,7 +107,7 @@ export class VisionEngine {
       const res = {
         camId: cam.id,
         camName: cam.name,
-        found: !!det.found,
+        found: !!snapObj,
         count: det.count || 0,
         objectId,
         pose,
@@ -108,7 +116,8 @@ export class VisionEngine {
         at: Date.now(),
       };
       this.results[cam.id] = res;
-      // 레지스터 기록 (Modbus MB:n, Yaskawa B/R/P, 공통 VISION_*)
+      this.last = res;
+      // 레지스터 기록 (Modbus MB:n, Yaskawa B/R/P, RTDE GP, 공통 VISION_*)
       const b = vis.regBase;
       c.regs.set(`MB:${b}`, res.found ? 1 : 0);
       c.regs.set(`MB:${b + 1}`, toI16(pose[0] * 10));
@@ -121,6 +130,11 @@ export class VisionEngine {
       c.regs.set(`R:${b + 2}`, pose[2]);
       c.regs.set(`R:${b + 3}`, pose[3]);
       c.regs.set(`P:${b}`, { kind: 'pose', v: [pose[0], pose[1], pose[2], 180, 0, pose[3]] });
+      c.regs.set(`RTDE_IN_I:0`, res.found ? 1 : 0);
+      c.regs.set(`RTDE_IN_F:0`, pose[0]);
+      c.regs.set(`RTDE_IN_F:1`, pose[1]);
+      c.regs.set(`RTDE_IN_F:2`, pose[2]);
+      c.regs.set(`RTDE_IN_F:3`, pose[3]);
       c.regs.set('VISION_FOUND', res.found ? 1 : 0);
       c.regs.set('VISION_X', pose[0]);
       c.regs.set('VISION_Y', pose[1]);
@@ -137,7 +151,7 @@ export class VisionEngine {
     };
 
     if (vis.latencyMs > 0 && !deterministic) {
-      c.after(vis.latencyMs / 1000, finalize);
+      c.after(vis.latencyMs / 1000, finalize, 'vision');
       return { ok: true, pending: true, latencyMs: vis.latencyMs };
     }
     const result = finalize();

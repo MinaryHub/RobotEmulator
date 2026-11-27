@@ -236,12 +236,34 @@ function sigVal(ctrl, s, type) {
 
 const isLv = (a) => a && (a.t === 'id' || a.t === 'field' || a.t === 'index');
 
+function modScope(prog, mod) {
+  if (!mod) return null;
+  const mk = K(mod);
+  let s = prog.modLocals.get(mk);
+  if (!s) { s = { vars: new Map(), meta: new Map(), procs: {} }; prog.modLocals.set(mk, s); }
+  return s;
+}
+function lookupProc(prog, nameKey, mod) {
+  if (mod) {
+    const lp = prog.modLocals.get(K(mod))?.procs?.[nameKey];
+    if (lp) return lp;
+  }
+  return prog.procs[nameKey];
+}
+
 class Ctx {
-  constructor(prog, ctrl, vm, frame) { this.prog = prog; this.ctrl = ctrl; this.vm = vm; this.frame = frame; this.st = prog.state; }
+  constructor(prog, ctrl, vm, frame, mod = null) {
+    this.prog = prog; this.ctrl = ctrl; this.vm = vm; this.frame = frame; this.st = prog.state;
+    this.mod = frame?.proc?.module ?? mod ?? null;
+  }
   get env() { return this._env ||= makeEnv(this); }
   ev(ast) { return evaluate(ast, this.env); }
   typeOfName(key) {
     if (this.frame?.locals.has(key)) return this.frame.proc.ltypes?.get(key)?.type;
+    if (this.mod) {
+      const mm = this.prog.modLocals.get(K(this.mod))?.meta.get(key);
+      if (mm) return mm.type;
+    }
     return this.prog.meta.get(key)?.type;
   }
 }
@@ -252,6 +274,10 @@ function makeEnv(cx) {
     get(name) {
       const u = K(name);
       if (cx.frame?.locals.has(u)) return cx.frame.locals.get(u);
+      if (cx.mod) {
+        const mv = prog.modLocals.get(K(cx.mod))?.vars;
+        if (mv?.has(u)) return mv.get(u);
+      }
       if (prog.globals.has(u)) return prog.globals.get(u);
       if (u === 'TRUE') return true;
       if (u === 'FALSE') return false;
@@ -321,19 +347,23 @@ function lvType(cx, node) {
 
 function assign(cx, node, value) {
   const schema = cx.prog.schema;
+  const ml = cx.mod ? cx.prog.modLocals.get(K(cx.mod)) : null;
   if (node.t === 'id') {
     const u = K(node.name);
-    const where = cx.frame?.locals.has(u) ? cx.frame.locals : cx.prog.globals.has(u) ? cx.prog.globals : null;
+    let where = null, meta = null;
+    if (cx.frame?.locals.has(u)) { where = cx.frame.locals; meta = cx.frame.proc.ltypes?.get(u); }
+    else if (ml?.vars.has(u)) { where = ml.vars; meta = ml.meta.get(u); }
+    else if (cx.prog.globals.has(u)) { where = cx.prog.globals; meta = cx.prog.meta.get(u); }
     if (!where) throw new RuntimeErr('ERR_UNDEF', `정의되지 않은 변수 '${node.name}'`);
-    if (where === cx.prog.globals && cx.prog.meta.get(u)?.kind === 'CONST') throw new RuntimeErr('ERR_CONST', `상수 '${node.name}' 에는 대입할 수 없습니다`);
-    const meta = where === cx.prog.globals ? cx.prog.meta.get(u) : cx.frame.proc.ltypes?.get(u);
+    if (where !== cx.frame?.locals && meta?.kind === 'CONST') throw new RuntimeErr('ERR_CONST', `상수 '${node.name}' 에는 대입할 수 없습니다`);
     const t = meta?.type;
     const v = t ? (meta.dims?.length ? coerceDecl(t, meta.dims, value, schema) : coerce(t, value, schema)) : clone(value);
     where.set(u, v);
     return;
   }
   const root = rootName(node);
-  if (root && !cx.frame?.locals.has(root) && cx.prog.meta.get(root)?.kind === 'CONST') throw new RuntimeErr('ERR_CONST', `상수 '${root}' 에는 대입할 수 없습니다`);
+  const rootMeta = root && !cx.frame?.locals.has(root) ? (ml?.meta.get(root) ?? cx.prog.meta.get(root)) : null;
+  if (rootMeta?.kind === 'CONST') throw new RuntimeErr('ERR_CONST', `상수 '${root}' 에는 대입할 수 없습니다`);
   const t = lvType(cx, node);
   const v = t ? coerce(t, value, schema) : clone(value);
   if (node.t === 'field') {
@@ -403,7 +433,7 @@ function runSync(vm, proc, locals, depth = 0) {
 
 function callFunc(cx, name, args, named, node) {
   const u = K(name);
-  const user = cx.prog.procs[u];
+  const user = lookupProc(cx.prog, u, cx.mod);
   if (user && user.kind === 'FUNC') {
     const a = node.args.map((ast, i) => ({ ast, v: args[i] }));
     const nm = {};
@@ -546,6 +576,10 @@ const FUNCS = {
   DOUTPUT: (cx, [s]) => (cx.ctrl.getDO(sigNo(cx.ctrl, s, 'do')) ? 1 : 0),
   DINPUT: (cx, [s]) => (cx.ctrl.getDI(sigNo(cx.ctrl, s, 'di')) ? 1 : 0),
   TESTDI: (cx, [s]) => cx.ctrl.getDI(sigNo(cx.ctrl, s, 'di')),
+  AINPUT: (cx, [s]) => cx.ctrl.getAI(aioSigNo(s)),
+  AOUTPUT: (cx, [s]) => cx.ctrl.getAO(aioSigNo(s)),
+  GINPUT: (cx, [s]) => cx.ctrl.readGroupIO(grpSigId(cx.ctrl, s, 'in')),
+  GOUTPUT: (cx, [s]) => cx.ctrl.readGroupIO(grpSigId(cx.ctrl, s, 'out')),
   PRESENT(cx, args, named, node) {
     const a = node.args[0];
     if (!a || a.t !== 'id') return false;
@@ -562,6 +596,25 @@ const FUNCS = {
   BITAND: (cx, [a, b]) => num(a) & num(b),
   BITOR: (cx, [a, b]) => num(a) | num(b),
 };
+
+function aioSigNo(s) {
+  if (s instanceof Sig) {
+    const m = /(\d+)$/.exec(s.name);
+    return m ? Number(m[1]) : 1;
+  }
+  const m = /(\d+)$/.exec(String(s));
+  return m ? Number(m[1]) : Math.max(1, Math.round(num(s)));
+}
+function grpSigId(ctrl, s, dir) {
+  const raw = s instanceof Sig ? s.name : String(s);
+  const groups = ctrl.ioGroups || [];
+  const hit = groups.find((g) => g.dir === dir && (g.id.toUpperCase() === raw.toUpperCase() || g.name.toUpperCase() === raw.toUpperCase()));
+  if (hit) return hit.id;
+  const any = groups.find((g) => g.id.toUpperCase() === raw.toUpperCase() || g.name.toUpperCase() === raw.toUpperCase());
+  if (any) return any.id;
+  const first = groups.find((g) => g.dir === dir);
+  return first ? first.id : raw;
+}
 
 // ------------------------------------------------------------------ 문장 분할
 const HEADER = [
@@ -648,13 +701,13 @@ function findAssign(s) {
   return -1;
 }
 
-const DECL_RE = /^(?:(?:LOCAL|TASK)\s+)?(CONST|PERS|VAR)\s+([A-Za-z_]\w*)\s+([A-Za-z_]\w*)\s*(\[[^\]]*\])?\s*(?::=\s*([\s\S]*))?$/i;
+const DECL_RE = /^(?:(LOCAL|TASK)\s+)?(CONST|PERS|VAR)\s+([A-Za-z_]\w*)\s+([A-Za-z_]\w*)\s*(\[[^\]]*\])?\s*(?::=\s*([\s\S]*))?$/i;
 
 // ------------------------------------------------------------------ 컴파일러
 function compile(files, main, ctrl) {
   const schema = { ...SCHEMA };
   const prog = {
-    lang: 'rapid', entry: 'MAIN', procs: {}, globals: new Map(), meta: new Map(), schema, warnings: [],   // warnings: 에뮬레이터가 실행하지 않는 부분 {file, line, msg}
+    lang: 'rapid', entry: 'MAIN', procs: {}, globals: new Map(), meta: new Map(), modLocals: new Map(), schema, warnings: [],   // warnings: 에뮬레이터가 실행하지 않는 부분 {file, line, msg}
     modules: {}, state: null,
     init(vm) {
       prog.state = vm.rapid = {
@@ -666,21 +719,21 @@ function compile(files, main, ctrl) {
     },
   };
   prog.state = { confJ: true, confL: true, velOv: 100, velMax: 7000, acc: 100, tool: null, wobj: null, triggs: new Map(), triggSeq: 1 };
-  const pending = []; // 미해결 루틴 호출 [{name, file, line}]
+  const pending = []; // 미해결 루틴 호출 [{name, file, line, module}]
   const names = [...files.keys()].filter((f) => EXTS.some((e) => f.toLowerCase().endsWith(e)) || f === main);
   names.sort((a, b) => (a === main ? 1 : b === main ? -1 : 0));
-  const cctx = new Ctx(prog, ctrl, null, null);
 
   for (const file of names) {
     const stmts = splitStatements(files.get(file), file);
     let module = null;
+    let mctx = new Ctx(prog, ctrl, null, null, null);
     let i = 0;
     while (i < stmts.length) {
       const { text, line } = stmts[i];
       const t = braces(text);
       const u = t.toUpperCase();
       let m;
-      if ((m = /^MODULE\s+([A-Za-z_]\w*)/i.exec(t))) { module = m[1]; prog.modules[K(module)] = { name: module, file }; i++; continue; }
+      if ((m = /^MODULE\s+([A-Za-z_]\w*)/i.exec(t))) { module = m[1]; prog.modules[K(module)] = { name: module, file }; mctx = new Ctx(prog, ctrl, null, null, module); i++; continue; }
       if (/^ENDMODULE\b/i.test(t)) { module = null; i++; continue; }
       if (!module) throw new CompileError(`MODULE 선언 밖의 문장입니다: ${text.slice(0, 40)}`, file, line);
       if ((m = /^(?:(?:LOCAL|TASK)\s+)?RECORD\s+([A-Za-z_]\w*)$/i.exec(t))) {
@@ -697,12 +750,13 @@ function compile(files, main, ctrl) {
         continue;
       }
       if ((m = DECL_RE.exec(t))) {
-        at(file, line, () => declare(cctx, prog, m, module, null));
+        at(file, line, () => declare(mctx, prog, m, module, null));
         i++;
         continue;
       }
-      if ((m = /^(?:(?:LOCAL|TASK)\s+)?(PROC|FUNC|TRAP)\s+(?:([A-Za-z_]\w*)\s+)?([A-Za-z_]\w*)\s*(?:\(([\s\S]*)\))?$/i.exec(t))) {
-        const kind = m[1].toUpperCase();
+      if ((m = /^(?:(LOCAL|TASK)\s+)?(PROC|FUNC|TRAP)\s+(?:([A-Za-z_]\w*)\s+)?([A-Za-z_]\w*)\s*(?:\(([\s\S]*)\))?$/i.exec(t))) {
+        const isLocal = m[1]?.toUpperCase() === 'LOCAL';
+        const kind = m[2].toUpperCase();
         const endKw = 'END' + kind;
         let j = i + 1;
         const body = [];
@@ -713,16 +767,18 @@ function compile(files, main, ctrl) {
           j++;
         }
         if (j >= stmts.length) throw new CompileError(`${endKw} 가 없습니다`, file, line);
-        if (kind === 'TRAP') prog.warnings.push({ file, line, msg: `TRAP ${m[3]}` });
+        if (kind === 'TRAP') prog.warnings.push({ file, line, msg: `TRAP ${m[4]}` });
         if (kind !== 'TRAP') {
-          const name = kind === 'FUNC' ? m[3] : (m[2] ? null : m[3]);
+          const name = kind === 'FUNC' ? m[4] : (m[3] ? null : m[4]);
           if (!name) throw new CompileError('루틴 선언 형식 오류', file, line);
           const key = K(name);
-          if (prog.procs[key]) throw new CompileError(`루틴 '${name}' 이 중복 정의되었습니다`, file, line);
-          const rparams = at(file, line, () => parseParams(m[4] || ''));
-          const proc = { name, kind, rtype: kind === 'FUNC' ? m[2] : null, params: [], rparams, file, line, module, code: [], labels: {}, ltypes: new Map() };
+          const store = isLocal ? modScope(prog, module).procs : prog.procs;
+          if (store[key]) throw new CompileError(`루틴 '${name}' 이 중복 정의되었습니다`, file, line);
+          const rparams = at(file, line, () => parseParams(m[5] || ''));
+          const proc = { name, kind, rtype: kind === 'FUNC' ? m[3] : null, params: [], rparams, file, line, module, local: isLocal, code: [], labels: {}, ltypes: new Map() };
           for (const p of rparams) proc.ltypes.set(p.key, { type: p.type, dims: p.dims });
-          prog.procs[key] = proc;
+          store[key] = proc;
+          if (isLocal && key === 'MAIN' && !prog.procs.MAIN) prog.procs.MAIN = proc;
           compileBody(prog, proc, body, file, ctrl, pending);
         }
         i = j + 1;
@@ -733,7 +789,7 @@ function compile(files, main, ctrl) {
     if (module) throw new CompileError(`ENDMODULE 가 없습니다 (${module})`, file, stmts.at(-1)?.line ?? 1);
   }
   for (const p of pending) {
-    if (!prog.procs[K(p.name)] && !p.late) throw new CompileError(`정의되지 않은 루틴 또는 명령 '${p.name}'`, p.file, p.line);
+    if (!lookupProc(prog, K(p.name), p.module) && !p.late) throw new CompileError(`정의되지 않은 루틴 또는 명령 '${p.name}'`, p.file, p.line);
   }
   if (!prog.procs.MAIN) throw new CompileError('PROC main() 이 없습니다', main, 1);
   return prog;
@@ -765,17 +821,24 @@ function evalDims(cx, s) {
   return splitTop(inner, ',').map((d) => Math.round(cx.ev(parseExpr(d))));
 }
 
-// 데이터 선언 (전역: compile 시 즉시 평가)
+// 데이터 선언 (전역/모듈 LOCAL: compile 시 즉시 평가)
 function declare(cx, prog, m, module, proc) {
-  const [, kindRaw, typeRaw, name, dimS, init] = m;
+  const [, scopeRaw, kindRaw, typeRaw, name, dimS, init] = m;
+  const isLocal = scopeRaw?.toUpperCase() === 'LOCAL';
   const kind = kindRaw.toUpperCase();
   const type = typeKey(typeRaw);
   const key = K(name);
   const dims = evalDims(cx, dimS);
   if (!prog.schema[type] && !NUMLIKE.has(type) && !['bool', 'string'].includes(type)) throw new Error(`알 수 없는 데이터 타입 '${typeRaw}'`);
-  const meta = { name, type, kind, module, dims };
+  const meta = { name, type, kind, module, dims, local: isLocal };
   const value = init !== undefined && init.trim() ? coerceDecl(type, dims, cx.ev(parseExpr(init.trim())), prog.schema) : coerceDecl(type, dims, undefined, prog.schema);
   if (proc) return { meta, value };
+  if (isLocal) {
+    const sc = modScope(prog, module);
+    sc.meta.set(key, meta);
+    sc.vars.set(key, value);
+    return null;
+  }
   if (prog.meta.has(key) && prog.meta.get(key).module !== module) throw new Error(`데이터 '${name}' 가 여러 모듈에 중복 정의되었습니다`);
   prog.meta.set(key, meta);
   prog.globals.set(key, value);
@@ -808,7 +871,7 @@ function compileBody(prog, proc, body, file, ctrl, pending) {
     }
     // 지역 데이터 선언
     if ((m = DECL_RE.exec(t))) {
-      const [, kindRaw, typeRaw, name, dimS, init] = m;
+      const [, , kindRaw, typeRaw, name, dimS, init] = m;
       const type = typeKey(typeRaw);
       const key = K(name);
       if (!prog.schema[type] && !NUMLIKE.has(type) && !['bool', 'string'].includes(type)) throw new Error(`알 수 없는 데이터 타입 '${typeRaw}'`);
@@ -980,7 +1043,7 @@ function compileBody(prog, proc, body, file, ctrl, pending) {
       emit(line, (vm, f) => {
         const c = cx(vm, f);
         const nm = String(c.ev(nameAst));
-        const target = prog.procs[K(nm)];
+        const target = lookupProc(prog, K(nm), proc.module);
         if (!target || target.kind !== 'PROC') throw new RuntimeErr('ERR_REFUNKPRC', `루틴 '${nm}' 을 찾을 수 없습니다`);
         return callProc(c, target, args, named);
       });
@@ -1001,9 +1064,9 @@ function compileBody(prog, proc, body, file, ctrl, pending) {
     }
     if (IGNORED.has(U)) { if (WARN_IGNORED.has(U)) prog.warnings.push({ file, line, msg: name }); return; }
     if (!p.eof()) throw new Error(`인자 형식 오류: '${p.peek().v}'`);
-    pending.push({ name, file, line });
+    pending.push({ name, file, line, module: proc.module });
     emit(line, (vm, f) => {
-      const target = prog.procs[U];
+      const target = lookupProc(prog, U, proc.module);
       if (!target || target.kind !== 'PROC') throw new RuntimeErr('ERR_REFUNKPRC', `'${name}' 은 PROC 가 아닙니다`);
       return callProc(cx(vm, f), target, args, named);
     });

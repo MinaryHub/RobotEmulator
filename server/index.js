@@ -367,11 +367,16 @@ const wss = new WebSocketServer({
     return !why;
   },
 });
+const WS_MAX_BUFFERED = 2 * 1024 * 1024;
 const send = (ws, msg) => ws.readyState === 1 && ws.send(JSON.stringify(msg));
-const broadcast = (msg) => {
+const broadcast = (msg, { droppable = false } = {}) => {
   if (!wss.clients.size) return;
   const s = JSON.stringify(msg);
-  for (const c of wss.clients) if (c.readyState === 1) c.send(s);
+  for (const c of wss.clients) {
+    if (c.readyState !== 1) continue;
+    if (droppable && c.bufferedAmount > WS_MAX_BUFFERED) continue;
+    c.send(s);
+  }
 };
 
 // Claude 채팅: 연결(브라우저 탭)마다 대화 세션 1개. SDK 는 처음 사용할 때 불러옴
@@ -413,6 +418,8 @@ async function chatSession(ws) {
 }
 
 wss.on('connection', (ws) => {
+  ws._alive = true;
+  ws.on('pong', () => { ws._alive = true; });
   ws.on('close', () => ws.chat?.stop());
   send(ws, {
     type: 'init', robots: ROBOTS, grippers: GRIPPERS, vendors: VENDORS, cameras: CAMERAS,
@@ -449,6 +456,16 @@ wss.on('connection', (ws) => {
   });
 });
 
+// WebSocket 좀비 연결 정리 (30s ping/pong)
+const wsPingTimer = setInterval(() => {
+  for (const c of wss.clients) {
+    if (c._alive === false) { try { c.terminate(); } catch {} continue; }
+    c._alive = false;
+    try { c.ping(); } catch {}
+  }
+}, 30_000);
+wsPingTimer.unref();
+
 // 상태 브로드캐스트 (최대 30Hz)
 //  자주 바뀌지 않는 큰 항목은 리비전 카운터(ctrl._rev)로 O(1) 비교 후 직전 전송과 같으면 뺀다 (app.js STICKY).
 //  접속된 웹 클라이언트가 없으면 스냅샷 생성 자체를 생략한다.
@@ -471,7 +488,7 @@ ctrl.on('state', () => {
   setTimeout(() => {
     pending = false;
     if (!wss.clients.size) return;
-    broadcast({ type: 'state', state: stateDelta(ctrl.snapshot()) });
+    broadcast({ type: 'state', state: stateDelta(ctrl.snapshot()) }, { droppable: true });
   }, 33);
 });
 // 로그는 100ms 단위로 묶어 전송 (반복문 안의 출력이 쏟아져도 클라이언트·네트워크가 버티도록, 묶음당 최대 300개)
@@ -485,13 +502,14 @@ ctrl.on('log', (e) => {
 function flushLogs() {
   if (logDropped) { logQ.push({ t: Date.now(), src: 'system', msg: `로그 ${logDropped}개 생략 (너무 많음)` }); logDropped = 0; }
   const q = logQ; logQ = [];
-  if (q.length === 1) broadcast({ type: 'log', entry: q[0] });
-  else if (q.length) broadcast({ type: 'logs', entries: q });
+  if (q.length === 1) broadcast({ type: 'log', entry: q[0] }, { droppable: true });
+  else if (q.length) broadcast({ type: 'logs', entries: q }, { droppable: true });
 }
 // 타임라인 이벤트는 100ms 단위로 묶어 전송
 let tlPending = [];
 timeline.listeners.add((e) => { if (wss.clients.size) tlPending.push(e); });
-setInterval(() => { if (tlPending.length) { broadcast({ type: 'tl', events: tlPending, now: Math.round(ctrl.simMs) }); tlPending = []; } }, 100);
+const tlTimer = setInterval(() => { if (tlPending.length) { broadcast({ type: 'tl', events: tlPending, now: Math.round(ctrl.simMs) }, { droppable: true }); tlPending = []; } }, 100);
+tlTimer.unref();
 
 // 이벤트 기반 파일 변경 브로드캐스트 (외부 프로토콜·REST·MCP·UI 모든 경로에서 동일 길이 수정도 즉시 반영)
 let filesTimer = null;
@@ -513,7 +531,7 @@ function attachTrafficStream() {
     trTimer = null;
     if (!wss.clients.size) { trQ = []; return; }
     const entries = trQ; trQ = [];
-    broadcast({ type: 'traffic', entries, clients: ctrl.traffic.listClients(), stats: { ...ctrl.traffic.stats, buffered: ctrl.traffic._size } });
+    broadcast({ type: 'traffic', entries, clients: ctrl.traffic.listClients(), stats: { ...ctrl.traffic.stats, buffered: ctrl.traffic._size } }, { droppable: true });
   };
   ctrl.traffic.on('entry', (e) => {
     if (!wss.clients.size) return;
@@ -594,6 +612,11 @@ process.on('unhandledRejection', (e) => {
   console.error('[unhandledRejection]', e);
   try { ctrl.log('system', `내부 오류(처리되지 않은 거부): ${e?.message ?? e}`); } catch {}
 });
+process.on('uncaughtException', (e) => {
+  console.error('[uncaughtException]', e);
+  try { projects.saveAutosave?.(); } catch {}
+  process.exit(1);
+});
 
 // 종료 처리: Ctrl+C(SIGINT, 모든 OS), SIGTERM(Linux/macOS 서비스·컨테이너), SIGBREAK(Windows Ctrl+Break)
 let shuttingDown = false;
@@ -602,6 +625,8 @@ async function shutdown(sig, code = 0) {
   if (shuttingDown) return process.exit(1);   // 두 번째 신호는 즉시 종료
   shuttingDown = true;
   console.log(`\n  종료 중 (${sig})...`);
+  clearInterval(wsPingTimer);
+  clearInterval(tlTimer);
   try { projects.saveAutosave?.(); } catch {}
   const force = setTimeout(() => process.exit(code), 3000);
   force.unref();

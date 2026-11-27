@@ -75,10 +75,12 @@ const putI32 = (regs, at, v) => { const x = i32(v) >>> 0; regs[at] = (x >>> 16) 
 const putU32 = (regs, at, v) => { const x = u32(v); regs[at] = Math.floor(x / 65536) & 0xFFFF; regs[at + 1] = x & 0xFFFF; };
 const toInt16 = (v) => ((Math.round(Number(v) || 0) & 0xFFFF) << 16) >> 16;
 
-// 알람 코드 → 16bit 숫자
+// 알람 코드 → 16bit 숫자 (숫자 코드 또는 vendorCode 내 숫자 우선, 없으면 16bit FNV 해시)
 export function alarmCodeNum(code) {
   if (code === undefined || code === null) return 0;
   if (typeof code === 'number' || /^\d+$/.test(String(code))) return Number(code) & 0xFFFF;
+  const dm = /\d+/.exec(String(code));
+  if (dm) return Number(dm[0]) & 0xFFFF;
   let h = 0x811c9dc5;
   for (const ch of String(code)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 0x01000193) >>> 0; }
   return ((h >>> 16) ^ (h & 0xFFFF)) & 0xFFFF || 1;
@@ -107,7 +109,8 @@ export function inputRegisters(ctrl, needPose = true) {
   r[0] = bits;
   r[1] = Math.round(ctrl.override) & 0xFFFF;
   r[2] = (ctrl.alarms?.length ?? 0) & 0xFFFF;
-  r[3] = ctrl.alarms?.length ? alarmCodeNum(ctrl.alarms[ctrl.alarms.length - 1].code) : 0;
+  const lastAlarm = ctrl.alarms?.length ? ctrl.alarms[ctrl.alarms.length - 1] : null;
+  r[3] = lastAlarm ? alarmCodeNum(lastAlarm.vendorCode ?? lastAlarm.code) : 0;
   putU32(r, 4, ctrl.vm?.cycle ?? 0);
   r[6] = VENDOR_CODE[ctrl.vendor] ?? 0;
   r[7] = ctrl.lastReject?.code ?? 0;
@@ -303,14 +306,22 @@ export async function start(ctrl, opts = {}) {
   };
 
   // --- TCP 연결: MBAP 프레이밍
+  const MAX_SOCKETS = opts.maxSockets ?? 32;
+  const IDLE_MS = opts.idleTimeoutMs ?? 120_000;
   const server = net.createServer((sock) => {
-    sockets.add(sock);
     const peer = peerOf(sock);
+    if (sockets.size >= MAX_SOCKETS) {
+      log(`연결 수 한도(${MAX_SOCKETS}) 초과 — 거부 ${peer}`, true);
+      sock.destroy();
+      return;
+    }
+    sockets.add(sock);
     ctrl.traffic?.connect('modbus', peer);
     log(`클라이언트 접속 ${peer}`, true);
     let buf = Buffer.alloc(0);
     let chain = Promise.resolve(); // 연결별 요청 순차 처리
     sock.setNoDelay(true);
+    if (IDLE_MS > 0) sock.setTimeout(IDLE_MS, () => { log(`유휴 시간 초과 종료 ${peer}`, true); sock.destroy(); });
     sock.on('data', (d) => {
       buf = buf.length ? Buffer.concat([buf, d]) : d;
       while (buf.length >= 7) {

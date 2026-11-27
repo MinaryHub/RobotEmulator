@@ -122,7 +122,7 @@ export async function start(ctrl, opts = {}) {
     const lines = [];
     lines.push(`Robot status: ${ctrl.alarms.length ? 'Error occurred.' : 'Error free.'}`);
     lines.push(`               Motor power ${ctrl.servo ? 'on' : 'off'}.`);
-    lines.push(`               ${ctrl.mode === 'TEACH' ? 'TEACH' : 'REPEAT'} mode.`);
+    lines.push(`               ${ctrl.mode === 'TEACH' ? 'TEACH' : ctrl.mode === 'REMOTE' ? 'REPEAT (REMOTE)' : 'REPEAT'} mode.`);
     lines.push(`               ${running && !ctrl.held ? 'Program running.' : ctrl.held ? 'Program held.' : 'Program not running.'}`);
     lines.push(`Environment:   Monitor speed(%)  = ${lpad(fx(ctrl.override, 1), 10)}`);
     lines.push(`               Program speed(%)  ALWAYS = ${lpad('100.0', 8)}`);
@@ -135,20 +135,35 @@ export async function start(ctrl, opts = {}) {
     const cur = vm?.current;
     const name = primed || ctrl.asEntry || (ctrl.main ? stripExt(ctrl.main) : '');
     if (name) lines.push(`${pad(cur?.proc || name, 16)}${pad(running ? '1' : '0', 10)}${cur?.line ?? 0}`);
-    if (ctrl.alarms.length) for (const a of ctrl.alarms) lines.push(`(E${String(a.code).slice(0, 6)}) ${a.msg}`);
+    if (ctrl.alarms.length) for (const a of ctrl.alarms) {
+      const vc = String(a.vendorCode ?? a.code);
+      const tag = /^[A-Z]/i.test(vc) ? vc : `E${vc}`;
+      lines.push(`(${tag.slice(0, 10)}) ${a.msg}`);
+    }
     return lines.join(CRLF);
   }
 
-  function ioText() {
+  function ioText(arg = '') {
     const out = [];
     const bits = (get, from) => {
       let s = '';
       for (let i = from + 31; i >= from; i--) {
-        s += get(i) ? 'o' : 'x';
+        s += i <= 512 && get(i) ? 'o' : 'x';
         if ((i - from) % 8 === 0 && i !== from) s += ' ';
       }
       return s;
     };
+    const startNo = parseInt(arg, 10);
+    if (Number.isFinite(startNo) && startNo >= 1001 && startNo <= 1512) {
+      const base = Math.floor((startNo - 1001) / 32) * 32 + 1;
+      for (let b = base; b <= Math.min(512, base + 32); b += 32) out.push(`${lpad(b + 1031, 5)}-${lpad(b + 1000, 5)}  ${bits((n) => ctrl.getDI(n), b)}`);
+      return out.join(CRLF);
+    }
+    if (Number.isFinite(startNo) && startNo >= 1 && startNo <= 512) {
+      const base = Math.floor((startNo - 1) / 32) * 32 + 1;
+      for (let b = base; b <= Math.min(512, base + 32); b += 32) out.push(`${lpad(b + 31, 5)}-${lpad(b, 5)}  ${bits((n) => ctrl.getDO(n), b)}`);
+      return out.join(CRLF);
+    }
     for (let b = 1; b <= 64; b += 32) out.push(`${lpad(b + 31, 5)}-${lpad(b, 5)}  ${bits((n) => ctrl.getDO(n), b)}`);
     for (let b = 1; b <= 64; b += 32) out.push(`${lpad(b + 1031, 5)}-${lpad(b + 1000, 5)}  ${bits((n) => ctrl.getDI(n), b)}`);
     return out.join(CRLF);
@@ -272,7 +287,7 @@ export async function start(ctrl, opts = {}) {
         }
         return '';
       }
-      case 'IO': return ioText();
+      case 'IO': return ioText(arg);
       case 'DIRECTORY': case 'DIR': case 'DI': {
         const list = await programs();
         const lines = list.map((p) => `  ${pad(p.name, 16)}${p.file && p.file !== p.name ? p.file : ''}`);

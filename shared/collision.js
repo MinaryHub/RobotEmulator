@@ -54,6 +54,22 @@ function toolLocalCapsules(g) {
   if (!g || g.kind === 'none') return [];
   let cached = toolCache.get(g);
   if (cached) return cached;
+  if (g.custom && g.geom?.bounds?.min && g.geom?.bounds?.max) {
+    const mn = g.geom.bounds.min, mx = g.geom.bounds.max;
+    if (mn.length === 3 && mx.length === 3 && mn.every(Number.isFinite) && mx.every(Number.isFinite)) {
+      const dx = Math.abs(mx[0] - mn[0]), dy = Math.abs(mx[1] - mn[1]), dz = Math.abs(mx[2] - mn[2]);
+      const cx = (mn[0] + mx[0]) / 2, cy = (mn[1] + mx[1]) / 2, cz = (mn[2] + mx[2]) / 2;
+      const dims = [[dx, 0], [dy, 1], [dz, 2]].sort((a, b) => b[0] - a[0]);
+      const r = Math.max(8, (Math.max(dims[1][0], dims[2][0]) / 2) * SHRINK);
+      const halfSpan = Math.max(0, dims[0][0] / 2 - r);
+      const a = [cx, cy, cz], b = [cx, cy, cz];
+      a[dims[0][1]] -= halfSpan;
+      b[dims[0][1]] += halfSpan;
+      cached = [{ a, b, r }];
+      toolCache.set(g, cached);
+      return cached;
+    }
+  }
   const geom = g.geom || {};
   const tcp = g.tcp || [0, 0, 100, 0, 0, 0];
   const tip = [tcp[0], tcp[1], tcp[2]];
@@ -123,6 +139,21 @@ function toolLocalCapsules(g) {
       // 사용자/미지 그리퍼: 플랜지 → TCP 직선, 반경 30
       const L = Math.hypot(...tip);
       if (L > 1) caps.push({ a: [0, 0, 0], b: tip.slice(), r: 30 * SHRINK, toTip: true });
+    }
+  }
+  // 커스텀 STL 그리퍼: 클라이언트가 전달한 로컬 바운딩 박스(geom.bounds)가 있으면 실제 크기 캡슐 생성
+  if (!sections.length && !caps.length && g.geom?.bounds?.min && g.geom?.bounds?.max) {
+    const mn = g.geom.bounds.min, mx = g.geom.bounds.max;
+    if (mn.length === 3 && mx.length === 3 && mn.every(Number.isFinite) && mx.every(Number.isFinite)) {
+      const dx = Math.abs(mx[0] - mn[0]), dy = Math.abs(mx[1] - mn[1]), dz = Math.abs(mx[2] - mn[2]);
+      const cx = (mn[0] + mx[0]) / 2, cy = (mn[1] + mx[1]) / 2, cz = (mn[2] + mx[2]) / 2;
+      const dims = [[dx, 0], [dy, 1], [dz, 2]].sort((a, b) => b[0] - a[0]);
+      const r = Math.max(8, (Math.max(dims[1][0], dims[2][0]) / 2) * SHRINK);
+      const halfSpan = Math.max(0, dims[0][0] / 2 - r);
+      const a = [cx, cy, cz], b = [cx, cy, cz];
+      a[dims[0][1]] -= halfSpan;
+      b[dims[0][1]] += halfSpan;
+      caps.push({ a, b, r });
     }
   }
   // 커스텀 STL 그리퍼 등 geom 세부 치수가 비어 있는 경우에도 기본 툴 캡슐 보장
@@ -341,8 +372,31 @@ export const segPlaneZ = (a, b, z0) => Math.min(a[2], b[2]) - z0;
 
 // ------------------------------------------------------------------ 충돌 검사
 const LINK_ENV = new Set(['turret', 'upperArm', 'elbow', 'forearm', 'wrist']);
-const PEDESTAL_TEST = new Set(['wrist', 'tool']);
-const SELF_PAIRS = [['tool', 'turret'], ['tool', 'upperArm'], ['wrist', 'turret']];
+const PEDESTAL_TEST = new Set(['wrist', 'tool', 'forearm', 'held']);
+const SELF_PAIRS = [
+  ['tool', 'turret'], ['tool', 'upperArm'], ['tool', 'elbow'], ['tool', 'forearm'],
+  ['wrist', 'turret'], ['wrist', 'upperArm'],
+  ['held', 'turret'], ['held', 'upperArm'], ['held', 'forearm'],
+];
+
+// 파지 중인 공작물(박스)을 월드 캡슐로 변환 (테이블 위 픽/플레이스 접촉 시 오탐 방지를 위해 4mm 여유 축소)
+function heldObjectCapsule(obj) {
+  if (!obj?.pose?.p || !obj?.pose?.R || !Array.isArray(obj.size)) return null;
+  const [sx, sy, sz] = obj.size;
+  const minD = Math.min(sx, sy, sz);
+  const r = Math.max(3, minD / 2 - 4);
+  const dims = [[sx, 0], [sy, 1], [sz, 2]].sort((a, b) => b[0] - a[0]);
+  const axisIdx = dims[0][1];
+  const halfSpan = Math.max(0, dims[0][0] / 2 - r - 2);
+  const R = obj.pose.R, p = obj.pose.p;
+  const ax = [R[0][axisIdx] * halfSpan, R[1][axisIdx] * halfSpan, R[2][axisIdx] * halfSpan];
+  return {
+    id: 'held',
+    a: [p[0] - ax[0], p[1] - ax[1], p[2] - ax[2]],
+    b: [p[0] + ax[0], p[1] + ax[1], p[2] + ax[2]],
+    r,
+  };
+}
 
 // 환경 객체 준비 (공작물 수가 적어 매 호출 새로 만들어도 수 µs 수준)
 function buildEnv(scene, objects) {
@@ -363,13 +417,15 @@ function buildEnv(scene, objects) {
 }
 
 // 반환: { hit, pairs:[{a, b, dist}], minDist, capsules }
-//   pairs.a = 로봇 캡슐 id, pairs.b = 'table' | 'floor' | 'pedestal' | 공작물 id | 다른 캡슐 id (self 충돌)
+//   pairs.a = 로봇 캡슐 id ('held' 포함), pairs.b = 'table' | 'floor' | 'pedestal' | 공작물 id | 다른 캡슐 id (self 충돌)
 //   dist = 여유거리(표면간, 음수면 침투), minDist = 검사한 모든 쌍 중 최소 여유거리 (mm)
-// opts: { margin=0, ignoreObjects=[], capsules (미리 계산한 캡슐 재사용), obstacles=[] (규칙 7) }
+// opts: { margin=0, ignoreObjects=[], heldObject=null, capsules (미리 계산한 캡슐 재사용), obstacles=[] (규칙 7) }
 export function checkCollision(model, jointsDeg, gripper, scene, objects, opts = {}) {
   const margin = opts.margin || 0;
   const ignore = opts.ignoreObjects;
-  const caps = opts.capsules || robotCapsules(model, jointsDeg, gripper);
+  const baseCaps = opts.capsules || robotCapsules(model, jointsDeg, gripper);
+  const heldCap = opts.heldObject ? heldObjectCapsule(opts.heldObject) : null;
+  const caps = heldCap ? baseCaps.concat(heldCap) : baseCaps;
   const env = buildEnv(scene, objects);
   const obstacles = Array.isArray(opts.obstacles) && opts.obstacles.length ? opts.obstacles : null;
   const pairs = [];
@@ -387,8 +443,8 @@ export function checkCollision(model, jointsDeg, gripper, scene, objects, opts =
 
   for (const c of caps) {
     const rr = c.r + margin;
-    const isLink = LINK_ENV.has(c.id), isTool = c.id === 'tool';
-    if (!isLink && !isTool) continue;
+    const isLink = LINK_ENV.has(c.id), isTool = c.id === 'tool', isHeld = c.id === 'held';
+    if (!isLink && !isTool && !isHeld) continue;
     // 바닥
     if (env.floorZ !== null) report(c.id, 'floor', segPlaneZ(c.a, c.b, env.floorZ) - rr, 'env');
     // 테이블 상판
@@ -408,7 +464,7 @@ export function checkCollision(model, jointsDeg, gripper, scene, objects, opts =
     // 셀 장애물 (OBB / 메시). 외접구 → OBB 순으로 빠른 배제
     if (obstacles) {
       for (const ob of obstacles) {
-        if (isTool && ob.tool === false) continue;
+        if ((isTool || isHeld) && ob.tool === false) continue;
         const br = ob._br ?? (ob._br = Math.hypot(ob.h[0], ob.h[1], ob.h[2]));
         const dc = pointSegDist(ob.c, c.a, c.b) - br;
         if (dc > rr + 1) { report(c.id, ob.id, dc - rr, 'env'); continue; }
@@ -418,8 +474,8 @@ export function checkCollision(model, jointsDeg, gripper, scene, objects, opts =
         report(c.id, ob.id, meshObstacleDist(c.a, c.b, ob, rr + 50) - rr, 'env');
       }
     }
-    // 공작물 (링크만)
-    if (isLink) {
+    // 공작물 (링크 + 파지 중인 공작물이 다른 공작물과 충돌하는 경우)
+    if (isLink || isHeld) {
       for (const o of env.objs) {
         if (ignore && ignore.includes(o.id)) continue;
         const dc = pointSegDist(o.c, c.a, c.b) - o.br;   // 외접구로 빠른 배제 (하한)

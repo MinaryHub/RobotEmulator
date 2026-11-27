@@ -22,6 +22,7 @@
 //   모든 값은 getter 로 바인딩되어 읽을 때마다 최신 값이며, 구독(모니터링)은 샘플링(최소 100ms)으로 변화를 통지한다.
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { VENDORS } from '../../shared/robots.js';
 import { makeLogger, startMove, findFile, progRunning } from './common.js';
@@ -30,6 +31,16 @@ const TAG = 'OPCUA';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const NAMESPACE_URI = 'urn:robot-emulator';
 export const RESOURCE_PATH = '/UA/RobotEmulator';
+
+function lanHostnames() {
+  const set = new Set(['127.0.0.1', 'localhost']);
+  try {
+    for (const list of Object.values(os.networkInterfaces())) {
+      for (const n of list || []) if (n.family === 'IPv4' && !n.internal && n.address) set.add(n.address);
+    }
+  } catch {}
+  return [...set];
+}
 
 export async function start(ctrl, opts = {}) {
   const port = opts.port ?? 4840;
@@ -58,7 +69,7 @@ export async function start(ctrl, opts = {}) {
     serverCertificateManager,
     nodeset_filename: [nodesets.standard],
     allowAnonymous: true,
-    alternateHostname: ['127.0.0.1', 'localhost'], // 로컬 접속 시 엔드포인트 호스트 불일치 경고 방지
+    alternateHostname: lanHostnames(), // 로컬/LAN 접속 시 엔드포인트 호스트 불일치 경고 방지
     securityModes: [MessageSecurityMode.None, MessageSecurityMode.Sign, MessageSecurityMode.SignAndEncrypt],
     securityPolicies: [SecurityPolicy.None, SecurityPolicy.Basic256Sha256],
     buildInfo: { productName: 'RobotEmulator OPC UA', manufacturerName: 'RobotEmulator', softwareVersion: '1.0.0', buildNumber: '1' },
@@ -99,11 +110,22 @@ export async function start(ctrl, opts = {}) {
       };
       if (set) {
         value.set = (variant) => {
+          const t0 = performance.now();
+          if (ctrl.traffic?.faults?.opcua?.drop) {
+            ctrl.traffic.record('opcua', { client: 'opcua-client', dir: 'req', summary: `WRITE ${browseName} [DROP]`, ok: false, error: 'fault drop', ms: 0 });
+            return StatusCodes.BadCommunicationError;
+          }
           try {
             const st = set(variant.value);
-            if (st === G) log(`쓰기 ${browseName} = ${fmt(variant.value)}`, true);
+            const ok = st === G;
+            if (ok) log(`쓰기 ${browseName} = ${fmt(variant.value)}`, true);
+            ctrl.traffic?.record('opcua', { client: 'opcua-client', dir: 'req', summary: `WRITE ${browseName} = ${fmt(variant.value).slice(0, 60)}`, ok, error: ok ? null : String(st), ms: performance.now() - t0 });
             return st;
-          } catch (e) { log(`${browseName} 쓰기 오류: ${e.message}`, true); return StatusCodes.BadInternalError; }
+          } catch (e) {
+            log(`${browseName} 쓰기 오류: ${e.message}`, true);
+            ctrl.traffic?.record('opcua', { client: 'opcua-client', dir: 'req', summary: `WRITE ${browseName}`, ok: false, error: e.message, ms: performance.now() - t0 });
+            return StatusCodes.BadInternalError;
+          }
         };
       }
       return ns.addVariable({

@@ -642,7 +642,19 @@ function compileJob(prog, proc, job, need) {
         break;
       }
 
-      case 'TOOLON': case 'TOOLOF': case 'TOOLOFF': case 'ARCON': case 'ARCOF': case 'ARCOFF': case 'SPEED':
+      case 'ARCON': case 'ARCOF': case 'ARCOFF': case 'TOOLON': case 'TOOLOF': case 'TOOLOFF': {
+        const on = op === 'ARCON' || op === 'TOOLON';
+        emit(line, guarded((vm) => {
+          vm.print(`${op} ${args.join(' ')}`.trim());
+          const kind = vm.ctrl.gripper?.kind;
+          if (kind === 'torch' || kind === 'spindle') {
+            const doNo = vm.ctrl.gripperIO?.close || 1;
+            vm.ctrl.setDO(doNo, on);
+          }
+        }));
+        break;
+      }
+      case 'SPEED':
         emit(line, guarded((vm) => vm.print(`${op} ${args.join(' ')}`.trim())));
         break;
 

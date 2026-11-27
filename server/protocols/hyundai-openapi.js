@@ -51,7 +51,7 @@ export async function start(ctrl, opts = {}) {
       vendor: ctrl.vendor, controller: VENDORS[ctrl.vendor].controller, robot: ctrl.robot.name, robotId: ctrl.robot.id,
       active: ctrl.vendor === 'hyundai',
       servo: ctrl.servo, mode: ctrl.mode, override: ctrl.override, held: ctrl.held, moving: !!ctrl.segment || !!ctrl.jog,
-      alarms: ctrl.alarms.map((a) => ({ code: a.code, msg: a.msg, time: new Date(a.t).toISOString() })),
+      alarms: ctrl.alarms.map((a) => ({ code: a.code, vendorCode: a.vendorCode, vendorName: a.vendorName, msg: a.msg, time: new Date(a.t).toISOString() })),
       program: {
         main: ctrl.main, status: vm?.status ?? 'idle', file: vm?.current?.file ?? null, line: vm?.current?.line ?? null,
         proc: vm?.current?.proc ?? null, cycle: vm?.cycle ?? 0, compileError: ctrl.compileError ?? null,
@@ -62,6 +62,7 @@ export async function start(ctrl, opts = {}) {
   };
   const onBits = (t) => { const r = []; for (let i = 1; i <= 512; i++) if (ctrl.io[t][i]) r.push(i); return r; };
 
+  const MAX_REGS = 1000;
   const readVar = (name) => {
     let v = safeReadVar('hyundai', ctrl, name);
     if (v === undefined) v = ctrl.regs.get(name) ?? ctrl.regs.get(name.toUpperCase());
@@ -69,6 +70,7 @@ export async function start(ctrl, opts = {}) {
   };
   const writeVar = (name, value) => {
     if (safeWriteVar('hyundai', ctrl, name, value)) return;
+    if (!ctrl.regs.has(name) && ctrl.regs.size >= MAX_REGS) throw new ApiError(507, `레지스터 저장 한도(${MAX_REGS}) 초과`);
     ctrl.regs.set(name, value);
     ctrl.emitState();
   };

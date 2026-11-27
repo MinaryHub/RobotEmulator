@@ -246,8 +246,19 @@ function newState() {
   };
 }
 
+const fileStem = (f) => String(f || '').replace(/\.[^.]+$/, '').toLowerCase();
+function findFileLocal(prog, u) {
+  const m = prog.fileLocals.get(prog.mainStem);
+  if (m?.has(u)) return { vars: m, meta: prog.fileMeta.get(prog.mainStem) };
+  for (const [st, vars] of prog.fileLocals) if (vars.has(u)) return { vars, meta: prog.fileMeta.get(st) };
+  return null;
+}
+
 class Ctx {
-  constructor(prog, ctrl, vm, frame) { this.prog = prog; this.ctrl = ctrl; this.vm = vm; this.frame = frame; this.st = prog.state; }
+  constructor(prog, ctrl, vm, frame, stem = null) {
+    this.prog = prog; this.ctrl = ctrl; this.vm = vm; this.frame = frame; this.st = prog.state;
+    this.stem = frame?.proc?.stem ?? stem ?? null;
+  }
   get env() { return this._env ||= makeEnv(this); }
   ev(ast) { return evaluate(ast, this.env); }
 }
@@ -261,7 +272,8 @@ function sysGet(cx, u) {
     case '$AXIS_ACT': case '$AXIS_ACT_MES': case '$AXIS_INT': return e6axis(ctrl.joints);
     case '$OUT': case '$OUT_C': return { $proxy: 'do' };
     case '$IN': return { $proxy: 'di' };
-    case '$ANIN': case '$ANOUT': return { $proxy: 'an' };
+    case '$ANIN': return { $proxy: 'ai' };
+    case '$ANOUT': return { $proxy: 'ao' };
     case '$TIMER': return { $proxy: 'timer' };
     case '$TIMER_STOP': return { $proxy: 'timerstop' };
     case '$TIMER_FLAG': return { $proxy: 'timerflag' };
@@ -341,8 +353,10 @@ function makeEnv(cx) {
       const u = K(name);
       if (u.startsWith('#')) return u;
       if (cx.frame?.locals.has(u)) return cx.frame.locals.get(u);
+      if (cx.stem && prog.fileLocals.get(cx.stem)?.has(u)) return prog.fileLocals.get(cx.stem).get(u);
       if (prog.signals.has(u)) return readSignal(cx, prog.signals.get(u));
       if (prog.globals.has(u)) return prog.globals.get(u);
+      if (!cx.frame && !cx.stem) { const fl = findFileLocal(prog, u); if (fl) return fl.vars.get(u); }
       if (u === 'TRUE') return true;
       if (u === 'FALSE') return false;
       if (u.startsWith('$')) return sysGet(cx, u);
@@ -361,7 +375,8 @@ function makeEnv(cx) {
         switch (obj.$proxy) {
           case 'do': return ctrl.getDO(n);
           case 'di': return ctrl.getDI(n);
-          case 'an': return 0;
+          case 'ai': return ctrl.getAI(n);
+          case 'ao': return ctrl.getAO(n);
           case 'timer': return Math.round(timerVal(cx.st.timers[n], cx.ctrl.simMs));
           case 'timerstop': return cx.st.timers[n].stop;
           case 'timerflag': return false;
@@ -422,7 +437,10 @@ function writeSignal(cx, sg, v) {
 function rootKey(n) { return n.t === 'id' ? K(n.name) : n.obj ? rootKey(n.obj) : null; }
 function varMeta(cx, key) {
   if (cx.frame?.locals.has(key)) return cx.frame.proc.ltypes.get(key);
-  return cx.prog.meta.get(key);
+  if (cx.stem && cx.prog.fileMeta.get(cx.stem)?.has(key)) return cx.prog.fileMeta.get(cx.stem).get(key);
+  if (cx.prog.meta.has(key)) return cx.prog.meta.get(key);
+  if (!cx.frame && !cx.stem) return findFileLocal(cx.prog, key)?.meta?.get(key);
+  return undefined;
 }
 
 // 식의 정적 타입이 INT 인지 (리터럴·선언된 변수·배열 요소·정수 연산). 알 수 없으면 false (= 실수 나눗셈)
@@ -452,7 +470,11 @@ function assignK(cx, node, value) {
   if (node.t === 'id') {
     const u = K(node.name);
     if (prog.signals.has(u)) { writeSignal(cx, prog.signals.get(u), value); return; }
-    const where = cx.frame?.locals.has(u) ? cx.frame.locals : prog.globals.has(u) ? prog.globals : null;
+    let where = null;
+    if (cx.frame?.locals.has(u)) where = cx.frame.locals;
+    else if (cx.stem && prog.fileLocals.get(cx.stem)?.has(u)) where = prog.fileLocals.get(cx.stem);
+    else if (prog.globals.has(u)) where = prog.globals;
+    else if (!cx.frame && !cx.stem) where = findFileLocal(prog, u)?.vars ?? null;
     if (!where) {
       if (u.startsWith('$')) { sysSet(cx, u, value); return; }
       throw new RuntimeErr('UNDEF', `선언되지 않은 변수 '${node.name}'`);
@@ -472,7 +494,8 @@ function assignK(cx, node, value) {
       switch (obj.$proxy) {
         case 'do': cx.ctrl.setDO(n, truthy(value)); return;
         case 'di': cx.ctrl.setDI(n, truthy(value)); return;
-        case 'an': return;
+        case 'ao': cx.ctrl.setAO(n, Number(value)); return;
+        case 'ai': cx.ctrl.setAI(n, Number(value)); return;
         case 'timer': { const t = cx.st.timers[n]; t.v = Number(value); t.since = cx.ctrl.simMs; return; }
         case 'timerstop': {
           const t = cx.st.timers[n];
@@ -591,7 +614,8 @@ const FUNCS = {
   INV_POS: (cx, [f]) => { const o = poseToStruct(poseInv(frameToPose(f)), f?.$type === 'E6POS' || f?.$type === 'POS' ? f.$type : 'FRAME'); return o; },
   VARSTATE: (cx, [s]) => {
     const u = K(s);
-    return cx.frame?.locals.has(u) || cx.prog.globals.has(u) ? '#INITIALIZED' : '#UNKNOWN';
+    const inFile = cx.stem && cx.prog.fileLocals.get(cx.stem)?.has(u);
+    return cx.frame?.locals.has(u) || inFile || cx.prog.globals.has(u) ? '#INITIALIZED' : '#UNKNOWN';
   },
   MSGDIALOG: () => 1,
   GET_SIG_INF: () => 0,
@@ -652,7 +676,9 @@ function isDeclLine(prog, t) {
 
 function compile(files, main, ctrl) {
   const prog = {
-    lang: 'krl', entry: null, procs: {}, globals: new Map(), meta: new Map(), signals: new Map(),
+    lang: 'krl', entry: null, procs: {}, globals: new Map(), meta: new Map(),
+    fileLocals: new Map(), fileMeta: new Map(), mainStem: fileStem(main),
+    signals: new Map(),
     strucs: {}, enums: {}, state: newState(), warnings: [],   // warnings: 에뮬레이터가 실행하지 않는 문장 {file, line, msg}
     init(vm) {
       vm.krl = prog.state;
@@ -661,7 +687,6 @@ function compile(files, main, ctrl) {
     },
   };
   predefine(prog, ctrl);
-  const cctx = new Ctx(prog, ctrl, null, null);
   const names = [...files.keys()];
   const dats = names.filter((n) => /\.dat$/i.test(n)).sort((a, b) => (/^\$config/i.test(a) ? -1 : /^\$config/i.test(b) ? 1 : 0));
   const srcs = names.filter((n) => /\.(src|sub)$/i.test(n));
@@ -670,11 +695,14 @@ function compile(files, main, ctrl) {
   // 1) 데이터 리스트(.dat)
   for (const file of dats) {
     const lines = files.get(file).replace(/\r\n?/g, '\n').split('\n');
-    lines.forEach((raw, i) => at(file, i + 1, () => datLine(prog, cctx, raw, file)));
+    const fctx = new Ctx(prog, ctrl, null, null, fileStem(file));
+    lines.forEach((raw, i) => at(file, i + 1, () => datLine(prog, fctx, raw, file)));
   }
   // 2) 소스(.src): 루틴 분리
   const pending = [];
   for (const file of srcs) {
+    const stem = fileStem(file);
+    const fctx = new Ctx(prog, ctrl, null, null, stem);
     const lines = files.get(file).replace(/\r\n?/g, '\n').split('\n').map((raw, i) => ({ text: prepLine(stripComment(raw, [';']).trim()), line: i + 1 }));
     let i = 0;
     let first = true;
@@ -696,7 +724,7 @@ function compile(files, main, ctrl) {
           if (!pm) throw new CompileError(`매개변수 형식 오류: ${s}`, file, line);
           return { name: pm[1], key: K(pm[1]), mode: pm[2] ? K(pm[2]) : 'OUT' };
         });
-        const proc = { name: m[3], kind, rtype: m[2] ? K(m[2]) : null, params: [], rparams, file, line, code: [], labels: {}, ltypes: new Map() };
+        const proc = { name: m[3], kind, rtype: m[2] ? K(m[2]) : null, params: [], rparams, file, stem, line, code: [], labels: {}, ltypes: new Map() };
         prog.procs[key] = proc;
         if (first && file === main) prog.entry = key;
         first = false;
@@ -706,11 +734,11 @@ function compile(files, main, ctrl) {
       }
       if (/^DEFDAT\b/i.test(t)) { // .src 안의 DEFDAT (드묾)
         let j = i + 1;
-        while (j < lines.length && !/^ENDDAT$/i.test(lines[j].text)) { const l = lines[j]; at(file, l.line, () => datLine(prog, cctx, l.text, file)); j++; }
+        while (j < lines.length && !/^ENDDAT$/i.test(lines[j].text)) { const l = lines[j]; at(file, l.line, () => datLine(prog, fctx, l.text, file)); j++; }
         i = j + 1;
         continue;
       }
-      if (isDeclLine(prog, t) || /^(EXT|EXTFCT|IMPORT|STRUC|ENUM|SIGNAL)\b/i.test(t)) { at(file, line, () => datLine(prog, cctx, t, file)); i++; continue; }
+      if (isDeclLine(prog, t) || /^(EXT|EXTFCT|IMPORT|STRUC|ENUM|SIGNAL)\b/i.test(t)) { at(file, line, () => datLine(prog, fctx, t, file)); i++; continue; }
       throw new CompileError(`DEF 밖의 문장입니다: ${t.slice(0, 50)}`, file, line);
     }
   }
@@ -762,6 +790,15 @@ function datLine(prog, cctx, raw, file) {
     return;
   }
   if (isDeclLine(prog, t)) {
+    const isGlobal = /^(?:GLOBAL\s+|DECL\s+GLOBAL\s+)/i.test(t) || /^\$config/i.test(file);
+    const stem = fileStem(file);
+    let targetVars = prog.globals, targetMeta = prog.meta;
+    if (!isGlobal) {
+      if (!prog.fileLocals.has(stem)) prog.fileLocals.set(stem, new Map());
+      if (!prog.fileMeta.has(stem)) prog.fileMeta.set(stem, new Map());
+      targetVars = prog.fileLocals.get(stem);
+      targetMeta = prog.fileMeta.get(stem);
+    }
     for (const d of parseDecl(prog, t)) {
       const dims = d.dims ? d.dims.map((x) => Math.round(cctx.ev(x))) : null;
       let v = makeArr(d.type, dims, prog);
@@ -769,8 +806,8 @@ function datLine(prog, cctx, raw, file) {
         if (dims?.length && !(dims.length === 1 && d.type === 'CHAR')) throw new Error('배열 선언에는 초기값을 줄 수 없습니다');
         v = coerceK(dims?.length ? 'CHAR' : d.type, cctx.ev(d.init), undefined, prog);
       }
-      prog.globals.set(d.key, v);
-      prog.meta.set(d.key, { name: d.name, type: d.type, dims, konst: d.konst, file });
+      targetVars.set(d.key, v);
+      targetMeta.set(d.key, { name: d.name, type: d.type, dims, konst: d.konst, file, global: isGlobal });
     }
     return;
   }
@@ -900,7 +937,8 @@ function compileBody(prog, proc, ctrl, pending) {
       emit(line, (vm, f) => {
         const c = cx(vm, f);
         const start = n_(c.ev(a));
-        if (!f.locals.has(v) && !prog.globals.has(v)) { f.locals.set(v, 0); proc.ltypes.set(v, { type: 'INT' }); }
+        const fl = prog.fileLocals.get(proc.stem);
+        if (!f.locals.has(v) && !fl?.has(v) && !prog.globals.has(v)) { f.locals.set(v, 0); proc.ltypes.set(v, { type: 'INT' }); }
         assignK(c, vNode, start);
         f.locals.set(kE, n_(c.ev(b)));
         f.locals.set(kS, stepA ? n_(c.ev(stepA)) : 1);
@@ -1101,26 +1139,29 @@ function compileBody(prog, proc, ctrl, pending) {
     const need = kind === 'CIRC' ? 2 : 1;
     if (pts.length !== need) throw new Error(`인라인 ${kind} 의 점 이름 형식 오류`);
     if ((kind === 'PTP') !== (unit === '%')) throw new Error(`${kind} 의 속도 단위가 맞지 않습니다 (${unit})`);
-    const ptKey = (p) => (prog.globals.has('X' + K(p)) ? 'X' + K(p) : K(p));
+    const fl = prog.fileLocals.get(proc.stem);
+    const hasData = (k) => !!(fl?.has(k) || prog.globals.has(k));
+    const getData = (k) => (fl?.has(k) ? fl.get(k) : prog.globals.get(k));
+    const ptKey = (p) => (hasData('X' + K(p)) ? 'X' + K(p) : K(p));
     const keys = pts.map(ptKey);
-    for (const k of keys) if (!prog.globals.has(k)) throw new Error(`점 데이터 '${k}' 가 데이터 리스트(.dat)에 없습니다`);
+    for (const k of keys) if (!hasData(k)) throw new Error(`점 데이터 '${k}' 가 데이터 리스트(.dat)에 없습니다`);
     emit(line, async (vm, f) => {
       const c = cx(vm, f);
       const g = prog.globals;
       if (kind === 'PTP') {
         c.st.velAxis.fill(vel);
-        if (dat && g.has('P' + dat)) g.set('PDAT_ACT', clone(g.get('P' + dat)));
+        if (dat && hasData('P' + dat)) g.set('PDAT_ACT', clone(getData('P' + dat)));
       } else {
         c.st.vel.CP = vel;
-        if (dat && g.has('L' + dat)) g.set('LDAT_ACT', clone(g.get('L' + dat)));
+        if (dat && hasData('L' + dat)) g.set('LDAT_ACT', clone(getData('L' + dat)));
       }
-      const fd = g.get('F' + K(pts[pts.length - 1]));
+      const fd = getData('F' + K(pts[pts.length - 1]));
       if (fd) g.set('FDAT_ACT', clone(fd));
       if (tm) selectTool(c, Number(tm[1])); else if (fd?.TOOL_NO !== undefined) selectTool(c, fd.TOOL_NO);
       if (bm) selectBase(c, Number(bm[1])); else if (fd?.BASE_NO !== undefined) selectBase(c, fd.BASE_NO);
       const zone = cont ? Number(n_(g.get(kind === 'PTP' ? 'PDAT_ACT' : 'LDAT_ACT')?.APO_DIST ?? 0)) || 0 : 0;
-      if (kind === 'CIRC') await doCirc(c, g.get(keys[0]), g.get(keys[1]), null, zone);
-      else await doMove(c, kind, g.get(keys[0]), zone);
+      if (kind === 'CIRC') await doCirc(c, getData(keys[0]), getData(keys[1]), null, zone);
+      else await doMove(c, kind, getData(keys[0]), zone);
     });
   }
 
@@ -1247,7 +1288,7 @@ const INSTR = {
 function varCtx(ctrl) {
   let prog = ctrl.program;
   if (!prog || prog.lang !== 'krl') {
-    prog = { lang: 'krl', procs: {}, globals: new Map(), meta: new Map(), signals: new Map(), strucs: {}, enums: {}, state: ctrl._krlState ||= newState() };
+    prog = { lang: 'krl', procs: {}, globals: new Map(), meta: new Map(), fileLocals: new Map(), fileMeta: new Map(), mainStem: '', signals: new Map(), strucs: {}, enums: {}, state: ctrl._krlState ||= newState() };
   }
   return new Ctx(prog, ctrl, ctrl.vm ?? null, null);
 }
@@ -1258,7 +1299,7 @@ function readVar(ctrl, name) {
     const ast = parseE(prepLine(String(name).trim()));
     const v = c.ev(ast);
     if (v?.$proxy) return undefined;
-    let type = ast.t === 'id' ? c.prog.meta.get(K(ast.name))?.type : undefined;
+    let type = ast.t === 'id' ? varMeta(c, K(ast.name))?.type : undefined;
     if (ast.t === 'field' && typeof v === 'number') {
       const parent = c.ev(ast.obj);
       if (INT_FIELDS.has(K(ast.name))) type = 'INT';

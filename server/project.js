@@ -150,17 +150,28 @@ export class ProjectStore {
   remove(name) { fs.unlinkSync(this.fileOf(name)); this.ctrl.log('system', `프로젝트 삭제: ${name}`); }
 
   // ---------------------------------------------------------------- 자동 저장
-  // 변경이 있을 때만 _autosave.json 기록 (종료 처리에서는 동기 호출, 주기 저장은 비동기 원자적 기록)
+  // 변경이 있을 때만 _autosave.json 기록 (종료 처리에서는 동기 호출, 주기 저장은 비동기 원자적 기록 + 10s 최소 간격)
+  _autosaveSig(p) {
+    const vendors = {};
+    for (const [v, s] of Object.entries(p.vendors || {})) {
+      const regs = Array.isArray(s?.regs)
+        ? s.regs.filter(([k]) => !/^(?:MB:|RTDE_)/.test(String(k)))
+        : s?.regs;
+      vendors[v] = { ...s, regs };
+    }
+    return JSON.stringify({ ...p, savedAt: 0, vendors, aio: undefined });
+  }
+
   saveAutosave({ async: isAsync = false } = {}) {
     if (isAsync && this._autosaving) return;
+    const now = Date.now();
+    if (isAsync && this._lastSaveAt && now - this._lastSaveAt < 10_000) return;
     try {
       const p = this.serialize();
-      const savedAt = p.savedAt;
-      p.savedAt = 0;
-      const sig = JSON.stringify(p);
+      const sig = this._autosaveSig(p);
       if (sig === this._lastSig) return;
       this._lastSig = sig;
-      p.savedAt = savedAt;
+      this._lastSaveAt = now;
       const data = JSON.stringify(p);
       const target = path.join(this.dir, '_autosave.json');
       if (isAsync) {
@@ -177,7 +188,7 @@ export class ProjectStore {
   }
 
   startAutosave() {
-    this._timer = setInterval(() => this.saveAutosave({ async: true }), 2000);
+    this._timer = setInterval(() => this.saveAutosave({ async: true }), 5000);
     return () => clearInterval(this._timer);
   }
 
@@ -187,7 +198,7 @@ export class ProjectStore {
     try {
       const p = JSON.parse(fs.readFileSync(f, 'utf8'));
       this.apply(p);
-      this._lastSig = JSON.stringify({ ...this.serialize(), savedAt: 0 });
+      this._lastSig = this._autosaveSig(this.serialize());
       this.ctrl.log('system', '이전 세션 복원 (자동 저장)');
       return true;
     } catch (e) {
