@@ -49,6 +49,9 @@ function str(v) {
   if (typeof v === 'string') return v;
   if (isPose(v)) return `p[${v.map((x) => numStr(+x.toFixed(6))).join(', ')}]`;
   if (Array.isArray(v)) return `[${v.map((x) => (typeof x === 'string' ? `"${x}"` : str(x))).join(', ')}]`;
+  if (v && typeof v === 'object' && v.$struct) {
+    return `struct(${Object.entries(v).filter(([k]) => k !== '$struct').map(([k, x]) => `${k}=${typeof x === 'string' ? `"${x}"` : str(x)}`).join(', ')})`;
+  }
   return String(v);
 }
 const truthy = (v) => !(v === null || v === undefined || v === false || v === 0 || v === '');
@@ -170,12 +173,30 @@ class P {
         if (items.length !== 6) throw new Error(`자세 p[…] 는 값 6개가 필요합니다 (${items.length}개)`);
         return { t: 'pose', items };
       }
+      if (t.v === 'run') {
+        const fn = this.next();
+        if (fn.k !== 'id') throw new Error('run 뒤에는 스레드 이름이 필요합니다');
+        this.expect('(');
+        this.expect(')');
+        return { t: 'runThread', name: fn.v };
+      }
       if (KEYWORDS.has(t.v)) throw new Error(`예상치 못한 키워드 '${t.v}'`);
       return { t: 'name', name: t.v };
     }
     if (t.k === 'op' && t.v === '(') { const e = this.expr(); this.expect(')'); return e; }
     if (t.k === 'op' && t.v === '[') return { t: 'list', items: this.items(']') };
-    if (t.k === 'op' && t.v === '{') throw new Error('구조체({ … })는 지원하지 않습니다');
+    if (t.k === 'op' && t.v === '{') {
+      const entries = [];
+      while (!this.isOp('}')) {
+        const k = this.next();
+        if (k.k !== 'id' && k.k !== 'str') throw new Error(`구조체 필드 이름 오류: '${k.v}'`);
+        if (!this.op('=') && !this.op(':')) throw new Error("구조체 필드 뒤에 '=' 또는 ':' 이 필요합니다");
+        entries.push([k.v, this.expr()]);
+        if (!this.op(',')) break;
+      }
+      this.expect('}');
+      return { t: 'structLit', entries };
+    }
     throw new Error(`예상치 못한 '${t.v || '줄 끝'}'`);
   }
   postfix(n) {
@@ -199,8 +220,10 @@ class P {
         const idx = this.expr();
         this.expect(']');
         n = { t: 'index', obj: n, idx };
-      } else if (this.isOp('.')) {
-        throw new Error('속성 접근(.)은 지원하지 않습니다 — 자세 요소는 pose[0] 처럼 인덱스로 읽으세요');
+      } else if (this.op('.')) {
+        const f = this.next();
+        if (f.k !== 'id') throw new Error(`속성 이름이 필요합니다 (발견: '${f.v || '줄 끝'}')`);
+        n = { t: 'field', obj: n, field: f.v };
       } else return n;
     }
   }
@@ -292,8 +315,7 @@ function buildTree(lines, file) {
       if (kw && stop.includes(kw)) return { out, by: kw };
       i++;
       if (kw === 'end' || kw === 'elif' || kw === 'else') throw new CompileError(`'${kw}' 에 대응하는 블록이 없습니다`, file, L.line);
-      if (kw === 'thread') throw new CompileError('thread 는 지원하지 않습니다 (에뮬레이터는 단일 실행 흐름)', file, L.line);
-      if (kw === 'def' || kw === 'while') {
+      if (kw === 'def' || kw === 'while' || kw === 'thread') {
         const h = header(L, kw);
         const r = block(['end']);
         if (r.by !== 'end') throw new CompileError(`'${kw}' 블록을 닫는 end 가 없습니다`, file, L.line);
@@ -341,6 +363,18 @@ function ev(n, c) {
     case 'name': return readName(n.name, c);
     case 'list': return n.items.map((x) => ev(x, c));
     case 'pose': return mkPose(n.items.map((x) => num(ev(x, c), 'p[…]')));
+    case 'structLit': {
+      const o = Object.defineProperty({}, '$struct', { value: true, enumerable: false });
+      for (const [k, v] of n.entries) o[k] = ev(v, c);
+      return o;
+    }
+    case 'field': {
+      const o = ev(n.obj, c);
+      if (isPose(o)) throw err(`자세 p[…] 는 속성 .${n.field} 대신 pose[0..5] 인덱스로 접근하세요`);
+      if (!o || typeof o !== 'object' || !(n.field in o)) throw err(`구조체에 속성 '${n.field}' 가 없습니다`);
+      return o[n.field];
+    }
+    case 'runThread': return spawnThread(c.vm, c.vm.prog, n.name);
     case 'un': { const a = num(ev(n.a, c)); return n.op === '-' ? -a : a; }
     case 'not': return !truthy(ev(n.a, c));
     case 'and': { const a = ev(n.a, c); return truthy(a) ? truthy(ev(n.b, c)) : false; }
@@ -579,6 +613,11 @@ const SYNC = {
   read_output_boolean_register: (c, [n]) => !!ctl(c).regs.get(`RTDE_OUT_B:${int(n)}`),
 
   // 소켓 (쓰기·닫기는 즉시)
+  struct: (_c, _args, kw) => {
+    const o = Object.defineProperty({}, '$struct', { value: true, enumerable: false });
+    for (const [k, v] of Object.entries(kw || {})) o[k] = v;
+    return o;
+  },
   socket_close: (c, args, kw) => { const o = bindArgs('socket_close', ['socket_name'], args, kw); sockClose(c.vm, sockName(o.socket_name)); return null; },
   socket_send_string: (c, args, kw) => { const o = bindArgs('socket_send_string', ['str', 'socket_name'], args, kw); return sockWrite(c.vm, sockName(o.socket_name), str(o.str)); },
   socket_send_line: (c, args, kw) => { const o = bindArgs('socket_send_line', ['str', 'socket_name'], args, kw); return sockWrite(c.vm, sockName(o.socket_name), str(o.str) + '\n'); },
@@ -758,13 +797,60 @@ async function sockReadFloats(vm, n, name, timeout) {
 // ------------------------------------------------------------ 컴파일
 const isScript = (n) => /\.(script|urscript|txt)$/i.test(n);
 
+function spawnThread(vm, prog, name) {
+  const td = prog.threads?.get(name);
+  if (!td) throw err(`정의되지 않은 스레드 '${name}'`, 'NAME');
+  const proc = prog.procs[td.key];
+  const id = vm.urs.nextTid++;
+  const owner = { threadId: id };
+  const thr = { id, name, owner, aborted: false, done: null };
+  // 스레드 전용 경량 VM 어댑터: 전역 변수/컨트롤러는 공유하되 대기 소유자(owner)와 중단 상태는 독립
+  const tvm = {
+    ctrl: vm.ctrl,
+    prog,
+    globals: vm.globals,
+    urs: vm.urs,
+    get aborted() { return thr.aborted || vm.aborted || vm.status !== 'running'; },
+    print: (msg) => vm.print(msg),
+    wait: (sec) => vm.ctrl.sleep(sec, owner),
+    waitUntil: (pred, timeoutSec) => vm.ctrl.waitFor(pred, timeoutSec, owner),
+  };
+  thr.done = (async () => {
+    const frames = [{ proc, pc: 0, locals: new Map() }];
+    let steps = 0;
+    try {
+      while (frames.length && !tvm.aborted) {
+        while (vm.ctrl.held && !tvm.aborted) await vm.ctrl.sleep(0.02, owner);
+        if (tvm.aborted) break;
+        const f = frames[frames.length - 1];
+        if (f.pc >= f.proc.code.length) { frames.pop(); continue; }
+        const ins = f.proc.code[f.pc];
+        const r = await ins.run(tvm, f);
+        if (tvm.aborted) break;
+        if (!r) f.pc++;
+        else if (r.goto !== undefined) f.pc = r.goto;
+        else if (r.call) { f.pc++; frames.push({ proc: r.call.proc, pc: 0, locals: r.call.locals || new Map(), onReturn: r.call.onReturn }); }
+        else if ('ret' in r) { frames.pop(); f.onReturn?.(r.ret); }
+        else if (r.halt) break;
+        if (++steps % 50 === 0) await vm.ctrl.sleep(0.004, owner);
+      }
+    } catch (e) {
+      if (!e?.aborted && !tvm.aborted) vm.print(`[thread ${name} 오류] ${e?.message ?? e}`);
+    } finally {
+      vm.urs.threads.delete(id);
+    }
+  })();
+  vm.urs.threads.set(id, thr);
+  return id;
+}
+
 function compile(files, main, ctrl) {
   if (!files.has(main)) throw new CompileError(`메인 파일이 없습니다: ${main}`, main, 1);
-  const prog = { lang: 'urscript', entry: 'MAIN', procs: {}, globals: new Map(), defs: new Map() };
+  const prog = { lang: 'urscript', entry: 'MAIN', procs: {}, globals: new Map(), defs: new Map(), threads: new Map() };
   const tree = buildTree(logicalLines(files.get(main), main), main);
-  // 다른 .script 파일의 def 도 함께 등록 (공용 함수 라이브러리처럼)
+  // 다른 .script 파일의 def/thread 도 함께 등록 (공용 함수 라이브러리처럼)
   const libs = [...files.keys()].filter((f) => f !== main && isScript(f)).map((f) => ({ file: f, tree: buildTree(logicalLines(files.get(f), f), f) }));
-  // def 수집 (중첩 def 포함 — 전역 함수로)
+  // def/thread 수집 (중첩 def/thread 포함 — 전역으로 등록)
   const collect = (nodes, file) => {
     for (const n of nodes) {
       if (n.kw === 'def') {
@@ -784,6 +870,13 @@ function compile(files, main, ctrl) {
         prog.procs[key] = { name: m[1], params: [], file, code: [], labels: {} };
         prog.defs.set(m[1], { key, params, node: n, file });
         collect(n.body, file);
+      } else if (n.kw === 'thread') {
+        const m = /^thread\s+([A-Za-z_]\w*)\s*\(\s*\)\s*$/s.exec(n.head);
+        if (!m) throw new CompileError('thread 형식: thread 이름():', file, n.line);
+        const key = `THR:${m[1]}`;
+        prog.procs[key] = { name: m[1], params: [], file, code: [], labels: {} };
+        prog.threads.set(m[1], { key, node: n, file });
+        collect(n.body, file);
       } else if (n.kw === 'while') collect(n.body, file);
       else if (n.kw === 'if') { n.branches.forEach((b) => collect(b.body, file)); if (n.els) collect(n.els, file); }
     }
@@ -792,7 +885,7 @@ function compile(files, main, ctrl) {
   collect(tree, main);
 
   // 맨 위에 def 만 있으면 인수 없는 첫 def 를 프로그램으로 실행 (변수는 전역)
-  const topStmts = tree.filter((n) => n.kw !== 'def');
+  const topStmts = tree.filter((n) => n.kw !== 'def' && n.kw !== 'thread');
   let progDef = null;
   if (!topStmts.length) {
     const first = tree.find((n) => n.kw === 'def');
@@ -804,7 +897,7 @@ function compile(files, main, ctrl) {
   prog.procs.MAIN = { name: progDef ? progDef.node.head.match(/^def\s+(\w+)/)[1] : 'main', params: [], file: main, code: [], labels: {} };
   if (progDef) prog.procs[progDef.key] = prog.procs.MAIN;   // 프로그램 def 를 다시 부르면 처음부터
   const env = { file: main };
-  if (progDef) compileBody(prog, prog.procs.MAIN, progDef.node.body.filter((n) => n.kw !== 'def'), { locals: null, globals: new Set(), file: main, top: true, fn: prog.procs.MAIN.name, env });
+  if (progDef) compileBody(prog, prog.procs.MAIN, progDef.node.body.filter((n) => n.kw !== 'def' && n.kw !== 'thread'), { locals: null, globals: new Set(), file: main, top: true, fn: prog.procs.MAIN.name, env });
   else compileBody(prog, prog.procs.MAIN, topStmts, { locals: null, globals: new Set(), file: main, top: true, env });
   for (const [name, d] of prog.defs) {
     if (d === progDef) continue;
@@ -812,10 +905,19 @@ function compile(files, main, ctrl) {
     const globals = new Set();
     collectNames(d.node.body, locals, globals);
     for (const g of globals) locals.delete(g);
-    compileBody(prog, prog.procs[d.key], d.node.body.filter((n) => n.kw !== 'def'), { locals, globals, file: d.file, fn: name, env });
+    compileBody(prog, prog.procs[d.key], d.node.body.filter((n) => n.kw !== 'def' && n.kw !== 'thread'), { locals, globals, file: d.file, fn: name, env });
   }
-  prog.init = (vm) => { vm.urs = { socks: new Map() }; };
+  for (const [name, td] of prog.threads) {
+    const locals = new Set();
+    const globals = new Set();
+    collectNames(td.node.body, locals, globals);
+    for (const g of globals) locals.delete(g);
+    compileBody(prog, prog.procs[td.key], td.node.body.filter((n) => n.kw !== 'def' && n.kw !== 'thread'), { locals, globals, file: td.file, fn: name, env });
+  }
+  prog.init = (vm) => { vm.urs = { socks: new Map(), threads: new Map(), nextTid: 1 }; };
   prog.cleanup = (vm) => {
+    for (const thr of vm.urs?.threads?.values() || []) { thr.aborted = true; vm.ctrl.wakeWaiters?.(thr.owner); }
+    vm.urs?.threads?.clear();
     for (const st of vm.urs?.socks.values() || []) { st.sock?.destroy(); st.closed = true; }
     vm.urs?.socks.clear();
   };
@@ -838,10 +940,10 @@ function splitTopComma(s) {
   return out;
 }
 
-// 함수 안의 지역 이름: 대입된 이름 (global 선언 제외), local 선언 포함. 중첩 def 는 제외
+// 함수 안의 지역 이름: 대입된 이름 (global 선언 제외), local 선언 포함. 중첩 def/thread 는 제외
 function collectNames(body, locals, globals) {
   for (const n of body) {
-    if (n.kw === 'def') continue;
+    if (n.kw === 'def' || n.kw === 'thread') continue;
     if (n.kw === 'while') { collectNames(n.body, locals, globals); continue; }
     if (n.kw === 'if') { n.branches.forEach((b) => collectNames(b.body, locals, globals)); if (n.els) collectNames(n.els, locals, globals); continue; }
     let m;
@@ -852,7 +954,7 @@ function collectNames(body, locals, globals) {
   }
 }
 
-// 대입문: "a = expr" / "a[i] = expr" / "a += expr"
+// 대입문: "a = expr" / "a[i] = expr" / "a.b = expr" / "a += expr"
 function assignSplit(text) {
   let t;
   try { t = tokenize(text); } catch { return null; }
@@ -941,6 +1043,9 @@ function compileBody(prog, proc, body, sc) {
   const checkCallable = (n, line) => {
     if (!n || typeof n !== 'object') return;
     if (Array.isArray(n)) { n.forEach((x) => checkCallable(x, line)); return; }
+    if (n.t === 'runThread' && !prog.threads.has(n.name)) {
+      throw new CompileError(`정의되지 않은 스레드 '${n.name}'`, file, line);
+    }
     if (n.t === 'call' && n.fn.t === 'name') {
       const nm = n.fn.name;
       if (!SYNC[nm] && !ASYNC[nm] && !prog.defs.has(nm))
@@ -969,6 +1074,15 @@ function compileBody(prog, proc, body, sc) {
         arr[normIndex(arr, i(vm, f))] = isPose(arr) ? num(v) : v;
       };
     }
+    if (tAst.t === 'field') {
+      const o = val(tAst.obj);
+      const fld = tAst.field;
+      return (vm, f, v) => {
+        const obj = o(vm, f);
+        if (!obj || typeof obj !== 'object' || Array.isArray(obj)) throw err(`${typeOf(obj)} 의 속성 '${fld}' 는 바꿀 수 없습니다`);
+        obj[fld] = v;
+      };
+    }
     throw new CompileError('대입할 수 없는 대상입니다', file, line);
   };
 
@@ -976,7 +1090,7 @@ function compileBody(prog, proc, body, sc) {
     const line = n.line;
     if (n.kw === 'while') return whileLoop(n);
     if (n.kw === 'if') return ifChain(n);
-    if (n.kw === 'def') return;
+    if (n.kw === 'def' || n.kw === 'thread') return;
     let text = n.text;
     let m;
     if (text === 'pass') return;
@@ -994,7 +1108,23 @@ function compileBody(prog, proc, body, sc) {
       else emit(line, () => (isMain ? { halt: true } : { ret: null }));
       return;
     }
-    if (/^(thread|run|join|kill)\b/.test(text)) throw new CompileError(`'${text.split(/\s/)[0]}' (스레드)는 지원하지 않습니다`, file, line);
+    if ((m = /^join\s+(.+)$/s.exec(text))) {
+      const hv = val(E(m[1], line));
+      emit(line, async (vm, f) => {
+        const thr = vm.urs?.threads?.get(hv(vm, f));
+        if (thr?.done) await thr.done;
+      });
+      return;
+    }
+    if ((m = /^kill\s+(.+)$/s.exec(text))) {
+      const hv = val(E(m[1], line));
+      emit(line, (vm, f) => {
+        const id = hv(vm, f);
+        const thr = vm.urs?.threads?.get(id);
+        if (thr) { thr.aborted = true; vm.ctrl.wakeWaiters?.(thr.owner); vm.urs.threads.delete(id); }
+      });
+      return;
+    }
     let forceGlobal = false;
     if ((m = /^global\s+(.*)$/s.exec(text))) {
       if (/^[A-Za-z_]\w*$/.test(m[1].trim())) return;   // 선언만
@@ -1006,7 +1136,7 @@ function compileBody(prog, proc, body, sc) {
     const a = assignSplit(text);
     if (a) {
       const tAst = parse(a.target, line);
-      if (!['name', 'index'].includes(tAst.t)) throw new CompileError('대입할 수 없는 대상입니다', file, line);
+      if (!['name', 'index', 'field'].includes(tAst.t)) throw new CompileError('대입할 수 없는 대상입니다', file, line);
       const rhs = val(E(a.rhs, line)), set = store(tAst, line, forceGlobal);
       if (a.aug) { const get = val(tAst); emit(line, (vm, f) => set(vm, f, binop(a.aug, get(vm, f), rhs(vm, f)))); }
       else emit(line, (vm, f) => set(vm, f, rhs(vm, f)));

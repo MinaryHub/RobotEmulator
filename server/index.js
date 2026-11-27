@@ -17,6 +17,7 @@ import { handleMcp } from './ai/mcp.js';
 import { configureNetGuard, requestRejected } from './netguard.js';
 import { AssetStore, MAX_UPLOAD } from './assets.js';
 import { Updater } from './updater.js';
+import { importBackup, isZipBuffer } from './backup.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const config = loadConfig();
@@ -65,7 +66,11 @@ function loadConfig() {
       abbRws: { port: 8080 },
       kukaVarProxy: { port: 7000 },
       urDashboard: { port: 29999 },
+      urRtde: { port: 30004 },
+      doosanDrfl: { port: 12345 },
       modbus: { port: 502, fallbackPort: 1502 },
+      ethernetIp: { port: 44818 },
+      cclinkIeBasic: { port: 61450 },
       opcua: { port: 4840 },
     },
   };
@@ -332,6 +337,30 @@ async function handleHttp(req, res) {
         try { p = JSON.parse(body.toString('utf8')); } catch { throw new Error('프로젝트 파일이 JSON 형식이 아닙니다'); }
         projects.apply(p);
         out = { files: filesMsg(), current: projects.current, models: Object.keys(p.assets || {}).length };
+      }
+      else if (url.pathname === '/api/backup/import' && req.method === 'POST') {
+        const body = await readBody(req, MAX_UPLOAD * 2);
+        const ct = String(req.headers['content-type'] || '');
+        let res;
+        let replace = url.searchParams.get('replace') !== '0';
+        let vendorHint = url.searchParams.get('vendor') || null;
+        if (isZipBuffer(body) || /zip|octet-stream/i.test(ct)) {
+          res = importBackup(body, { vendor: vendorHint });
+        } else {
+          let p;
+          try { p = JSON.parse(body.toString('utf8')); } catch { throw new Error('백업 입력이 ZIP 또는 JSON 형식이 아닙니다'); }
+          if (p.replace !== undefined) replace = !!p.replace;
+          if (p.vendor) vendorHint = p.vendor;
+          res = importBackup(p.files || p, { vendor: vendorHint });
+        }
+        if (!res.count) throw new Error('가져올 수 있는 로봇 프로그램 파일이 없습니다');
+        if (res.vendor && res.vendor !== ctrl.vendor && url.searchParams.get('switchVendor') !== '0') {
+          const match = ROBOTS.find((r) => r.vendor === res.vendor);
+          if (match) ctrl.setRobot(match.id);
+        }
+        ctrl.loadFiles(res.files, replace);
+        scheduleFilesBroadcast();
+        out = { ok: true, vendor: res.vendor, count: res.count, files: Object.keys(res.files), skipped: res.skipped, compileError: ctrl.compileError };
       }
       else if (url.pathname === '/api/cmd' && req.method === 'POST') {
         if (!/^application\/json\b/i.test(req.headers['content-type'] || '')) {
