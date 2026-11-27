@@ -1,0 +1,31 @@
+services:
+  robot-emulator:
+    build: .
+    container_name: robot-emulator
+    restart: unless-stopped
+    environment:
+      - HOST=0.0.0.0
+      - PORT=3000
+      - ROBOT_EMU_DATA_DIR=/data
+      # Set ROBOT_EMU_TOKEN to enforce Bearer token authentication on LAN
+      # - ROBOT_EMU_TOKEN=change-me
+    ports:
+      - "3000:3000"         # Web UI / REST / WS / MCP
+      - "1502:1502"         # Modbus TCP (fallback unprivileged port)
+      - "4840:4840"         # OPC UA
+      - "7000:7000"         # KukaVarProxy
+      - "8080:8080"         # ABB RWS
+      - "8888:8888"         # Hyundai OpenAPI
+      - "10023:10023"       # Kawasaki AS
+      - "10040:10040/udp"   # Yaskawa HSE
+      - "12345:12345"       # Doosan DRFL Socket
+      - "29999:29999"       # UR Dashboard
+      - "30004:30004"       # UR RTDE
+      - "44818:44818"       # EtherNet/IP CIP
+      - "61450:61450/udp"   # CC-Link IE Field Basic
+    volumes:
+      - robot_emulator_data:/data
+    command: ["node", "server/index.js", "--host", "0.0.0.0", "--data-dir", "/data", "--air-gapped", "--headless"]
+
+volumes:
+  robot_emulator_data:

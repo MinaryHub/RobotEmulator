@@ -188,7 +188,7 @@ export class ProjectStore {
   }
 
   startAutosave() {
-    this._timer = setInterval(() => this.saveAutosave({ async: true }), 5000);
+    this._timer = setInterval(() => this.saveAutosave({ async: true }), 2000);
     return () => clearInterval(this._timer);
   }
 

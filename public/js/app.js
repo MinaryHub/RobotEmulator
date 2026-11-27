@@ -50,7 +50,9 @@ function stopJog() {
 }
 function connect() {
   clearTimeout(reconnectTimer);
-  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+  const tok = new URLSearchParams(location.search).get('token');
+  const q = tok ? `?token=${encodeURIComponent(tok)}` : '';
+  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws${q}`);
   ws.onopen = () => {
     reconnectMs = 1000;
     setPill($('#stConn'), '연결됨', 'on');
@@ -76,6 +78,7 @@ function connect() {
     else if (m.type === 'logs') m.entries.forEach(addLog);
     else if (m.type === 'files') onFiles(m);
     else if (m.type === 'comms') { app.comms = m.comms; if (m.protocolMode) app.protocolMode = m.protocolMode; renderComms(); }
+    else if (m.type === 'controlLock') onControlLock(m);
     else if (m.type === 'tl') dbg.onTimeline(m);
     else if (m.type === 'traffic') dbg.onTraffic(m);
     else if (m.type === 'trafficClear') dbg.onTrafficClear();
@@ -128,9 +131,19 @@ $('#chkHideChat')?.addEventListener('change', (e) => {
 });
 applyChatVisibility();
 
+function onControlLock(lock) {
+  app.controlLock = lock;
+  const btn = $('#btnClaimLock');
+  if (!btn) return;
+  const otherHolds = lock && lock.holder != null && app.clientId != null && lock.holder !== app.clientId;
+  btn.classList.toggle('hidden', !otherHolds || app.role === 'readonly');
+}
+$('#btnClaimLock')?.addEventListener('click', () => run('claimControl'));
+
 function onInit(m) {
-  Object.assign(app, { robots: m.robots, grippers: m.grippers, vendors: m.vendors, comms: m.comms, protocolMode: m.protocolMode || 'vendor', aiEnabled: m.aiEnabled !== false });
+  Object.assign(app, { robots: m.robots, grippers: m.grippers, vendors: m.vendors, comms: m.comms, protocolMode: m.protocolMode || 'vendor', aiEnabled: m.aiEnabled !== false, clientId: m.clientId, role: m.role });
   applyChatVisibility();
+  onControlLock(m.controlLock);
   $('#log').innerHTML = '';
   m.logs.forEach(addLog);
   buildSelectors();

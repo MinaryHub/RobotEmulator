@@ -222,7 +222,10 @@ end
 main()`,
   }, true);
   await c.start();
-  stepSim(c, 0.2);
+  for (let i = 0; i < 20 && c.vm.status === 'running'; i++) {
+    c._step(0.02);
+    await new Promise((r) => setImmediate(r));
+  }
   assert.equal(c.vm.status, 'done');
   assert.equal(c.getAO(1), 7.75);
   assert.equal(c.regs.get('RTDE_OUT_I:0'), 50);
